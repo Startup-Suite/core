@@ -14,6 +14,14 @@ defmodule Platform.Agents.QuickAgent do
   @api_url "https://api.anthropic.com/v1/messages"
   @api_version "2023-06-01"
 
+  # OAuth tokens (sk-ant-oat*) require specific beta headers.
+  # Without these, Anthropic rejects the token.
+  @oauth_beta_headers [
+    "oauth-2025-04-20",
+    "claude-code-20250219",
+    "interleaved-thinking-2025-05-14"
+  ]
+
   @doc """
   Send a message to the agent and get a response.
   Reads workspace files from the configured path, builds context,
@@ -77,6 +85,15 @@ defmodule Platform.Agents.QuickAgent do
       {"content-type", "application/json"}
     ]
 
+    # OAuth tokens (sk-ant-oat*) require additional beta headers
+    headers =
+      if is_oauth_token?(api_key) do
+        beta_value = Enum.join(@oauth_beta_headers, ",")
+        headers ++ [{"anthropic-beta", beta_value}]
+      else
+        headers
+      end
+
     case Req.post(@api_url, json: body, headers: headers, receive_timeout: 60_000) do
       {:ok, %{status: 200, body: resp_body}} ->
         content =
@@ -105,6 +122,9 @@ defmodule Platform.Agents.QuickAgent do
         {:error, "Request failed: #{inspect(reason)}"}
     end
   end
+
+  defp is_oauth_token?(key) when is_binary(key), do: String.contains?(key, "sk-ant-oat")
+  defp is_oauth_token?(_), do: false
 
   defp workspace_path do
     Application.get_env(:platform, :agent_workspace_path, "/data/agents/zip/workspace")
