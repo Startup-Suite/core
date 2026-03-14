@@ -262,7 +262,7 @@ defmodule Platform.Chat do
   end
 
   @doc "Fetch a message by primary key (integer). Returns `nil` if not found."
-  @spec get_message(integer()) :: Message.t() | nil
+  @spec get_message(binary()) :: Message.t() | nil
   def get_message(id), do: Repo.get(Message, id)
 
   @doc """
