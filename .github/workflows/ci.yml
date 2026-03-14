@@ -63,6 +63,11 @@ jobs:
       - name: Check formatting
         run: mix format --check-formatted
 
+      - name: Set up database
+        run: |
+          mix ecto.create
+          mix ecto.migrate
+
       - name: Run tests
         run: mix test
 
