@@ -131,8 +131,8 @@ defmodule PlatformWeb.ChatLive do
              content_type: "text",
              content: content
            }) do
-        {:ok, _msg} ->
-          {:noreply, assign_compose(socket, "")}
+        {:ok, msg} ->
+          {:noreply, socket |> stream_insert(:messages, msg) |> assign_compose("")}
 
         {:error, _changeset} ->
           {:noreply, put_flash(socket, :error, "Failed to send message.")}
