@@ -221,7 +221,7 @@ defmodule Platform.Vault.OAuthTest do
       {:ok, _} =
         Vault.put("anthropic-oauth", :oauth2, existing_tokens,
           provider: "anthropic",
-          scope: :platform
+          scope: {:platform, nil}
         )
 
       :ok

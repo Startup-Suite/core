@@ -254,7 +254,7 @@ defmodule Platform.Vault.OAuth do
 
       slug = "#{provider}-oauth"
 
-      case Vault.put(slug, :oauth2, payload, provider: provider, scope: :platform) do
+      case Vault.put(slug, :oauth2, payload, provider: provider, scope: {:platform, nil}) do
         {:ok, credential} ->
           :telemetry.execute(
             [:platform, :vault, :credential_created],
