@@ -8,6 +8,12 @@ defmodule PlatformWeb.AuthController do
     state = random_token()
     nonce = random_token()
 
+    :telemetry.execute(
+      [:platform, :auth, :login],
+      %{system_time: System.system_time()},
+      %{action: "redirect", ip_address: format_ip(conn.remote_ip)}
+    )
+
     case OIDC.authorize_url(state, nonce) do
       {:ok, %{url: url}} ->
         conn
@@ -33,6 +39,20 @@ defmodule PlatformWeb.AuthController do
          {:ok, auth} <- OIDC.callback(params),
          {:ok, oidc_user} <- extract_oidc_user(auth),
          {:ok, user} <- Accounts.find_or_create_from_oidc(oidc_user) do
+      :telemetry.execute(
+        [:platform, :auth, :callback],
+        %{system_time: System.system_time()},
+        %{
+          action: "success",
+          actor_id: user.id,
+          actor_type: "user",
+          resource_type: "session",
+          resource_id: user.id,
+          ip_address: format_ip(conn.remote_ip),
+          email: user.email
+        }
+      )
+
       conn
       |> delete_session(:oidc_state)
       |> delete_session(:oidc_nonce)
@@ -41,27 +61,65 @@ defmodule PlatformWeb.AuthController do
       |> redirect(to: ~p"/")
     else
       nil ->
+        emit_callback_failure(conn, :invalid_state)
         invalid_state(conn)
 
       other_state when is_binary(other_state) ->
+        emit_callback_failure(conn, :state_mismatch)
         invalid_state(conn)
 
       {:error, reason} ->
+        emit_callback_failure(conn, reason)
+
         conn
         |> put_status(:unauthorized)
         |> text("OIDC callback failed: #{inspect(reason)}")
     end
   end
 
-  def callback(conn, _params), do: invalid_state(conn)
+  def callback(conn, _params) do
+    emit_callback_failure(conn, :missing_params)
+    invalid_state(conn)
+  end
 
   def logout(conn, _params) do
     id_token_hint = get_session(conn, :oidc_id_token)
+    user_id = get_session(conn, :current_user_id)
+
+    :telemetry.execute(
+      [:platform, :auth, :logout],
+      %{system_time: System.system_time()},
+      %{
+        action: "logout",
+        actor_id: user_id,
+        actor_type: if(user_id, do: "user", else: "anonymous"),
+        ip_address: format_ip(conn.remote_ip)
+      }
+    )
 
     conn
     |> configure_session(drop: true)
     |> redirect(external: OIDC.logout_url(id_token_hint))
   end
+
+  # -- Telemetry helpers --
+
+  defp emit_callback_failure(conn, reason) do
+    :telemetry.execute(
+      [:platform, :auth, :callback],
+      %{system_time: System.system_time()},
+      %{
+        action: "failure",
+        ip_address: format_ip(conn.remote_ip),
+        reason: to_string(reason)
+      }
+    )
+  end
+
+  defp format_ip(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
+  defp format_ip(ip), do: to_string(ip)
+
+  # -- OIDC helpers --
 
   defp invalid_state(conn) do
     conn
