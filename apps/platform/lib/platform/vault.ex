@@ -239,9 +239,12 @@ defmodule Platform.Vault do
 
         result =
           Repo.transaction(fn ->
-            # Grants are cascade-deleted by the DB (on_delete: :delete_all),
-            # but we also delete explicitly for clarity.
+            # Grants are cascade-deleted by the DB (on_delete: :delete_all).
             from(g in AccessGrant, where: g.credential_id == ^credential.id)
+            |> Repo.delete_all()
+
+            # Access logs have on_delete: :nothing — must delete manually.
+            from(l in AccessLog, where: l.credential_id == ^credential.id)
             |> Repo.delete_all()
 
             case Repo.delete(credential) do
@@ -403,9 +406,8 @@ defmodule Platform.Vault do
     %{credential | encrypted_data: nil}
   end
 
-  defp duration_to_seconds({amount, :days}), do: amount * 86_400
-  defp duration_to_seconds({amount, :hours}), do: amount * 3_600
-  defp duration_to_seconds({amount, :minutes}), do: amount * 60
-  defp duration_to_seconds({amount, :seconds}), do: amount
-  defp duration_to_seconds({amount, :second}), do: amount
+  defp duration_to_seconds({amount, unit}) when unit in [:day, :days], do: amount * 86_400
+  defp duration_to_seconds({amount, unit}) when unit in [:hour, :hours], do: amount * 3_600
+  defp duration_to_seconds({amount, unit}) when unit in [:minute, :minutes], do: amount * 60
+  defp duration_to_seconds({amount, unit}) when unit in [:second, :seconds], do: amount
 end
