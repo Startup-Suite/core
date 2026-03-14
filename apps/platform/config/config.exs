@@ -8,7 +8,12 @@
 import Config
 
 config :platform,
+  ecto_repos: [Platform.Repo],
   generators: [timestamp_type: :utc_datetime]
+
+config :platform, Platform.Repo,
+  migration_primary_key: [name: :id, type: :binary_id],
+  migration_foreign_key: [type: :binary_id]
 
 # Configure the endpoint
 config :platform, PlatformWeb.Endpoint,
@@ -49,6 +54,8 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
+
+config :platform, :oidc, http_adapter: {Assent.HTTPAdapter.Mint, []}
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
