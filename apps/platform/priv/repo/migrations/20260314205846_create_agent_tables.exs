@@ -45,9 +45,8 @@ defmodule Platform.Repo.Migrations.CreateAgentTables do
       add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
     end
 
-    create index(:agent_memories, [:agent_id, :date],
-             name: :agent_memories_agent_date,
-             order: [asc: :agent_id, desc: :date]
+    create index(:agent_memories, ["agent_id ASC", "date DESC"],
+             name: :agent_memories_agent_date
            )
 
     create index(:agent_memories, [:agent_id, :memory_type])
