@@ -7,6 +7,7 @@ defmodule Platform.Application do
 
   @impl true
   def start(_type, _args) do
+    Platform.Config.validate!()
     Platform.Audit.TelemetryHandler.attach()
 
     children = [

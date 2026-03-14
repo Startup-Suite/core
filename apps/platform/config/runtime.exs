@@ -5,13 +5,20 @@ if System.get_env("PHX_SERVER") do
 end
 
 if config_env() != :test do
-  database_url = System.get_env("DATABASE_URL")
   pool_size = String.to_integer(System.get_env("POOL_SIZE", "10"))
 
   socket_options =
     case System.get_env("ECTO_IPV6") do
       value when value in ["true", "1"] -> [:inet6]
       _ -> []
+    end
+
+  database_url =
+    if config_env() == :prod do
+      System.get_env("DATABASE_URL") ||
+        raise "environment variable DATABASE_URL is missing"
+    else
+      System.get_env("DATABASE_URL")
     end
 
   if database_url do

@@ -9,7 +9,8 @@ import Config
 
 config :platform,
   ecto_repos: [Platform.Repo],
-  generators: [timestamp_type: :utc_datetime]
+  generators: [timestamp_type: :utc_datetime],
+  env: config_env()
 
 config :platform, Platform.Repo,
   migration_primary_key: [name: :id, type: :binary_id],
