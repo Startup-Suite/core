@@ -10,11 +10,11 @@ defmodule Platform.VaultTest do
 
   # ── Helpers ─────────────────────────────────────────────────────────────────
 
-  defp unique_slug(prefix \\ "cred") do
+  defp unique_slug(prefix) do
     "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"
   end
 
-  defp insert_credential!(slug, opts \\ []) do
+  defp insert_credential!(slug, opts) do
     value = Keyword.get(opts, :value, "default-secret")
     scope = Keyword.get(opts, :scope, {:platform, nil})
     extra = Keyword.drop(opts, [:value])

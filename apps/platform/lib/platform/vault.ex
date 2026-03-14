@@ -378,7 +378,9 @@ defmodule Platform.Vault do
 
   # Converts accessor tuple to {type_string, id_string}.
   # Falls back to a sentinel UUID for system/nil access (accessor_id NOT NULL in DB).
+  defp parse_accessor({type, nil}) when is_atom(type), do: {to_string(type), @system_accessor_id}
   defp parse_accessor({type, id}) when is_atom(type), do: {to_string(type), id}
+  defp parse_accessor({type, nil}), do: {to_string(type), @system_accessor_id}
   defp parse_accessor({type, id}), do: {to_string(type), id}
   defp parse_accessor(nil), do: {"system", @system_accessor_id}
 
