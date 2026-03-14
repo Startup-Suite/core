@@ -29,6 +29,7 @@ jobs:
         ports:
           - 5432:5432
     env:
+      MIX_ENV: test
       PGHOST: postgres
       PGUSER: postgres
       PGPASSWORD: postgres
