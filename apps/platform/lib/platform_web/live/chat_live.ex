@@ -18,7 +18,6 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
 
-  @default_slug "general"
   @message_limit 50
 
   # ── Mount ──────────────────────────────────────────────────────────────────
@@ -105,14 +104,15 @@ defmodule PlatformWeb.ChatLive do
   end
 
   def handle_params(_params, _url, socket) do
-    # :index action — redirect to first known space or default
-    slug =
-      case socket.assigns.spaces do
-        [first | _] -> first.slug
-        [] -> @default_slug
-      end
+    # :index action — redirect to first known space, or show empty state if none exist
+    case socket.assigns.spaces do
+      [first | _] ->
+        {:noreply, push_navigate(socket, to: ~p"/chat/#{first.slug}")}
 
-    {:noreply, push_navigate(socket, to: ~p"/chat/#{slug}")}
+      [] ->
+        # No spaces yet — stay at /chat and render the empty/no-spaces state
+        {:noreply, socket}
+    end
   end
 
   # ── Events ─────────────────────────────────────────────────────────────────
