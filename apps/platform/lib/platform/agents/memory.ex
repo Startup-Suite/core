@@ -18,7 +18,7 @@ defmodule Platform.Agents.Memory do
     field(:date, :date)
     field(:content, :string)
     field(:metadata, :map, default: %{})
-    field(:inserted_at, :utc_datetime_usec, autogenerate: {DateTime, :utc_now, [:usec]})
+    field(:inserted_at, :utc_datetime_usec, autogenerate: false)
   end
 
   def changeset(memory, attrs) do
