@@ -40,6 +40,7 @@ defmodule Platform.Execution.RunServer do
   require Logger
 
   alias Platform.Context
+  alias Platform.Context.EvictionPolicy
   alias Platform.Execution.{ContextSession, Run}
 
   @default_stale_timeout_ms 30_000
@@ -246,7 +247,15 @@ defmodule Platform.Execution.RunServer do
        when status in [:completed, :failed, :cancelled] do
     state = cancel_stale_timer(state)
     state = cancel_dead_timer(state)
-    ContextSession.close(run)
+
+    # Promote artifacts to task session, then evict run-scoped session
+    EvictionPolicy.run_terminated(%{
+      project_id: run.project_id,
+      epic_id: run.epic_id,
+      task_id: run.task_id,
+      run_id: run.id
+    })
+
     state
   end
 
