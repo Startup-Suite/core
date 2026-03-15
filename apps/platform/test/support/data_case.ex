@@ -40,6 +40,20 @@ defmodule Platform.DataCase do
       end
     end)
 
+    # Drain the AttentionRouter's message queue before the sandbox is released.
+    # A synchronous call guarantees any in-flight telemetry handle_info messages
+    # have been fully processed (and their Repo calls completed) before the
+    # sandbox owner exits and the connection is freed.
+    on_exit(fn ->
+      if pid = Process.whereis(Platform.Chat.AttentionRouter) do
+        try do
+          GenServer.call(pid, :__drain__, 2_000)
+        catch
+          :exit, _ -> :ok
+        end
+      end
+    end)
+
     :ok
   end
 end
