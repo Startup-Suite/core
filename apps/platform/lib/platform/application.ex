@@ -24,6 +24,8 @@ defmodule Platform.Application do
       Platform.Execution.RuntimeSupervisor,
       # ContextBroker — must start after the agent registry/runtime tree
       Platform.Agents.ContextBroker,
+      # Context plane supervisor — must start after PubSub
+      Platform.Context.Supervisor,
       # Chat presence — must start after PubSub
       Platform.Chat.Presence,
       # AttentionRouter — must start after Repo and PubSub
