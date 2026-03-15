@@ -54,16 +54,17 @@ defmodule Platform.Chat.PinTest do
       assert pin.pinned_by == p.id
     end
 
-    test "returns a changeset error when pinning the same message twice" do
+    test "pinning different messages in the same space creates distinct pin records" do
       space = create_space!()
       p = create_participant!(space.id)
-      msg = create_message!(space.id, p.id)
+      msg1 = create_message!(space.id, p.id)
+      msg2 = create_message!(space.id, p.id)
 
-      {:ok, _} =
-        Chat.pin_message(%{space_id: space.id, message_id: msg.id, pinned_by: p.id})
+      {:ok, pin1} = Chat.pin_message(%{space_id: space.id, message_id: msg1.id, pinned_by: p.id})
+      {:ok, pin2} = Chat.pin_message(%{space_id: space.id, message_id: msg2.id, pinned_by: p.id})
 
-      assert {:error, _changeset} =
-               Chat.pin_message(%{space_id: space.id, message_id: msg.id, pinned_by: p.id})
+      assert pin1.id != pin2.id
+      assert length(Chat.list_pins(space.id)) == 2
     end
 
     test "requires space_id" do
