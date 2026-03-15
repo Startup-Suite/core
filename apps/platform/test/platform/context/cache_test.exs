@@ -182,9 +182,12 @@ defmodule Platform.Context.CacheTest do
       key = unique_scope("dsince")
       _session = create_session!(key)
 
-      Cache.put_item(key, "a", 1)   # version 1
-      Cache.put_item(key, "b", 2)   # version 2
-      Cache.put_item(key, "c", 3)   # version 3
+      # version 1
+      Cache.put_item(key, "a", 1)
+      # version 2
+      Cache.put_item(key, "b", 2)
+      # version 3
+      Cache.put_item(key, "c", 3)
 
       deltas = Cache.deltas_since(key, 1)
       assert length(deltas) == 2

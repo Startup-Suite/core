@@ -148,10 +148,11 @@ defmodule Platform.Context.EvictionPolicy do
         Cache.delete_item(scope_key, key)
       end)
 
-    errors = Enum.filter(results, fn
-      {:ok, _} -> false
-      _ -> true
-    end)
+    errors =
+      Enum.filter(results, fn
+        {:ok, _} -> false
+        _ -> true
+      end)
 
     if errors == [] do
       {:ok, length(keys)}
@@ -183,10 +184,11 @@ defmodule Platform.Context.EvictionPolicy do
         Cache.put_item(to_scope_key, key, value, kind: :artifact_ref, meta: meta)
       end)
 
-    promoted = Enum.count(results, fn
-      {:ok, _} -> true
-      _ -> false
-    end)
+    promoted =
+      Enum.count(results, fn
+        {:ok, _} -> true
+        _ -> false
+      end)
 
     {:ok, promoted}
   end

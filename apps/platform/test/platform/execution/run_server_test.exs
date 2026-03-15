@@ -72,6 +72,7 @@ defmodule Platform.Execution.RunServerTest do
 
     test "invalid transition returns error" do
       run = start_run(unique_task())
+
       assert {:error, {:invalid_transition, :created, :completed}} =
                RunServer.transition(run.id, :completed)
     end

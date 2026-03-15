@@ -57,8 +57,7 @@ defmodule Platform.Context.Item do
       "version" => item.version,
       "meta" => item.meta,
       "ttl_ms" => item.ttl_ms,
-      "inserted_at" =>
-        if(item.inserted_at, do: DateTime.to_iso8601(item.inserted_at), else: nil)
+      "inserted_at" => if(item.inserted_at, do: DateTime.to_iso8601(item.inserted_at), else: nil)
     }
   end
 end
