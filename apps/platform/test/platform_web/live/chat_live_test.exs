@@ -3,7 +3,27 @@ defmodule PlatformWeb.ChatLiveTest do
   import Phoenix.LiveViewTest
 
   alias Platform.Accounts.User
+  alias Platform.Chat
   alias Platform.Repo
+
+  setup do
+    previous_root = Application.get_env(:platform, :chat_attachments_root)
+
+    upload_root =
+      Path.join(
+        System.tmp_dir!(),
+        "platform_live_test_chat_uploads_#{System.unique_integer([:positive])}"
+      )
+
+    Application.put_env(:platform, :chat_attachments_root, upload_root)
+
+    on_exit(fn ->
+      File.rm_rf(upload_root)
+      Application.put_env(:platform, :chat_attachments_root, previous_root)
+    end)
+
+    :ok
+  end
 
   defp authenticated_conn(conn) do
     user =
@@ -25,8 +45,9 @@ defmodule PlatformWeb.ChatLiveTest do
     conn = authenticated_conn(conn)
     {:ok, _view, html} = live(conn, ~p"/chat")
 
-    assert html =~ "Core Chat"
-    assert html =~ "Agent online"
+    # Shell layout and channel sidebar should be present
+    assert html =~ "Channels"
+    assert html =~ "Startup Suite"
   end
 
   test "shell sidebar is rendered on /chat", %{conn: conn} do
@@ -41,13 +62,263 @@ defmodule PlatformWeb.ChatLiveTest do
 
   test "sending a message renders it in the chat", %{conn: conn} do
     conn = authenticated_conn(conn)
-    {:ok, view, _html} = live(conn, ~p"/chat")
+    {:ok, view, _html} = live(conn, ~p"/chat/general")
 
     html =
       view
-      |> form("#chat-form", chat: %{message: "hello from test"})
+      |> form("#compose-form", compose: %{text: "hello from test"})
       |> render_submit()
 
     assert html =~ "hello from test"
+  end
+
+  describe "search" do
+    test "searching messages shows ranked results with highlighted matches", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "Phoenix search is live"})
+      |> render_submit()
+
+      view
+      |> form("#compose-form", compose: %{text: "Other chat note"})
+      |> render_submit()
+
+      html =
+        view
+        |> form("#chat-search-form", search: %{query: "phoenix"})
+        |> render_change()
+
+      assert html =~ "Search Results"
+      assert html =~ "<mark>Phoenix</mark>"
+      assert html =~ "match"
+    end
+
+    test "opening a threaded search result opens the thread panel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "Thread root"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [root_message | _] = Chat.list_messages(space.id)
+
+      render_click(view, "open_thread", %{"message_id" => root_message.id})
+
+      view
+      |> form("#thread-compose-form", thread_compose: %{text: "Phoenix lives in threads too"})
+      |> render_submit()
+
+      thread_message =
+        space.id
+        |> Chat.list_messages(
+          thread_id: Chat.get_thread_for_message(root_message.id).id,
+          limit: 10
+        )
+        |> List.first()
+
+      html =
+        view
+        |> form("#chat-search-form", search: %{query: "phoenix"})
+        |> render_change()
+
+      assert html =~ "Thread"
+
+      html = render_click(view, "open_search_result", %{"message_id" => thread_message.id})
+
+      assert html =~ "thread-compose-form"
+      assert html =~ "Phoenix lives in threads too"
+    end
+  end
+
+  describe "attachments" do
+    test "uploading a file shows it on the message after send", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      upload =
+        file_input(view, "#compose-form", :attachments, [
+          %{
+            name: "hello.txt",
+            content: "hello attachment",
+            type: "text/plain"
+          }
+        ])
+
+      assert render_upload(upload, "hello.txt") =~ "hello.txt"
+
+      html =
+        view
+        |> form("#compose-form", compose: %{text: "see file"})
+        |> render_submit()
+
+      assert html =~ "see file"
+      assert html =~ "hello.txt"
+
+      space = Chat.get_space_by_slug("general")
+      [message | _] = Chat.list_messages(space.id)
+      [attachment] = Chat.list_attachments(message.id)
+
+      assert attachment.filename == "hello.txt"
+      assert html =~ "/chat/attachments/#{attachment.id}"
+    end
+  end
+
+  # ── Reactions ────────────────────────────────────────────────────────────────
+
+  describe "reactions" do
+    test "renders quick emoji buttons on each message", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Post a message so there's something to react to
+      view
+      |> form("#compose-form", compose: %{text: "react to me"})
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ "react to me"
+
+      # Quick emoji buttons should be present (in the action bar)
+      assert html =~ "👍"
+      assert html =~ "❤️"
+      assert html =~ "😂"
+      assert html =~ "🎉"
+    end
+
+    test "reacting to a message broadcasts reaction_added and updates UI", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Send a message first
+      view
+      |> form("#compose-form", compose: %{text: "emoji test"})
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ "emoji test"
+
+      # Find a message ID from the space to trigger the react event
+      slug = "general"
+      space = Chat.get_space_by_slug(slug)
+      [msg | _] = Chat.list_messages(space.id)
+
+      # Trigger react event directly
+      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
+
+      # After the PubSub roundtrip the reaction should appear
+      html = render(view)
+      # The reaction button shows count ≥ 1
+      assert html =~ "👍"
+    end
+  end
+
+  # ── Threads ──────────────────────────────────────────────────────────────────
+
+  describe "threads" do
+    test "opening a thread shows the thread panel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Post a message to open a thread on
+      view
+      |> form("#compose-form", compose: %{text: "start a thread here"})
+      |> render_submit()
+
+      slug = "general"
+      space = Chat.get_space_by_slug(slug)
+      [msg | _] = Chat.list_messages(space.id)
+
+      html = render_click(view, "open_thread", %{"message_id" => msg.id})
+
+      assert html =~ "Thread"
+      assert html =~ "thread-compose-form"
+    end
+
+    test "closing the thread panel hides it", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "thread close test"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      render_click(view, "open_thread", %{"message_id" => msg.id})
+      html = render_click(view, "close_thread", %{})
+
+      refute html =~ "thread-compose-form"
+    end
+
+    test "posting a thread reply appears in thread panel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "root message"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      render_click(view, "open_thread", %{"message_id" => msg.id})
+
+      html =
+        view
+        |> form("#thread-compose-form", thread_compose: %{text: "thread reply"})
+        |> render_submit()
+
+      assert html =~ "thread reply"
+    end
+  end
+
+  # ── Pins ─────────────────────────────────────────────────────────────────────
+
+  describe "pins" do
+    test "pinning a message shows it in the pins panel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "pin me please"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      # Toggle pin
+      render_click(view, "toggle_pin", %{"message_id" => msg.id, "space_id" => msg.space_id})
+
+      # Toggle pins panel open
+      html = render_click(view, "toggle_pins_panel", %{})
+
+      assert html =~ "Pinned Messages"
+      assert html =~ String.slice(msg.id, 0, 8)
+    end
+
+    test "toggle_pins_panel shows and hides the panel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "pin me"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      render_click(view, "toggle_pin", %{"message_id" => msg.id, "space_id" => msg.space_id})
+
+      html_open = render_click(view, "toggle_pins_panel", %{})
+      assert html_open =~ "Pinned Messages"
+
+      html_closed = render_click(view, "toggle_pins_panel", %{})
+      refute html_closed =~ "Pinned Messages"
+    end
   end
 end

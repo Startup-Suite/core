@@ -10,6 +10,7 @@ defmodule Platform.Application do
     Platform.Config.validate!()
     Platform.Audit.TelemetryHandler.attach()
     Platform.Vault.TelemetryHandler.attach()
+    Platform.Chat.TelemetryHandler.attach()
 
     children = [
       Platform.Vault.Encryption,
@@ -17,8 +18,12 @@ defmodule Platform.Application do
       PlatformWeb.Telemetry,
       {DNSCluster, query: Application.get_env(:platform, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Platform.PubSub},
-      # Start a worker by calling: Platform.Worker.start_link(arg)
-      # {Platform.Worker, arg},
+      # Chat presence — must start after PubSub
+      Platform.Chat.Presence,
+      # AttentionRouter — must start after Repo and PubSub
+      Platform.Chat.AttentionRouter,
+      # Vault OAuth token refresh worker — must start after Repo and Vault.Encryption
+      Platform.Vault.RefreshWorker,
       # Start to serve requests, typically the last entry
       PlatformWeb.Endpoint
     ]
