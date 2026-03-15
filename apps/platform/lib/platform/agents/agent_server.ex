@@ -707,6 +707,7 @@ defmodule Platform.Agents.AgentServer do
   defp maybe_put(map, _key, %{} = value) when map_size(value) == 0, do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  defp json_safe(nil), do: nil
   defp json_safe(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp json_safe(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   defp json_safe(%Date{} = date), do: Date.to_iso8601(date)

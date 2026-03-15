@@ -151,6 +151,21 @@ defmodule Platform.Agents.AgentServerTest do
 
       :telemetry.detach(ref)
     end
+
+    test "allows finishing a session without optional token usage" do
+      agent = create_agent()
+      _pid = start_agent!(agent)
+      {:ok, session, _context} = AgentServer.start_session(agent.id)
+
+      assert {:ok, finished, nil} = AgentServer.finish_session(agent.id, session.id)
+
+      assert finished.status == "completed"
+      assert finished.token_usage == %{}
+
+      persisted = Repo.get!(Session, session.id)
+      assert persisted.status == "completed"
+      assert persisted.token_usage == %{}
+    end
   end
 
   describe "fetch_credential/3" do
