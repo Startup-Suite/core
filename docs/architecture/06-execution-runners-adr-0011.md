@@ -173,16 +173,31 @@ handle_call({:transition, :completed | :failed | :cancelled})
 {:ok, _run} = Platform.Execution.transition(run.id, :completed)
 ```
 
-### Remote / Docker runners (future HTTP adapter)
+### Remote / Docker runners (`suite-runnerd` seam)
 
-The HTTP layer will expose thin wrappers:
+The Docker provider keeps `RunServer` as the control-plane source of truth and
+uses a thin companion client/service seam for the host-level container actions.
+The BEAM side owns run status, stale/dead classification, and context delivery;
+`suite-runnerd` only owns the container lifecycle mechanics.
+
+Planned control surface:
 
 ```
+POST /api/runs                → spawn container for run
+GET  /api/runs/:id            → describe provider/container state
+POST /api/runs/:id/stop       → graceful stop request
+POST /api/runs/:id/kill       → forced kill
+
 GET  /api/runs/:id/context           → snapshot
 POST /api/runs/:id/context/ack       → ack_context
 POST /api/runs/:id/context/push      → push_context
 POST /api/runs/:id/transition        → transition
 ```
+
+This split prevents a second orchestration plane: liveness, terminal
+transitions, and future Tasks/UI state continue to flow through
+`Platform.Execution`, while the service boundary is narrow enough to swap the
+transport later if needed.
 
 Authentication: existing Vault-backed token supply.
 
