@@ -131,9 +131,14 @@ defmodule Platform.Chat.AttentionRouter do
 
   @impl true
   def handle_info({:telemetry_message_posted, %{message_id: message_id}}, state) do
-    case Repo.get(Message, message_id) do
-      %Message{} = msg -> do_route(msg)
-      nil -> Logger.warning("[AttentionRouter] message not found: #{message_id}")
+    try do
+      case Repo.get(Message, message_id) do
+        %Message{} = msg -> do_route(msg)
+        nil -> Logger.warning("[AttentionRouter] message not found: #{message_id}")
+      end
+    rescue
+      error ->
+        Logger.debug("[AttentionRouter] skipping telemetry route (#{Exception.message(error)})")
     end
 
     {:noreply, state}

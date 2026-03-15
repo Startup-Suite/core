@@ -4,7 +4,7 @@ defmodule Platform.ChatTest do
   and the batch `list_reactions_for_messages/1` helper added in T6.
   """
 
-  use Platform.DataCase, async: true
+  use Platform.DataCase, async: false
 
   alias Platform.Chat
 

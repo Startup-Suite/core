@@ -1,5 +1,5 @@
 defmodule Platform.Chat.ReactionTest do
-  use Platform.DataCase, async: true
+  use Platform.DataCase, async: false
 
   alias Platform.Chat
 
