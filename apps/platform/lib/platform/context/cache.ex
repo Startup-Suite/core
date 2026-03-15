@@ -180,7 +180,7 @@ defmodule Platform.Context.Cache do
       [] ->
         {:reply, {:error, :not_found}, state}
 
-      [{^scope_key, session}] ->
+      [{^scope_key, %Session{} = session}] ->
         {new_version, updated_session} = Session.bump_version(session)
         item = Item.new(key, value, new_version, opts)
 
@@ -208,7 +208,7 @@ defmodule Platform.Context.Cache do
       [] ->
         {:reply, {:error, :not_found}, state}
 
-      [{^scope_key, session}] ->
+      [{^scope_key, %Session{} = session}] ->
         {new_version, updated_session} = Session.bump_version(session)
 
         :ets.insert(@sessions_table, {scope_key, updated_session})
@@ -234,7 +234,7 @@ defmodule Platform.Context.Cache do
       [] ->
         {:reply, {:error, :not_found}, state}
 
-      [{^scope_key, session}] ->
+      [{^scope_key, %Session{} = session}] ->
         {new_version, updated_session} = Session.bump_version(session)
 
         # Apply puts
@@ -248,7 +248,7 @@ defmodule Platform.Context.Cache do
           :ets.delete(@items_table, {scope_key, key})
         end)
 
-        stamped_delta = %Delta{delta | scope_key: scope_key, version: new_version}
+        %Delta{} = stamped_delta = %Delta{delta | scope_key: scope_key, version: new_version}
 
         :ets.insert(@sessions_table, {scope_key, updated_session})
         persist_delta(scope_key, new_version, stamped_delta)
