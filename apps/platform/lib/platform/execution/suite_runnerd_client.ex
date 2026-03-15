@@ -1,19 +1,60 @@
 defmodule Platform.Execution.SuiteRunnerdClient do
   @moduledoc """
-  Thin HTTP client for the future `suite-runnerd` control service.
+  Thin HTTP client for the `suite-runnerd` control service.
 
   The BEAM-side execution plane remains the source of truth for lifecycle and
   context state. This client only handles the mechanical container operations
   delegated to the companion service:
 
     * spawn a runner container for a run
-    * describe its current provider state
+    * describe its current provider state (status, health, timing)
     * request a graceful stop
     * force an immediate kill
 
   Keeping this seam explicit lets `DockerRunner` reuse the same
   `Platform.Execution.Runner` contract as the local provider without baking
   transport concerns into `RunServer`.
+
+  ## Spawn payload
+
+  `spawn_run/3` forwards the full payload built by `DockerRunner`, which includes:
+
+    - `:run_id`, `:task_id`, `:project_id`, `:epic_id`
+    - `:workspace_root`, `:workspace_path`, `:command`, `:args`, `:env`
+    - `:security` map — user, no_new_privileges, capability_drop/add, no_docker_socket
+    - `:mount` map — bind mount instructions for the per-run worktree
+    - `:meta` — arbitrary metadata forwarded to the container
+
+  `suite-runnerd` is responsible for translating these fields into a concrete
+  `docker run` invocation.
+
+  ## Describe response
+
+  `describe_run/3` returns a map with at least:
+
+    - `:status`       — container state atom (`:starting`, `:running`, `:exited`, `:killed`, `:stopped`)
+    - `:exit_code`    — integer exit code or `nil` if still running
+    - `:container_id` — Docker container ID (short form)
+    - `:image`        — image reference used at spawn
+    - `:stop_mode`    — `:graceful` | `:kill` | `nil`
+    - `:started_at`   — ISO8601 string or `nil`
+    - `:finished_at`  — ISO8601 string or `nil`
+    - `:exit_message` — stderr tail or `nil`
+    - `:health`       — `:healthy` | `:degraded` | `:unknown` or `nil`
+
+  ## Authentication
+
+  Requests can carry a bearer token via:
+    1. `:token` key in `client_opts`
+    2. Application config: `config :platform, :execution, suite_runnerd: [token: "..."]`
+
+  ## Configuration
+
+      config :platform, :execution,
+        suite_runnerd: [
+          base_url: "http://127.0.0.1:4101",
+          token: "..."
+        ]
   """
 
   alias Platform.Execution.Run
@@ -64,6 +105,10 @@ defmodule Platform.Execution.SuiteRunnerdClient do
       {:error, _} = error -> error
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Private helpers
+  # ---------------------------------------------------------------------------
 
   defp run_path(%Run{id: run_id}, provider_ref, suffix \\ "") do
     container_id = Map.get(provider_ref, :container_id) || Map.get(provider_ref, "container_id")
