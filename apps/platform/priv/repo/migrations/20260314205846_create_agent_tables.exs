@@ -36,7 +36,8 @@ defmodule Platform.Repo.Migrations.CreateAgentTables do
              name: :agent_workspace_files_unique_key
            )
 
-    create table(:agent_memories) do
+    create table(:agent_memories, primary_key: false) do
+      add :id, :bigserial, primary_key: true
       add :agent_id, references(:agents, type: :binary_id, on_delete: :delete_all), null: false
       add :memory_type, :string, null: false
       add :date, :date
