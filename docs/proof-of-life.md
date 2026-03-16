@@ -1,0 +1,5 @@
+- run_id: ebfaf5154d4c9a6f
+- task_id: suite-proof-of-life
+- branch: proof/ebfaf5154d4c9a6f
+- mode: docker_codex_exec
+- host: hive
