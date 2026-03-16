@@ -250,8 +250,8 @@ defmodule Platform.Chat do
   Required attrs: `:space_id`, `:participant_id`, `:content_type`.
   Optional: `:thread_id`, `:content`, `:structured_content`, `:metadata`.
   """
-  @spec post_message(map()) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
-  def post_message(attrs) do
+  @spec post_message(map(), keyword()) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+  def post_message(attrs, opts \\ []) do
     result =
       %Message{}
       |> Message.changeset(attrs)
@@ -259,7 +259,7 @@ defmodule Platform.Chat do
 
     case result do
       {:ok, msg} ->
-        publish_message_posted(msg)
+        publish_message_posted(msg, opts)
 
       _ ->
         :ok
@@ -274,9 +274,9 @@ defmodule Platform.Chat do
   `attachment_attrs_list` should contain maps with `:filename`, `:content_type`,
   `:byte_size`, and `:storage_key`.
   """
-  @spec post_message_with_attachments(map(), [map()]) ::
+  @spec post_message_with_attachments(map(), [map()], keyword()) ::
           {:ok, Message.t(), [Attachment.t()]} | {:error, term()}
-  def post_message_with_attachments(attrs, attachment_attrs_list)
+  def post_message_with_attachments(attrs, attachment_attrs_list, opts \\ [])
       when is_list(attachment_attrs_list) do
     multi =
       Multi.new()
@@ -303,7 +303,7 @@ defmodule Platform.Chat do
           |> Enum.sort_by(fn {{:attachment, index}, _value} -> index end)
           |> Enum.map(fn {_key, attachment} -> attachment end)
 
-        publish_message_posted(message)
+        publish_message_posted(message, opts)
         {:ok, message, attachments}
 
       {:error, _operation, reason, _changes_so_far} ->
@@ -323,12 +323,14 @@ defmodule Platform.Chat do
     * `:limit`     — max number of messages (default: 50)
     * `:before_id` — keyset cursor — only messages with `id < before_id`
     * `:thread_id` — filter to a specific thread
+    * `:top_level_only` — when `true`, include only messages where `thread_id` is `NULL`
   """
   @spec list_messages(binary(), keyword()) :: [Message.t()]
   def list_messages(space_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
     before_id = Keyword.get(opts, :before_id)
     thread_id = Keyword.get(opts, :thread_id)
+    top_level_only = Keyword.get(opts, :top_level_only, false)
 
     base =
       from(m in Message,
@@ -337,7 +339,13 @@ defmodule Platform.Chat do
         limit: ^limit
       )
 
-    base = if thread_id, do: where(base, [m], m.thread_id == ^thread_id), else: base
+    base =
+      cond do
+        thread_id -> where(base, [m], m.thread_id == ^thread_id)
+        top_level_only -> where(base, [m], is_nil(m.thread_id))
+        true -> base
+      end
+
     base = if before_id, do: where(base, [m], m.id < ^before_id), else: base
 
     Repo.all(base)
@@ -1009,7 +1017,7 @@ defmodule Platform.Chat do
 
   defp stringify_canvas_payload(value), do: value
 
-  defp publish_message_posted(msg) do
+  defp publish_message_posted(msg, opts \\ []) do
     :telemetry.execute(
       [:platform, :chat, :message_posted],
       %{system_time: System.system_time()},
@@ -1020,6 +1028,9 @@ defmodule Platform.Chat do
       }
     )
 
-    ChatPubSub.broadcast(msg.space_id, {:new_message, msg})
+    case Keyword.get(opts, :from_pid) do
+      pid when is_pid(pid) -> ChatPubSub.broadcast_from(msg.space_id, pid, {:new_message, msg})
+      _ -> ChatPubSub.broadcast(msg.space_id, {:new_message, msg})
+    end
   end
 end
