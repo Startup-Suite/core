@@ -56,7 +56,8 @@ config :platform, :oidc,
   client_secret: "test-client-secret",
   issuer: "https://issuer.example.com",
   app_url: "http://www.example.com",
-  strategy: Platform.TestOIDCStrategy,
+  strategy: Platform.OIDC.LocalStrategy,
+  local_login_page: false,
   http_adapter: {Assent.HTTPAdapter.Mint, []}
 
 config :platform,

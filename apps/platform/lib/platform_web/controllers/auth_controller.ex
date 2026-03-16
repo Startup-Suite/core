@@ -13,9 +13,15 @@ defmodule PlatformWeb.AuthController do
 
     case OIDC.authorize_url() do
       {:ok, %{url: url, session_params: session_params}} ->
-        conn
-        |> put_session(:oidc_session_params, session_params)
-        |> redirect(external: url)
+        conn = put_session(conn, :oidc_session_params, session_params)
+
+        if local_login_page?() do
+          conn
+          |> put_resp_content_type("text/html")
+          |> send_resp(200, local_login_html(url))
+        else
+          redirect(conn, external: url)
+        end
 
       {:error, error} ->
         conn
@@ -115,6 +121,29 @@ defmodule PlatformWeb.AuthController do
 
   defp format_ip(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
   defp format_ip(ip), do: to_string(ip)
+
+  defp local_login_page? do
+    Application.get_env(:platform, :oidc, [])
+    |> Keyword.get(:local_login_page, false)
+  end
+
+  defp local_login_html(authorize_url) do
+    """
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Sign in</title>
+      </head>
+      <body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem;">
+        <h1>Sign in</h1>
+        <p>Sandbox login is configured for local development.</p>
+        <p><a href="#{authorize_url}">Continue with OIDC provider</a></p>
+      </body>
+    </html>
+    """
+  end
 
   # -- OIDC helpers --
 

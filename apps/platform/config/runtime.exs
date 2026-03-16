@@ -101,13 +101,20 @@ if config_env() != :test do
       value -> value
     end
 
+  oidc_issuer_env = System.get_env("OIDC_ISSUER")
+
   oidc_issuer =
-    case System.get_env("OIDC_ISSUER") do
+    case oidc_issuer_env do
       value when value in [nil, ""] -> if(is_prod, do: nil, else: "https://issuer.example.com")
       value -> value
     end
 
-  config :platform, :oidc,
+  oidc_strategy =
+    if !is_prod and oidc_issuer_env in [nil, ""] do
+      Platform.OIDC.LocalStrategy
+    end
+
+  oidc_config = [
     client_id: oidc_client_id,
     client_secret: oidc_client_secret,
     issuer: oidc_issuer,
@@ -115,6 +122,18 @@ if config_env() != :test do
     # PKCE (RFC 7636): set OIDC_PKCE_ENABLED=true when the provider enforces it.
     # Defaults to false for compatibility with providers that don't support PKCE.
     pkce_enabled: System.get_env("OIDC_PKCE_ENABLED") in ["true", "1"]
+  ]
+
+  oidc_config =
+    if oidc_strategy do
+      oidc_config
+      |> Keyword.put(:strategy, oidc_strategy)
+      |> Keyword.put(:local_login_page, true)
+    else
+      oidc_config
+    end
+
+  config :platform, :oidc, oidc_config
 
   config :platform, PlatformWeb.Endpoint,
     http: [port: String.to_integer(System.get_env("PORT", "4000"))]

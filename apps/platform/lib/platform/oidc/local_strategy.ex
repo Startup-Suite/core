@@ -1,0 +1,40 @@
+defmodule Platform.OIDC.LocalStrategy do
+  @moduledoc """
+  Minimal OIDC strategy for local/dev and tests.
+
+  It avoids external discovery/token calls so local sandboxes can boot even when
+  no real OIDC issuer is configured.
+  """
+
+  def authorize_url(config) do
+    state = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+    nonce = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+
+    query =
+      URI.encode_query(%{
+        "client_id" => config[:client_id],
+        "nonce" => nonce,
+        "redirect_uri" => config[:redirect_uri],
+        "state" => state
+      })
+
+    {:ok,
+     %{
+       url: "https://issuer.example.com/authorize?" <> query,
+       session_params: %{state: state, nonce: nonce}
+     }}
+  end
+
+  def callback(_config, params) do
+    Application.get_env(:platform, :oidc_mock_response) ||
+      {:ok,
+       %{
+         user: %{
+           "sub" => params["sub"] || "test-subject",
+           "email" => params["email"] || "user@example.com",
+           "name" => params["name"] || "Test User"
+         },
+         token: %{"id_token" => "test-id-token"}
+       }}
+  end
+end
