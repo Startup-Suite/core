@@ -39,7 +39,6 @@ defmodule Platform.Execution.RunServer do
 
   require Logger
 
-  alias Platform.Context
   alias Platform.Context.EvictionPolicy
   alias Platform.Execution.{ContextSession, Run}
 
@@ -152,7 +151,7 @@ defmodule Platform.Execution.RunServer do
     end
   end
 
-  def handle_call({:transition, new_status}, _from, %State{run: run} = state) do
+  def handle_call({:transition, new_status}, _from, %State{run: %Run{} = run} = state) do
     if valid_transition?(run.status, new_status) do
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 

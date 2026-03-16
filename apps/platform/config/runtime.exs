@@ -33,6 +33,8 @@ if config_env() != :test do
       _ -> []
     end
 
+  default_dev_database = System.get_env("PLATFORM_DEV_DATABASE", "platform_dev")
+
   database_url =
     if config_env() == :prod do
       System.get_env("DATABASE_URL") ||
@@ -41,9 +43,40 @@ if config_env() != :test do
       System.get_env("DATABASE_URL")
     end
 
-  if database_url do
+  normalized_database_url =
+    case {database_url, config_env()} do
+      {nil, _} ->
+        nil
+
+      {"", _} ->
+        nil
+
+      {url, :prod} ->
+        url
+
+      {url, _} ->
+        uri = URI.parse(url)
+
+        if uri.path in [nil, "", "/"] do
+          %{uri | path: "/#{default_dev_database}"}
+          |> URI.to_string()
+        else
+          url
+        end
+    end
+
+  if normalized_database_url do
     config :platform, Platform.Repo,
-      url: database_url,
+      url: normalized_database_url,
+      pool_size: pool_size,
+      socket_options: socket_options
+  else
+    config :platform, Platform.Repo,
+      username: System.get_env("PGUSER", "postgres"),
+      password: System.get_env("PGPASSWORD", "postgres"),
+      hostname: System.get_env("PGHOST", "localhost"),
+      port: String.to_integer(System.get_env("PGPORT", "5432")),
+      database: default_dev_database,
       pool_size: pool_size,
       socket_options: socket_options
   end
@@ -54,10 +87,30 @@ if config_env() != :test do
   # See PlatformWeb.Plugs.RewriteRemoteIp for security notes.
   config :platform, :trust_proxy_headers, System.get_env("TRUST_PROXY_HEADERS") in ["true", "1"]
 
+  is_prod = config_env() == :prod
+
+  oidc_client_id =
+    case System.get_env("OIDC_CLIENT_ID") do
+      value when value in [nil, ""] -> if(is_prod, do: nil, else: "dev-client-id")
+      value -> value
+    end
+
+  oidc_client_secret =
+    case System.get_env("OIDC_CLIENT_SECRET") do
+      value when value in [nil, ""] -> if(is_prod, do: nil, else: "dev-client-secret")
+      value -> value
+    end
+
+  oidc_issuer =
+    case System.get_env("OIDC_ISSUER") do
+      value when value in [nil, ""] -> if(is_prod, do: nil, else: "https://issuer.example.com")
+      value -> value
+    end
+
   config :platform, :oidc,
-    client_id: System.get_env("OIDC_CLIENT_ID"),
-    client_secret: System.get_env("OIDC_CLIENT_SECRET"),
-    issuer: System.get_env("OIDC_ISSUER"),
+    client_id: oidc_client_id,
+    client_secret: oidc_client_secret,
+    issuer: oidc_issuer,
     app_url: app_url,
     # PKCE (RFC 7636): set OIDC_PKCE_ENABLED=true when the provider enforces it.
     # Defaults to false for compatibility with providers that don't support PKCE.
