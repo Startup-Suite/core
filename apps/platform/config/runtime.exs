@@ -68,10 +68,32 @@ if config_env() != :test do
 end
 
 # Agent workspace (sign-of-life — will be replaced by full agent runtime)
+proof_of_life_run_root =
+  System.get_env("PROOF_OF_LIFE_RUN_ROOT") ||
+    System.get_env("LOCAL_RUN_ROOT") ||
+    "/data/platform/execution-runs"
+
 config :platform,
   agent_workspace_path: System.get_env("AGENT_WORKSPACE_PATH", "/data/agents/zip/workspace"),
   anthropic_api_key: System.get_env("ANTHROPIC_API_KEY"),
   chat_attachments_root: System.get_env("CHAT_ATTACHMENTS_ROOT", "/data/platform/chat_uploads")
+
+config :platform, :execution,
+  local_run_root: proof_of_life_run_root,
+  github_credentials: [
+    token: System.get_env("GITHUB_TOKEN"),
+    author_name: System.get_env("GIT_AUTHOR_NAME"),
+    author_email: System.get_env("GIT_AUTHOR_EMAIL")
+  ]
+
+config :platform, :proof_of_life,
+  repo_path: System.get_env("PROOF_OF_LIFE_REPO_PATH"),
+  repo_slug: System.get_env("PROOF_OF_LIFE_REPO_SLUG"),
+  remote: System.get_env("PROOF_OF_LIFE_REMOTE", "origin"),
+  base_ref: System.get_env("PROOF_OF_LIFE_BASE_REF", "origin/main"),
+  run_root: proof_of_life_run_root,
+  author_name: System.get_env("GIT_AUTHOR_NAME", "Suite Runner"),
+  author_email: System.get_env("GIT_AUTHOR_EMAIL", "runner@suite.local")
 
 if config_env() == :prod do
   secret_key_base =
