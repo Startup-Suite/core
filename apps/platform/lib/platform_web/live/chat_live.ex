@@ -779,7 +779,10 @@ defmodule PlatformWeb.ChatLive do
               </button>
 
               <div class="flex items-center gap-1.5">
-                <span class={["inline-block size-2 rounded-full", agent_presence_dot_class(@agent_presence)]}>
+                <span class={[
+                  "inline-block size-2 rounded-full",
+                  agent_presence_dot_class(@agent_presence)
+                ]}>
                 </span>
                 <span>{agent_presence_label(@agent_presence)}</span>
               </div>
