@@ -130,6 +130,56 @@ defmodule PlatformWeb.ChatLiveTest do
     refute html =~ "Zip online"
   end
 
+  test "chat boots the first configured workspace agent when no main agent exists", %{conn: conn} do
+    conn = authenticated_conn(conn)
+
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "platform-chat-live-default-agent-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir_p!(workspace)
+
+    previous_workspace = Application.get_env(:platform, :agent_workspace_path)
+
+    on_exit(fn ->
+      AgentServer.stop_agent("zip")
+      AgentServer.stop_agent("sidecar")
+      File.rm_rf(workspace)
+      Application.put_env(:platform, :agent_workspace_path, previous_workspace)
+    end)
+
+    File.write!(
+      Path.join(workspace, "openclaw.json"),
+      Jason.encode!(%{
+        "agents" => %{
+          "list" => [
+            %{
+              "id" => "zip",
+              "name" => "Zip",
+              "model" => %{"primary" => "anthropic/claude-sonnet-4-6"}
+            },
+            %{
+              "id" => "sidecar",
+              "name" => "Sidecar",
+              "model" => %{"primary" => "openai/gpt-4.1"}
+            }
+          ]
+        }
+      })
+    )
+
+    File.write!(Path.join(workspace, "SOUL.md"), "steady")
+    Application.put_env(:platform, :agent_workspace_path, workspace)
+
+    {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+    assert html =~ "Agent online"
+    assert is_pid(AgentServer.whereis("zip"))
+    assert AgentServer.whereis("sidecar") == nil
+  end
+
   describe "search" do
     test "searching messages shows ranked results with highlighted matches", %{conn: conn} do
       conn = authenticated_conn(conn)

@@ -5,6 +5,7 @@ defmodule PlatformWeb.ShellLive do
   import Phoenix.LiveView
 
   alias Platform.Accounts
+  alias Platform.Agents.WorkspaceBootstrap
 
   def on_mount(:default, _params, session, socket) do
     current_user =
@@ -26,7 +27,7 @@ defmodule PlatformWeb.ShellLive do
       socket
       |> assign(:current_user, current_user)
       |> assign(:current_path, "/")
-      |> assign(:agent_status, :unknown)
+      |> assign(:agent_status, default_agent_status())
       |> assign(:drawer_open, false)
       |> assign(:active_module, active_module)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
@@ -45,6 +46,23 @@ defmodule PlatformWeb.ShellLive do
       end)
 
     {:cont, socket}
+  end
+
+  def default_agent_status do
+    case WorkspaceBootstrap.boot() do
+      {:ok, %{reachable?: true}} ->
+        :online
+
+      {:ok, %{configured?: true}} ->
+        :offline
+
+      {:error, _reason} ->
+        case WorkspaceBootstrap.status() do
+          %{reachable?: true} -> :online
+          %{configured?: true} -> :offline
+          _ -> :unknown
+        end
+    end
   end
 
   # Derive a human-readable module name from the LiveView module atom.

@@ -123,5 +123,42 @@ defmodule Platform.Agents.WorkspaceBootstrapTest do
       assert %{configured?: true, reachable?: true, agent_slug: "main", agent_name: "Main"} =
                WorkspaceBootstrap.status(workspace_path: workspace)
     end
+
+    test "falls back to the first configured agent when no explicit default exists" do
+      workspace = tmp_workspace!("status-first-configured")
+
+      File.write!(
+        Path.join(workspace, "openclaw.json"),
+        Jason.encode!(%{
+          "agents" => %{
+            "list" => [
+              %{
+                "id" => "zip",
+                "name" => "Zip",
+                "model" => %{"primary" => "anthropic/claude-sonnet-4-6"}
+              },
+              %{
+                "id" => "sidecar",
+                "name" => "Sidecar",
+                "model" => %{"primary" => "openai/gpt-4.1"}
+              }
+            ]
+          }
+        })
+      )
+
+      File.write!(Path.join(workspace, "SOUL.md"), "steady")
+
+      assert %{configured?: true, agent_slug: "zip", agent_name: "Zip"} =
+               WorkspaceBootstrap.status(workspace_path: workspace)
+
+      assert {:ok, status} = WorkspaceBootstrap.boot(workspace_path: workspace)
+      assert status.agent.slug == "zip"
+      assert status.reachable?
+
+      on_exit(fn ->
+        AgentServer.stop_agent(status.pid)
+      end)
+    end
   end
 end
