@@ -8,8 +8,8 @@ defmodule Platform.Execution.ProofRunTest do
   """
   use ExUnit.Case, async: false
 
-  alias Platform.Execution.{ProofRun, LocalWorkspace, Run}
-  alias Platform.{Context, Execution}
+  alias Platform.Execution.ProofRun
+  alias Platform.Execution
 
   # ---------------------------------------------------------------------------
   # Helpers
@@ -75,7 +75,7 @@ defmodule Platform.Execution.ProofRunTest do
       task_id = unique_task_id()
       root = temp_dir("proof-ws-only")
 
-      assert {:ok, result} = ProofRun.run(task_id, run_root: root)
+      assert {:ok, result} = ProofRun.run(task_id, run_root: root, repo_path: nil)
 
       # Run should be completed
       assert %{run: run, artifacts: artifacts, pushed: pushed} = result
@@ -103,7 +103,7 @@ defmodule Platform.Execution.ProofRunTest do
       task_id = unique_task_id()
       root = temp_dir("proof-inline")
 
-      {:ok, result} = ProofRun.run(task_id, run_root: root)
+      {:ok, result} = ProofRun.run(task_id, run_root: root, repo_path: nil)
 
       verify_art = Enum.find(result.artifacts, &(&1.name == "proof-of-life verification"))
       assert %{"type" => "inline", "content" => content} = verify_art.locator
@@ -114,7 +114,7 @@ defmodule Platform.Execution.ProofRunTest do
       task_id = unique_task_id()
       root = temp_dir("proof-meta")
 
-      {:ok, result} = ProofRun.run(task_id, run_root: root)
+      {:ok, result} = ProofRun.run(task_id, run_root: root, repo_path: nil)
 
       verify_art = Enum.find(result.artifacts, &(&1.name == "proof-of-life verification"))
       assert %{"step" => "git_status"} = verify_art.metadata
