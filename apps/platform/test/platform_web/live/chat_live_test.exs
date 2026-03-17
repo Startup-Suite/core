@@ -3,7 +3,7 @@ defmodule PlatformWeb.ChatLiveTest do
   import Phoenix.LiveViewTest
 
   alias Platform.Accounts.User
-  alias Platform.Agents.AgentServer
+  alias Platform.Agents.{Agent, AgentServer}
   alias Platform.Chat
   alias Platform.Repo
 
@@ -178,6 +178,37 @@ defmodule PlatformWeb.ChatLiveTest do
     assert html =~ "Agent online"
     assert is_pid(AgentServer.whereis("zip"))
     assert AgentServer.whereis("sidecar") == nil
+  end
+
+  test "chat falls back to persisted main agent when workspace bootstrap is unavailable", %{
+    conn: conn
+  } do
+    conn = authenticated_conn(conn)
+
+    previous_workspace = Application.get_env(:platform, :agent_workspace_path)
+    Application.put_env(:platform, :agent_workspace_path, "/tmp/does-not-exist/platform-agent")
+
+    {:ok, agent} =
+      %Agent{}
+      |> Agent.changeset(%{
+        slug: "main",
+        name: "Zip",
+        status: "active",
+        max_concurrent: 1,
+        sandbox_mode: "off",
+        model_config: %{"primary" => "anthropic/claude-sonnet-4-6"}
+      })
+      |> Repo.insert()
+
+    on_exit(fn ->
+      AgentServer.stop_agent(agent)
+      Application.put_env(:platform, :agent_workspace_path, previous_workspace)
+    end)
+
+    {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+    assert html =~ "Agent online"
+    assert is_pid(AgentServer.whereis(agent.id))
   end
 
   describe "search" do

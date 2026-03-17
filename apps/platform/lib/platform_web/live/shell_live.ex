@@ -1,11 +1,13 @@
 defmodule PlatformWeb.ShellLive do
   @moduledoc "Mount hook that injects shell assigns for all authenticated surfaces."
 
+  import Ecto.Query
   import Phoenix.Component
   import Phoenix.LiveView
 
   alias Platform.Accounts
-  alias Platform.Agents.WorkspaceBootstrap
+  alias Platform.Agents.{Agent, AgentServer, WorkspaceBootstrap}
+  alias Platform.Repo
 
   def on_mount(:default, _params, session, socket) do
     current_user =
@@ -57,12 +59,34 @@ defmodule PlatformWeb.ShellLive do
         :offline
 
       {:error, _reason} ->
-        case WorkspaceBootstrap.status() do
-          %{reachable?: true} -> :online
-          %{configured?: true} -> :offline
-          _ -> :unknown
-        end
+        fallback_default_agent_status()
     end
+  end
+
+  defp fallback_default_agent_status do
+    case default_persisted_agent() do
+      %Agent{} = agent ->
+        case AgentServer.start_agent(agent) do
+          {:ok, pid} when is_pid(pid) ->
+            :online
+
+          {:error, _reason} ->
+            if agent.status == "paused", do: :paused, else: :offline
+        end
+
+      nil ->
+        :unknown
+    end
+  end
+
+  defp default_persisted_agent do
+    from(a in Agent,
+      where: a.slug == "main" and a.status != "archived",
+      limit: 1
+    )
+    |> Repo.one()
+  rescue
+    _ -> nil
   end
 
   # Derive a human-readable module name from the LiveView module atom.
