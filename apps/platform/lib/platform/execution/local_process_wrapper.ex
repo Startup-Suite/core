@@ -215,7 +215,8 @@ defmodule Platform.Execution.LocalProcessWrapper do
     })
   end
 
-  defp schedule_ack_poll(%__MODULE__{ack_version: version} = state) when is_integer(version) and version > 0 do
+  defp schedule_ack_poll(%__MODULE__{ack_version: version} = state)
+       when is_integer(version) and version > 0 do
     if state.ack_poll_timer do
       state
     else

@@ -397,7 +397,10 @@ defmodule Platform.Execution.RunServer do
     %State{state | dead_timer: nil}
   end
 
-  defp maybe_broadcast_ctx_status(%Run{ctx_status: old_status}, %Run{ctx_status: new_status} = run)
+  defp maybe_broadcast_ctx_status(
+         %Run{ctx_status: old_status},
+         %Run{ctx_status: new_status} = run
+       )
        when old_status != new_status do
     broadcast_ctx_status(run)
   end

@@ -459,7 +459,15 @@ defmodule Platform.Tasks.ProofOfLife do
 
   defp execution_mode(config) do
     case Keyword.get(config, :mode, :scripted) do
-      mode when mode in [:scripted, :claude_cli, :codex_exec, :docker_scripted, :docker_claude_cli, :docker_codex_exec] ->
+      mode
+      when mode in [
+             :scripted,
+             :claude_cli,
+             :codex_exec,
+             :docker_scripted,
+             :docker_claude_cli,
+             :docker_codex_exec
+           ] ->
         mode
 
       mode when is_binary(mode) ->
@@ -508,10 +516,14 @@ defmodule Platform.Tasks.ProofOfLife do
   defp validate_mode(_config, :docker_scripted), do: :ok
   defp validate_mode(_config, :scripted), do: :ok
 
-  defp runner_module(mode) when mode in [:docker_scripted, :docker_claude_cli, :docker_codex_exec], do: DockerRunner
+  defp runner_module(mode)
+       when mode in [:docker_scripted, :docker_claude_cli, :docker_codex_exec], do: DockerRunner
+
   defp runner_module(_mode), do: LocalRunner
 
-  defp runner_type(mode) when mode in [:docker_scripted, :docker_claude_cli, :docker_codex_exec], do: :docker
+  defp runner_type(mode) when mode in [:docker_scripted, :docker_claude_cli, :docker_codex_exec],
+    do: :docker
+
   defp runner_type(_mode), do: :local
 
   defp spawn_run_provider(run, LocalRunner, config, mode, lease, branch, context_version) do
@@ -559,7 +571,8 @@ defmodule Platform.Tasks.ProofOfLife do
     |> Enum.join("\n")
   end
 
-  defp proof_command(run, branch, context_version, config, mode) when mode in [:claude_cli, :docker_claude_cli] do
+  defp proof_command(run, branch, context_version, config, mode)
+       when mode in [:claude_cli, :docker_claude_cli] do
     prompt_path = "../proof-of-life-prompt.txt"
     output_path = "../agent-output.txt"
     claude = shell_escape(Keyword.get(config, :claude_command, "claude"))
@@ -579,7 +592,8 @@ defmodule Platform.Tasks.ProofOfLife do
     |> Enum.join("\n")
   end
 
-  defp proof_command(run, branch, context_version, config, mode) when mode in [:codex_exec, :docker_codex_exec] do
+  defp proof_command(run, branch, context_version, config, mode)
+       when mode in [:codex_exec, :docker_codex_exec] do
     prompt_path = "../proof-of-life-prompt.txt"
     output_path = "../agent-output.txt"
     codex = shell_escape(Keyword.get(config, :codex_command, "codex"))
