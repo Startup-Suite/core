@@ -136,6 +136,19 @@ defmodule PlatformWeb.ControlCenterLiveTest do
     assert html =~ "Stopped runtime"
   end
 
+  test "shell indicator reflects the default workspace runtime on /control", %{conn: conn} do
+    configure_workspace!(%{}, [{"main", "Main"}])
+    main = create_agent(%{slug: "main", name: "Main"})
+    {:ok, _pid} = AgentServer.start_agent(main)
+    on_exit(fn -> AgentServer.stop_agent(main) end)
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/control")
+
+    assert html =~ "Agent online"
+    refute html =~ "Agent unknown"
+  end
+
   test "saving a workspace file persists through MemoryContext", %{conn: conn} do
     agent = create_agent()
     {:ok, _} = MemoryContext.upsert_workspace_file(agent.id, "SOUL.md", "steady")
