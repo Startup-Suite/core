@@ -688,12 +688,10 @@ defmodule PlatformWeb.ControlCenterLive do
         </nav>
       </aside>
 
-      <main
-        class={[
-          "min-h-0 flex-1 overflow-y-auto",
-          is_nil(@selected_agent) && "hidden lg:block"
-        ]}
-      >
+      <main class={[
+        "min-h-0 flex-1 overflow-y-auto",
+        is_nil(@selected_agent) && "hidden lg:block"
+      ]}>
         <div
           :if={@selected_agent}
           class="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-4 sm:px-6 sm:py-6"

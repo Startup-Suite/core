@@ -778,7 +778,6 @@ defmodule PlatformWeb.ChatLive do
                 <span>📌</span>
                 <span>{length(@pins)} pinned</span>
               </button>
-
             </div>
           </header>
 
