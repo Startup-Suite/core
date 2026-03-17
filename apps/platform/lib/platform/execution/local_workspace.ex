@@ -96,7 +96,8 @@ defmodule Platform.Execution.LocalWorkspace do
             if String.contains?(trimmed, "already exists") or
                  String.contains?(trimmed, "already used by worktree") do
               if String.contains?(trimmed, "already used by worktree") do
-                _ = System.cmd("git", ["worktree", "prune"], cd: repo_path, stderr_to_stdout: true)
+                _ =
+                  System.cmd("git", ["worktree", "prune"], cd: repo_path, stderr_to_stdout: true)
               end
 
               case System.cmd(
@@ -114,7 +115,11 @@ defmodule Platform.Execution.LocalWorkspace do
                   trimmed2 = String.trim(output2)
 
                   if String.contains?(trimmed2, "already used by worktree") do
-                    _ = System.cmd("git", ["worktree", "prune"], cd: repo_path, stderr_to_stdout: true)
+                    _ =
+                      System.cmd("git", ["worktree", "prune"],
+                        cd: repo_path,
+                        stderr_to_stdout: true
+                      )
 
                     case System.cmd(
                            "git",
@@ -252,7 +257,6 @@ defmodule Platform.Execution.LocalWorkspace do
     |> Path.expand()
   end
 
-
   defp normalize_worktree_git_permissions(worktree_path, branch) do
     git_pointer = Path.join(worktree_path, ".git")
 
@@ -304,6 +308,7 @@ defmodule Platform.Execution.LocalWorkspace do
         :ok
     end
   end
+
   defp parse_gitdir(pointer) when is_binary(pointer) do
     pointer
     |> String.trim()
