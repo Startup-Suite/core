@@ -145,7 +145,34 @@ if (typeof navigator.modelContext !== "undefined") {
     }
   });
 
-  console.log("[WebMCP] Suite tools registered:", ["send_message", "navigate_space", "get_page_state", "search_messages", "create_canvas"].join(", "));
+  navigator.modelContext.registerTool({
+    name: "list_spaces",
+    description: "List all available chat spaces/channels visible in the sidebar",
+    input: { type: "object", properties: {} },
+    async execute() {
+      const links = document.querySelectorAll("nav a[href^='/chat/']");
+      const spaces = Array.from(links).map(a => {
+        const slug = a.getAttribute("href").replace("/chat/", "");
+        const name = a.textContent.trim().replace(/^#\s*/, "");
+        return { slug, name };
+      });
+      return { content: [{ type: "text", text: JSON.stringify(spaces) }] };
+    }
+  });
+
+  navigator.modelContext.registerTool({
+    name: "toggle_thread",
+    description: "Open a thread panel for a specific message by clicking its thread button",
+    input: { type: "object", properties: { messageId: { type: "string", description: "The message ID to open the thread for" } }, required: ["messageId"] },
+    async execute({ messageId }) {
+      const btn = document.querySelector(`[phx-click="open_thread"][phx-value-message-id="${messageId}"]`);
+      if (!btn) return { content: [{ type: "text", text: `Thread button not found for message ${messageId}` }] };
+      btn.click();
+      return { content: [{ type: "text", text: `Thread opened for message ${messageId}` }] };
+    }
+  });
+
+  console.log("[WebMCP] Suite tools registered:", ["send_message", "navigate_space", "get_page_state", "search_messages", "create_canvas", "list_spaces", "toggle_thread"].join(", "));
 }
 
 // The lines below enable quality of life phoenix_live_reload

@@ -1,5 +1,5 @@
 const CACHE_NAME = "suite-v1";
-const STATIC_ASSETS = ["/", "/assets/app.js", "/assets/app.css"];
+const STATIC_ASSETS = ["/"];
 
 self.addEventListener("install", event => {
   event.waitUntil(
