@@ -1119,21 +1119,15 @@ defmodule PlatformWeb.ChatLive do
                         {message_canvas_type(msg, @canvases_by_message_id)} live canvas
                       </p>
                     </div>
-
-                    <button
-                      type="button"
-                      phx-click="open_canvas"
-                      phx-value-canvas-id={message_canvas_id(msg, @canvases_by_message_id)}
-                      class="btn btn-ghost btn-sm"
-                      disabled={is_nil(message_canvas_id(msg, @canvases_by_message_id))}
-                    >
-                      Open
-                    </button>
                   </div>
 
                   <p :if={present?(msg.content)} class="mt-2 text-sm leading-6 text-base-content/70">
                     {msg.content}
                   </p>
+                  <%!-- Inline canvas render for mobile and all viewports --%>
+                  <div :if={Map.get(@canvases_by_message_id, msg.id)} class="mt-3">
+                    <.canvas canvas={Map.get(@canvases_by_message_id, msg.id)} />
+                  </div>
                 </div>
 
                 <p
@@ -1831,9 +1825,9 @@ defmodule PlatformWeb.ChatLive do
     |> Enum.reverse()
   end
 
-  attr :id, :string, required: true
-  attr :timestamp, :any, default: nil
-  attr :class, :string, default: nil
+  attr(:id, :string, required: true)
+  attr(:timestamp, :any, default: nil)
+  attr(:class, :string, default: nil)
 
   defp local_time(assigns) do
     ~H"""
