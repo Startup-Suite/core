@@ -227,6 +227,17 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  def handle_event("push_subscribed", %{"endpoint" => endpoint, "keys" => keys}, socket) do
+    if participant = socket.assigns[:current_participant] do
+      Platform.Push.subscribe(participant.id, %{
+        endpoint: endpoint,
+        keys: %{p256dh: keys["p256dh"], auth: keys["auth"]}
+      })
+    end
+
+    {:noreply, socket}
+  end
+
   def handle_event("send_message", %{"compose" => %{"text" => content}}, socket) do
     with space when not is_nil(space) <- socket.assigns.active_space,
          participant when not is_nil(participant) <- socket.assigns.current_participant do
@@ -630,6 +641,7 @@ defmodule PlatformWeb.ChatLive do
   @impl true
   def render(assigns) do
     ~H"""
+    <div id="push-subscribe" phx-hook="PushSubscribe" class="hidden"></div>
     <div class="flex h-full overflow-hidden">
       <%!-- Desktop channel sidebar (hidden on mobile) --%>
       <aside class="hidden lg:flex w-52 flex-shrink-0 flex-col border-r border-base-300 bg-base-200">
