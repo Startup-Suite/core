@@ -158,11 +158,11 @@ defmodule Platform.Agents.ToolRunner do
   end
 
   defp get_credentials(opts) do
-    auth_opts =
-      case Keyword.get(opts, :codex_auth_path) do
-        nil -> []
-        path -> [path: path]
-      end
+    path =
+      Keyword.get(opts, :codex_auth_path) ||
+        Application.get_env(:platform, :codex_auth_file)
+
+    auth_opts = if path, do: [path: path], else: []
 
     CodexAuth.credentials(auth_opts)
   end
@@ -178,7 +178,7 @@ defmodule Platform.Agents.ToolRunner do
 
     provider_opts = build_provider_opts(system_prompt, opts)
 
-    case Codex.chat(credentials, messages, provider_opts) do
+    case provider_module().chat(credentials, messages, provider_opts) do
       {:ok, response} ->
         tool_calls = Map.get(response, :tool_calls, [])
 
@@ -222,9 +222,14 @@ defmodule Platform.Agents.ToolRunner do
   end
 
   defp build_provider_opts(system_prompt, opts) do
+    model =
+      Keyword.get(opts, :model) ||
+        Application.get_env(:platform, :chat_agent_model) ||
+        "gpt-5.4"
+
     [
       system: system_prompt,
-      model: Keyword.get(opts, :model),
+      model: model,
       max_tokens: Keyword.get(opts, :max_tokens, 2048),
       tools: Keyword.get(opts, :tools, tool_definitions()),
       session_id: Keyword.get(opts, :session_id)
@@ -394,4 +399,8 @@ defmodule Platform.Agents.ToolRunner do
     do: Map.put(attrs, "initial_state", state)
 
   defp maybe_put_initial_state(attrs, _), do: attrs
+
+  defp provider_module do
+    Application.get_env(:platform, :quick_agent_provider_module, Codex)
+  end
 end
