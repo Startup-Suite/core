@@ -769,6 +769,7 @@ defmodule PlatformWeb.ChatLive do
               </.form>
 
               <button
+                :if={@canvases != []}
                 phx-click="toggle_canvases_panel"
                 class={[
                   "flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors hover:bg-base-300",
@@ -997,9 +998,10 @@ defmodule PlatformWeb.ChatLive do
                 @current_participant && msg.participant_id == @current_participant.id &&
                   "bg-base-200/60"
               ]}
+              data-participant-id={msg.participant_id}
             >
-              <%!-- Avatar circle --%>
-              <div class="flex-shrink-0 mt-0.5">
+              <%!-- Avatar circle (hidden when grouped with previous message via JS) --%>
+              <div class="flex-shrink-0 mt-0.5 message-avatar">
                 <div class="w-8 h-8 rounded-full bg-primary text-primary-content flex items-center justify-center text-sm font-bold select-none">
                   {avatar_initial(@participants_map, msg.participant_id)}
                 </div>
@@ -1007,7 +1009,7 @@ defmodule PlatformWeb.ChatLive do
 
               <%!-- Message body --%>
               <div class="flex-1 min-w-0">
-                <div class="flex items-baseline gap-2">
+                <div class="flex items-baseline gap-2 message-header">
                   <span class="text-sm font-bold text-base-content">
                     {sender_name(@participants_map, msg.participant_id)}
                   </span>
@@ -1162,7 +1164,7 @@ defmodule PlatformWeb.ChatLive do
                   <.live_file_input upload={@uploads.attachments} class="hidden" />
                 </label>
 
-                <div class="flex-1 relative">
+                <div class="flex-1 relative pb-10">
                   <textarea
                     name="compose[text]"
                     id={@compose_form[:text].id}
