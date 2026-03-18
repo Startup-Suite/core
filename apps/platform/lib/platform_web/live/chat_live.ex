@@ -267,6 +267,10 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  def handle_event("open_reaction_picker", _params, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("react", %{"message_id" => msg_id, "emoji" => emoji}, socket) do
     with participant when not is_nil(participant) <- socket.assigns.current_participant do
       groups = Map.get(socket.assigns.reactions_map, msg_id, [])
@@ -999,6 +1003,7 @@ defmodule PlatformWeb.ChatLive do
                   "bg-base-200/60"
               ]}
               data-participant-id={msg.participant_id}
+              data-date={msg.inserted_at && DateTime.to_date(msg.inserted_at) |> Date.to_iso8601()}
             >
               <%!-- Avatar circle (hidden when grouped with previous message via JS) --%>
               <div class="flex-shrink-0 mt-0.5 message-avatar">
@@ -1127,6 +1132,14 @@ defmodule PlatformWeb.ChatLive do
                     <span>{r.emoji}</span>
                     <span>{r.count}</span>
                   </button>
+
+                  <button
+                    class="flex items-center gap-1 rounded-full border border-dashed border-base-300 px-2 py-0.5 text-xs text-base-content/40 hover:bg-base-300 hover:text-base-content transition-colors opacity-0 group-hover:opacity-100"
+                    phx-click="open_reaction_picker"
+                    phx-value-message-id={msg.id}
+                  >
+                    <span>+</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1172,8 +1185,7 @@ defmodule PlatformWeb.ChatLive do
                     placeholder={"Message ##{(@active_space && @active_space.name) || ""}"}
                     autocomplete="off"
                     class="textarea textarea-bordered w-full resize-none rounded-xl pr-12 text-sm leading-relaxed"
-                    phx-keydown={JS.dispatch("submit", to: "#compose-form")}
-                    phx-key="Enter"
+                    phx-hook="ComposeInput"
                   >{Phoenix.HTML.Form.normalize_value("textarea", @compose_form[:text].value)}</textarea>
                   <button
                     type="submit"
@@ -2018,4 +2030,19 @@ defmodule PlatformWeb.ChatLive do
   end
 
   defp format_timestamp(_), do: ""
+
+  defp format_message_date(nil), do: ""
+
+  defp format_message_date(%DateTime{} = dt) do
+    today = Date.utc_today()
+    msg_date = DateTime.to_date(dt)
+
+    cond do
+      msg_date == today -> "Today"
+      msg_date == Date.add(today, -1) -> "Yesterday"
+      true -> Calendar.strftime(dt, "%a, %b %-d")
+    end
+  end
+
+  defp format_message_date(_), do: ""
 end
