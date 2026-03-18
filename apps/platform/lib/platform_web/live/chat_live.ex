@@ -983,7 +983,7 @@ defmodule PlatformWeb.ChatLive do
 
           <div
             id="message-list"
-            class="flex-1 overflow-y-auto px-5 py-4 space-y-1"
+            class="flex-1 overflow-y-auto px-5 py-4 flex flex-col justify-end space-y-1"
             phx-update="stream"
             phx-hook="ScrollToBottom"
           >
