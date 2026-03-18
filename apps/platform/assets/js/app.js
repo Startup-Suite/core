@@ -53,6 +53,101 @@ if ("serviceWorker" in navigator) {
     .catch(err => console.warn("SW registration failed", err));
 }
 
+// ── WebMCP tool registration (Chrome 146+ with flag enabled) ──────────────
+if (typeof navigator.modelContext !== "undefined") {
+  navigator.modelContext.registerTool({
+    name: "send_message",
+    description: "Send a chat message in the currently active Suite chat space. The message will appear from the authenticated user.",
+    input: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          description: "The message content to send"
+        }
+      },
+      required: ["text"]
+    },
+    async execute({ text }) {
+      const input = document.querySelector("#compose-form input[type='text'], #compose-form textarea");
+      const form = document.getElementById("compose-form");
+      if (!input || !form) {
+        return { content: [{ type: "text", text: "Error: chat compose form not found on this page" }] };
+      }
+      // Set value and dispatch input event so LiveView picks it up
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeInputValueSetter.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      // Submit the form
+      await new Promise(r => setTimeout(r, 50));
+      form.dispatchEvent(new Event("submit", { bubbles: true }));
+      return { content: [{ type: "text", text: `Message sent: "${text}"` }] };
+    }
+  });
+
+  navigator.modelContext.registerTool({
+    name: "navigate_space",
+    description: "Navigate to a different chat space/channel by clicking its link in the sidebar",
+    input: { type: "object", properties: { slug: { type: "string", description: "The space slug to navigate to (e.g. 'general')" } }, required: ["slug"] },
+    async execute({ slug }) {
+      const link = document.querySelector(`a[href="/chat/${slug}"]`);
+      if (!link) return { content: [{ type: "text", text: `Space "${slug}" not found in sidebar` }] };
+      link.click();
+      return { content: [{ type: "text", text: `Navigated to #${slug}` }] };
+    }
+  });
+
+  navigator.modelContext.registerTool({
+    name: "get_page_state",
+    description: "Get the current page state: active space, message count, participant info",
+    input: { type: "object", properties: {} },
+    async execute() {
+      const space = document.querySelector("header .truncate.font-semibold")?.textContent?.trim() || "unknown";
+      const messages = document.querySelectorAll("[id^='messages-']").length;
+      const compose = !!document.getElementById("compose-form");
+      return { content: [{ type: "text", text: JSON.stringify({ space, messageCount: messages, composeAvailable: compose, url: window.location.href }) }] };
+    }
+  });
+
+  navigator.modelContext.registerTool({
+    name: "search_messages",
+    description: "Search chat messages using the search bar",
+    input: { type: "object", properties: { query: { type: "string", description: "Search query" } }, required: ["query"] },
+    async execute({ query }) {
+      const input = document.querySelector("#chat-search-form input[type='text']");
+      if (!input) return { content: [{ type: "text", text: "Search input not found" }] };
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeSet.call(input, query);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 500));
+      const results = document.querySelectorAll("[phx-click='open_search_result']").length;
+      return { content: [{ type: "text", text: JSON.stringify({ query, resultCount: results }) }] };
+    }
+  });
+
+  navigator.modelContext.registerTool({
+    name: "create_canvas",
+    description: "Create a new live canvas in the current chat space",
+    input: { type: "object", properties: { title: { type: "string", description: "Canvas title" }, type: { type: "string", description: "Canvas type: table, form, code, diagram, dashboard, custom", enum: ["table", "form", "code", "diagram", "dashboard", "custom"] } }, required: ["title", "type"] },
+    async execute({ title, type }) {
+      const titleInput = document.querySelector("input[name='canvas[title]']");
+      const typeSelect = document.querySelector("select[name='canvas[canvas_type]']");
+      const form = titleInput?.closest("form");
+      if (!titleInput || !typeSelect || !form) return { content: [{ type: "text", text: "Canvas creation form not found. Open the canvases panel first." }] };
+      const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      nativeSet.call(titleInput, title);
+      titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+      typeSelect.value = type;
+      typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise(r => setTimeout(r, 100));
+      form.dispatchEvent(new Event("submit", { bubbles: true }));
+      return { content: [{ type: "text", text: `Canvas "${title}" (${type}) creation submitted` }] };
+    }
+  });
+
+  console.log("[WebMCP] Suite tools registered:", ["send_message", "navigate_space", "get_page_state", "search_messages", "create_canvas"].join(", "));
+}
+
 // The lines below enable quality of life phoenix_live_reload
 // development features:
 //

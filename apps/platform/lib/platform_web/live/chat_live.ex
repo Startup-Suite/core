@@ -35,7 +35,7 @@ defmodule PlatformWeb.ChatLive do
   @max_upload_entries 5
   @max_upload_size 15_000_000
   @canvas_types ~w(table form code diagram dashboard custom)
-  @agent_presence_refresh_ms 5_000
+  @agent_presence_refresh_ms 30_000
 
   @impl true
   def mount(_params, session, socket) do
@@ -985,6 +985,7 @@ defmodule PlatformWeb.ChatLive do
             id="message-list"
             class="flex-1 overflow-y-auto px-5 py-4 space-y-3"
             phx-update="stream"
+            phx-hook="ScrollToBottom"
           >
             <div
               :for={{dom_id, msg} <- @streams.messages}
