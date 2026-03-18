@@ -1890,14 +1890,26 @@ defmodule PlatformWeb.ChatLive do
   end
 
   defp ensure_native_agent_presence(space_id) do
-    with {:ok, status} <- WorkspaceBootstrap.boot(),
-         %{} = agent <- status.agent do
-      allow_runtime_sandbox(status.pid)
-      _ = Chat.ensure_agent_participant(space_id, agent, display_name: agent.name)
-      ChatPresence.native_agent_presence(space_id)
-    else
-      _ -> ChatPresence.native_agent_presence(space_id)
+    # Use non-blocking status() for initial render, then boot async
+    status = WorkspaceBootstrap.status()
+
+    case status do
+      %{configured?: true, agent: %{} = agent} ->
+        _ = Chat.ensure_agent_participant(space_id, agent, display_name: agent.name)
+
+        if status.pid, do: allow_runtime_sandbox(status.pid)
+
+        # Boot the runtime asynchronously if not already running
+        unless status.reachable? do
+          Task.start(fn -> WorkspaceBootstrap.boot() end)
+        end
+
+      _ ->
+        # Attempt async boot in background
+        Task.start(fn -> WorkspaceBootstrap.boot() end)
     end
+
+    ChatPresence.native_agent_presence(space_id)
   end
 
   defp schedule_agent_presence_refresh(socket) do
