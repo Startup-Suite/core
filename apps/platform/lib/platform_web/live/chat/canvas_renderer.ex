@@ -43,28 +43,9 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
     if canonical_document?(state) do
       ~H"""
-      <section
-        id={"canvas-doc-#{@canvas.id}"}
-        class="mt-2 overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm"
-      >
-        <header class="flex items-center justify-between border-b border-base-300 bg-base-200 px-4 py-2">
-          <div>
-            <p class="text-sm font-semibold text-base-content">
-              {@canvas.title || canvas_kind_label(@canvas.canvas_type)}
-            </p>
-            <p class="text-[11px] uppercase tracking-widest text-base-content/50">
-              {@canvas.canvas_type} canvas · rev {@canvas.state["revision"] || 1}
-            </p>
-          </div>
-          <span class="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
-            live
-          </span>
-        </header>
-
-        <div class="p-4">
-          <.render_node node={@canvas.state["root"]} />
-        </div>
-      </section>
+      <div id={"canvas-doc-#{@canvas.id}"} class="overflow-x-auto">
+        <.render_node node={@canvas.state["root"]} />
+      </div>
       """
     else
       ~H"""

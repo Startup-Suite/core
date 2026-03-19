@@ -1109,24 +1109,23 @@ defmodule PlatformWeb.ChatLive do
 
                 <div
                   :if={msg.content_type == "canvas"}
-                  class="mt-1 rounded-2xl border border-primary/20 bg-primary/5 p-3"
+                  class="mt-1"
                 >
-                  <div class="min-w-0 mb-2">
-                    <p class="truncate text-sm font-semibold text-base-content">
-                      {message_canvas_title(msg, @canvases_by_message_id)}
-                    </p>
-                    <p class="text-[11px] uppercase tracking-widest text-base-content/50">
-                      {message_canvas_type(msg, @canvases_by_message_id)} live canvas
-                    </p>
-                  </div>
-
                   <div :if={Map.get(@canvases_by_message_id, msg.id)} class="min-w-0 overflow-hidden">
                     <.canvas_document canvas={Map.get(@canvases_by_message_id, msg.id)} />
                   </div>
 
-                  <p :if={present?(msg.content)} class="mt-2 text-sm leading-6 text-base-content/70">
-                    {msg.content}
-                  </p>
+                  <div
+                    :if={is_nil(Map.get(@canvases_by_message_id, msg.id))}
+                    class="rounded-lg bg-base-200 px-3 py-2"
+                  >
+                    <p class="truncate text-sm font-semibold text-base-content">
+                      {message_canvas_title(msg, @canvases_by_message_id)}
+                    </p>
+                    <p class="text-[11px] uppercase tracking-widest text-base-content/50">
+                      {message_canvas_type(msg, @canvases_by_message_id)} canvas
+                    </p>
+                  </div>
                 </div>
 
                 <p
