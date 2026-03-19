@@ -3,6 +3,23 @@ const ComposeInput = {
   mounted() {
     this._lastMentionQuery = null;
 
+    // iOS zoom fix: reset viewport scale on blur to prevent stuck zoom
+    this.el.addEventListener("blur", () => {
+      if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+        // Small delay to let iOS finish its animation
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          // Force viewport reset
+          const viewport = document.querySelector('meta[name="viewport"]');
+          if (viewport) {
+            const content = viewport.getAttribute("content");
+            viewport.setAttribute("content", content + ", maximum-scale=1");
+            setTimeout(() => viewport.setAttribute("content", content), 50);
+          }
+        }, 100);
+      }
+    });
+
     this.el.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
