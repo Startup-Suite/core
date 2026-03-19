@@ -14,7 +14,8 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   - `row`      — horizontal flex container with optional `gap` prop
   - `card`     — bordered card with optional `title` prop
   - `text`     — plain text with optional `size`/`weight` props
-  - `markdown` — renders `content` prop as pre-formatted text (Mermaid-safe)
+  - `markdown` — renders `content` prop as pre-formatted text
+  - `mermaid`  — renders `source` prop as an interactive Mermaid diagram via client-side JS
   - `table`    — renders `columns` + `rows` props as an HTML table
   - `code`     — renders `source` prop inside `<pre><code>`
   - `badge`    — small rounded label from `value` prop
@@ -140,6 +141,23 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     ~H"""
     <div class="rounded-xl border border-base-300 bg-base-200 p-3">
       <pre class="whitespace-pre-wrap text-xs leading-5 text-base-content/80 font-mono">{@node["props"]["content"] || ""}</pre>
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "mermaid"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div
+      id={"mermaid-#{@node["id"]}"}
+      phx-hook="MermaidDiagram"
+      data-source={@node["props"]["source"] || ""}
+      class="rounded-xl border border-base-300 bg-base-100 p-3 overflow-x-auto"
+    >
+      <div class="mermaid-container flex items-center justify-center min-h-[100px]">
+        <span class="loading loading-spinner loading-sm text-base-content/30"></span>
+      </div>
     </div>
     """
   end
