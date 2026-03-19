@@ -1831,9 +1831,9 @@ defmodule PlatformWeb.ChatLive do
     |> Enum.reverse()
   end
 
-  attr :id, :string, required: true
-  attr :timestamp, :any, default: nil
-  attr :class, :string, default: nil
+  attr(:id, :string, required: true)
+  attr(:timestamp, :any, default: nil)
+  attr(:class, :string, default: nil)
 
   defp local_time(assigns) do
     ~H"""
