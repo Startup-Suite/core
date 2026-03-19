@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-03-13
-- **Owners:** Ryan, Zip
+- **Owners:** Team
 
 ## Context
 
