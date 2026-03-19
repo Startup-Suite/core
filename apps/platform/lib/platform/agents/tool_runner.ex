@@ -261,6 +261,8 @@ defmodule Platform.Agents.ToolRunner do
         {:error, _} -> %{}
       end
 
+    Logger.info("[ToolRunner] tool=#{name} args=#{inspect(args) |> String.slice(0, 500)}")
+
     output = run_tool(name, args, context)
 
     %{call_id: call_id, output: output}
