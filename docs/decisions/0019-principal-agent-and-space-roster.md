@@ -42,7 +42,9 @@ in that space.
   id: Ecto.UUID,
   space_id: Ecto.UUID,        # belongs_to Space
   agent_id: Ecto.UUID,        # belongs_to Agent (Platform.Agents.Agent)
-  role: :string,              # "principal" | "member"
+  role: :string,              # "principal" | "member" | "dismissed"
+  dismissed_by: Ecto.UUID,    # user_id who dismissed (nil if not dismissed)
+  dismissed_at: :utc_datetime_usec,
   inserted_at: :utc_datetime_usec,
   updated_at: :utc_datetime_usec
 }
@@ -52,8 +54,13 @@ in that space.
 - Exactly one `role: "principal"` per space (enforced at the application layer
   and by a partial unique index on `(space_id) WHERE role = 'principal'`).
 - Zero or many `role: "member"` entries per space.
+- Zero or many `role: "dismissed"` entries per space.
 - An agent can be principal in one space and member in another.
-- A space with no roster entries has no agent participation.
+- A space with no active roster entries has no agent participation.
+- Dismissing an agent preserves the roster row (soft state change, not delete).
+- Dismissed agents do not receive attention signals or count toward
+  composite status.
+- Re-inviting restores role to `"member"` and clears dismissed fields.
 
 ### 2. Attention Routing Rules
 
@@ -62,10 +69,11 @@ space's roster and the message content:
 
 | Message type | Routing |
 |---|---|
-| `@AgentName ...` | Direct delivery to the named agent, regardless of role. Agent must be in the space roster (principal or member). |
+| `@AgentName ...` (active) | Direct delivery to the named agent, regardless of role. Agent must be in roster as principal or member. |
 | `@AgentA @AgentB ...` | Deliver to both. Each agent receives the message independently. |
 | No @ mention | Deliver to the principal agent. If no principal is configured, no agent receives it. |
-| `@AgentName` where agent is not in roster | No delivery. Optionally: system hint "AgentName is not available in this space." |
+| `@AgentName` (dismissed) | **Re-invite:** restore agent to `member` role, deliver the message, post system message. The @-mention is both the re-invite gesture and the first message. |
+| `@AgentName` (not in roster) | No delivery. Optionally: system hint "AgentName is not available in this space." |
 
 **@ is an explicit address.** It always overrides the default routing. A user
 can talk directly to any rostered agent without going through the principal.
@@ -118,63 +126,174 @@ mechanisms but does not automatically route work to member agents.
 never to the principal. If CodeBot writes a code review, it shows as CodeBot's
 message. The principal doesn't ventriloquize.
 
-### 5. Presence UI
+### 5. Presence UI — Composite Health Indicator
+
+The presence dot is a **composite status indicator** that rolls up the health
+of the entire agent roster into a single signal. It's designed to surface
+problems — if anything in the roster needs attention, the dot tells you.
+
+#### Status priority (worst wins)
+
+Individual agent states, ordered by severity:
+
+| State | Color | Meaning |
+|---|---|---|
+| `error` | 🔴 Red | Agent is disconnected, crashed, or unresponsive |
+| `busy` | 🔵 Blue | Agent is actively working (executing a run/task) |
+| `active` | 🟢 Green | Agent is connected and responsive |
+| `idle` | 🟢 Dim green | Agent is connected but not engaged |
+| `dismissed` | ⚫ Hidden | Agent was removed from roster by user |
+
+The composite dot shows the **highest-severity state** across all rostered
+agents (excluding dismissed):
+
+| Roster state | Dot | Rationale |
+|---|---|---|
+| Any agent is `error` | 🔴 Red | Something is broken — entice the user to investigate |
+| No errors, any agent is `busy` | 🔵 Blue | Work is happening |
+| All agents `active`/`idle` | 🟢 Green | Everything healthy |
+| All agents `dismissed` or no roster | ⚫ None | No agents active |
+| Mix of `error` + `busy` | 🔴 Red | Error always wins — broken trumps busy |
+
+**The red dot is a call to action.** It says "open this to find out what's
+wrong." This is intentional — the user shouldn't have to check agent health
+proactively; the dot pulls them in.
 
 #### Top bar (shell)
 
-The principal agent's status is shown in the top bar as the space-level
-indicator:
-
 ```
 ┌─────────────────────────────────────────────────┐
-│  ⚡ Suite       [Zip ● active]         [Ryan]   │
+│  ⚡ Suite       [Zip 🔴]               [Ryan]   │
+│                  ↑ composite dot                 │
 └─────────────────────────────────────────────────┘
 ```
 
-Status states:
-- `● active` — agent is connected and responsive (green)
-- `● busy` — agent is processing / in a run (amber)
-- `● idle` — agent is connected but not engaged (dim green)
-- `○ offline` — agent runtime is disconnected (gray)
+The label shows the principal agent's name. The dot reflects the worst state
+across the entire roster.
+
+Examples:
+- Zip active, CodeBot active → `[Zip 🟢]`
+- Zip active, CodeBot error → `[Zip 🔴]` (error wins)
+- Zip active, Deployer busy → `[Zip 🔵]` (busy wins over idle/active)
+- Zip active, CodeBot busy, Reviewer error → `[Zip 🔴]` (error wins)
 
 #### Expanded roster (tap/hover)
 
-Tapping or hovering the principal status indicator reveals the full space
-agent roster:
+Tapping or hovering the composite dot opens the **agent health panel**:
 
 ```
-┌───────────────────────────────┐
-│  Zip            ● active      │  ← principal
-│  ─────────────────────────── │
-│  @CodeBot       ● idle        │  ← members
-│  @Reviewer      ○ offline     │
-│  @Deployer      ● busy        │
-└───────────────────────────────┘
+┌──────────────────────────────────────────┐
+│  Zip            🟢 active                │  ← principal
+│  ───────────────────────────────────────│
+│  @CodeBot       🔴 error — disconnected  │  [Dismiss]
+│  @Reviewer      🔵 busy — reviewing PR   │
+│  @Deployer      🟢 idle                  │  [Dismiss]
+│  ───────────────────────────────────────│
+│  Dismissed:                              │
+│  @Linter        ⚫ dismissed             │  [Re-invite]
+└──────────────────────────────────────────┘
 ```
 
-On mobile, this is a bottom sheet. On desktop, a dropdown popover.
+On mobile: bottom sheet. On desktop: dropdown popover.
 
-Design principles:
-- **Principal is always first and visually distinct** (slightly larger, no @
-  prefix, separator line below).
-- **Members show @ prefix** as a visual cue that they're @-mentionable.
-- **Status is live** — presence updates via PubSub from
-  `Platform.Federation.RuntimePresence` for federated agents and from
-  local agent process health for local agents.
-- **Tapping a member agent** in the roster inserts `@AgentName ` into the
-  message composer (convenience for @-mentioning).
+**Panel features:**
+
+- **Per-agent status** with color dot and descriptive text (state + optional
+  context like "disconnected", "executing task-123", "reviewing PR #45")
+- **Dismiss button** on any agent — removes from active roster, stops routing
+  messages to it. Useful when an agent is down and you don't want errors
+  piling up.
+- **Dismissed section** at the bottom shows agents that were dismissed from
+  this space. Shows re-invite button.
+- **Re-invite via @ mention** — typing `@DismissedAgent` in chat automatically
+  re-invites the agent to the roster and delivers the message. This is the
+  natural "bring them back" gesture — you're addressing them, so you want
+  them here.
+- **Tapping a healthy agent** inserts `@AgentName ` into the message composer.
+- **Tapping an errored agent** shows a detail panel with:
+  - Last seen timestamp
+  - Error reason (if available from RuntimePresence or agent health check)
+  - Option to dismiss or retry connection
+
+**Status text examples:**
+
+| State | Text |
+|---|---|
+| 🟢 active | "active" |
+| 🟢 idle | "idle — last active 5m ago" |
+| 🔵 busy | "busy — executing task: Add error handling" |
+| 🔵 busy | "busy — reviewing PR #128" |
+| 🔴 error | "error — disconnected 3m ago" |
+| 🔴 error | "error — runtime crashed" |
+| ⚫ dismissed | "dismissed by Ryan 2h ago" |
 
 #### Chat participant list
 
 In the space's full participant list (sidebar or members panel), agents are
-shown alongside human participants with a badge indicating their role:
+shown alongside human participants with role and status:
 
 ```
 Ryan Milvenan        (owner)
-Zip                  (agent · principal)
-CodeBot              (agent)
-Reviewer             (agent)
+Zip              🟢  (agent · principal)
+CodeBot          🔴  (agent · error)
+Reviewer         🔵  (agent · busy)
 ```
+
+#### Dismiss and Re-invite Mechanics
+
+**Dismiss:**
+
+```elixir
+Platform.Chat.dismiss_space_agent(space_id, agent_id, dismissed_by: user_id)
+# Sets role to "dismissed", records who dismissed and when
+# Agent stops receiving attention signals
+# Agent's messages still visible in history
+# Reversible — not a delete
+```
+
+**Re-invite via @-mention:**
+
+When the attention router encounters an @-mention for a dismissed agent:
+
+1. Check if agent exists in roster with `role: "dismissed"`
+2. If yes: restore to `role: "member"`, deliver the message
+3. Post a system message: "CodeBot was re-invited to the space"
+4. The @ mention is both the re-invite and the first message — one gesture
+
+```elixir
+Platform.Chat.reinvite_space_agent(space_id, agent_id)
+# Restores role from "dismissed" to "member"
+# Emits system message in space
+# Agent begins receiving attention signals again
+```
+
+**Re-invite via UI:**
+
+The "Re-invite" button in the dismissed section of the health panel does the
+same thing without requiring a message.
+
+#### Composite Status Resolution
+
+The composite status is computed as a pure function — no LLM, no heuristics:
+
+```elixir
+def composite_status(agents) do
+  agents
+  |> Enum.reject(&(&1.role == "dismissed"))
+  |> Enum.map(& &1.status)
+  |> Enum.reduce(:none, fn
+    :error, _acc -> :error          # error always wins
+    _any, :error -> :error
+    :busy, acc when acc != :error -> :busy
+    _any, :busy -> :busy
+    :active, acc when acc not in [:error, :busy] -> :active
+    :idle, :none -> :idle
+    _any, acc -> acc
+  end)
+end
+```
+
+Deterministic. No ambiguity. The dot is a fold over agent states.
 
 ### 6. Federated Agents as Principals
 
@@ -240,6 +359,8 @@ CREATE TABLE chat_space_agents (
   space_id UUID NOT NULL REFERENCES chat_spaces(id) ON DELETE CASCADE,
   agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
   role VARCHAR NOT NULL DEFAULT 'member',
+  dismissed_by UUID REFERENCES users(id),
+  dismissed_at TIMESTAMPTZ,
   inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
