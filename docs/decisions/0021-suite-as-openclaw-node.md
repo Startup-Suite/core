@@ -214,6 +214,120 @@ config :platform, Platform.Federation.NodeClient,
 
 ---
 
+## Chat Integration Model
+
+### Space-Scoped Canvas
+
+Node canvas commands are **space-scoped**. When an agent creates or updates
+a canvas, it appears within a specific chat space where participants can see
+and interact with it.
+
+**Space resolution priority:**
+
+1. Explicit `space_id` in command params (agent specified it)
+2. Current engagement context from RuntimeChannel (whichever space the
+   agent is actively replying in — tracked via sticky engagement state)
+3. Default space (first space where the agent is principal or member)
+
+The NodeClient tracks the agent's current space context by observing
+attention signals that arrive through the RuntimeChannel. Canvas commands
+inherit that context automatically — the agent doesn't need to specify
+a space_id when replying to a conversation and creating a canvas in the
+same flow.
+
+### Canvas Rendering in the Chat UI
+
+Canvas appears in two places simultaneously:
+
+```
+┌──────────────────────────────────┬───────────────────┐
+│  Chat messages                   │  Canvas panel     │
+│                                  │                   │
+│  Ryan: diagram the pipeline?     │  ┌─────────────┐ │
+│                                  │  │             │ │
+│  Zip: Here's the deploy pipeline │  │  [diagram]  │ │
+│  📎 Canvas: Deploy Pipeline      │  │             │ │
+│                                  │  └─────────────┘ │
+│  Ryan: add the CI step           │                   │
+│                                  │  (live updates)   │
+│  Zip: Updated ✓                  │                   │
+└──────────────────────────────────┴───────────────────┘
+```
+
+**1. Inline reference in chat:** When the agent creates a canvas, a message
+with `content_type: "canvas"` is posted in the conversation. This shows as
+a clickable card ("📎 Canvas: Deploy Pipeline") that focuses the canvas
+panel. The existing `Platform.Chat.Canvas` schema and `CanvasRenderer`
+component handle this — no new UI pattern needed.
+
+**2. Side panel:** The canvas renders in a persistent side panel (desktop)
+or overlay sheet (mobile). The panel stays visible while the conversation
+continues. Multiple canvases are tabbed.
+
+### Canvas Lifecycle in Chat
+
+| Event | Chat behavior | Canvas panel |
+|---|---|---|
+| Agent creates canvas (`canvas.present`) | Canvas message posted in chat | Panel opens with content |
+| Agent updates canvas (`canvas.navigate`, `canvas.eval`, `canvas.a2ui_push`) | No new chat message | Panel updates live via PubSub |
+| Agent takes snapshot (`canvas.snapshot`) | Nothing visible | Returns base64 PNG to agent |
+| Agent hides canvas (`canvas.hide`) | No chat message | Panel closes |
+| User closes panel | No chat message | Panel closes, canvas persists |
+| User clicks canvas reference in chat | Nothing | Panel reopens to that canvas |
+| Run completes | No change | Canvas persists as an artifact |
+| New canvas in same space | New canvas message in chat | Tabbed alongside existing |
+
+**Key principle:** Canvas creation and chat messages are **two separate
+actions** from the agent. The agent sends a reply ("Here's the diagram")
+and creates a canvas — they're independent. The NodeCommandHandler
+automatically posts the canvas reference message in chat when
+`canvas.present` is called, so the agent doesn't need to coordinate both
+manually.
+
+### Feedback: User → Canvas → Agent
+
+Users can interact with canvases. Interactions feed back to the agent:
+
+**Passive feedback (automatic):**
+- When a user opens, closes, or switches canvas tabs, a lightweight
+  context event is pushed to the agent's run context (if active).
+- Canvas visibility state is tracked — the agent knows if anyone is
+  looking at its canvas.
+
+**Active feedback (user-initiated):**
+- Users can comment on a canvas from the chat: "@Zip the colors are wrong
+  on the diagram" — this routes through normal attention routing.
+- Future: canvas-level reactions or annotations that push context items.
+
+**Agent self-verification:**
+- Agent creates canvas → `canvas.snapshot` → gets screenshot → analyzes it
+- Agent evals JS: `canvas.eval "document.querySelectorAll('.error').length"`
+- If something looks wrong, agent pushes an update and re-checks
+- This snapshot-verify-correct loop is unique to the node protocol — tool
+  calls can't do interactive verification.
+
+### Context Synchronization
+
+The NodeClient and RuntimeChannel share agent identity but operate on
+different connections. Context must stay synchronized:
+
+```
+RuntimeChannel                    NodeClient
+  │                                  │
+  │ attention signal (space_id) ──►  │ (updates current_space)
+  │                                  │
+  │ ◄── canvas created ─────────────│ (posts canvas message via Chat)
+  │                                  │
+  │ sticky engagement ──────────►   │ (canvas commands go to same space)
+  │                                  │
+  │ engagement expires ─────────►   │ (clears current_space)
+```
+
+Both connections run in the same BEAM node, so synchronization is a
+simple GenServer message or shared ETS lookup — no network round-trip.
+
+---
+
 ## What This Replaces
 
 ### Suite-specific tools that become unnecessary
