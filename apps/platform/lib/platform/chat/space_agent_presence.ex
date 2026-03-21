@@ -33,7 +33,16 @@ defmodule Platform.Chat.SpaceAgentPresence do
   """
   @spec agent_status(Agent.t()) :: :active | :idle | :busy | :error | :offline
   def agent_status(%Agent{runtime_type: "external"} = agent) do
-    if agent.runtime_id && RuntimePresence.online?(agent.runtime_id) do
+    # agent.runtime_id is the AgentRuntime UUID — we need to look up the
+    # actual runtime_id string (e.g. "ryan-home-openclaw") that RuntimePresence tracks
+    runtime_connection_id =
+      case agent.runtime_id &&
+             Platform.Repo.get(Platform.Agents.AgentRuntime, agent.runtime_id) do
+        %{runtime_id: rid} -> rid
+        _ -> agent.runtime_id
+      end
+
+    if runtime_connection_id && RuntimePresence.online?(runtime_connection_id) do
       :active
     else
       :error
