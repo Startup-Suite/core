@@ -20,7 +20,7 @@ defmodule Platform.Tasks.ContextHydrator do
 
   alias Platform.Context
   alias Platform.Repo
-  alias Platform.Tasks.{Plan, Task}
+  alias Platform.Tasks.{DeployResolver, Plan, Task}
 
   import Ecto.Query
 
@@ -30,11 +30,18 @@ defmodule Platform.Tasks.ContextHydrator do
   Loads the task (with project, epic, and approved plan+stages) from Postgres
   and pushes items into project-, epic-, and task-scoped context sessions.
 
+  ## Options
+
+    * `:deploy_target` — name of a deploy target from the project's deploy
+      config. When provided, the target's config is resolved and pushed into
+      the project-scoped context session with kind `:project_config`.
+
   Returns `{:ok, version}` where version is the final context version after
   all items have been pushed, or `{:error, reason}` if the task is not found.
   """
-  @spec hydrate_for_run(String.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def hydrate_for_run(task_id, _run_id) do
+  @spec hydrate_for_run(String.t(), String.t(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def hydrate_for_run(task_id, _run_id, opts \\ []) do
     with {:ok, task} <- load_task(task_id) do
       project = task.project
       epic = task.epic
@@ -44,6 +51,9 @@ defmodule Platform.Tasks.ContextHydrator do
       project_scope = %{project_id: project.id}
       {:ok, _} = Context.ensure_session(project_scope)
       {:ok, _} = push_project_items(project_scope, project)
+
+      # 1b. Hydrate deploy target into project session (if requested)
+      maybe_hydrate_deploy_target(project_scope, project, opts)
 
       # 2. Hydrate epic-scoped session (if epic exists)
       if epic do
@@ -154,6 +164,33 @@ defmodule Platform.Tasks.ContextHydrator do
       end)
 
     push_items(scope, items, kind: :task_metadata)
+  end
+
+  defp maybe_hydrate_deploy_target(_scope, _project, opts) when opts == [], do: :ok
+
+  defp maybe_hydrate_deploy_target(scope, project, opts) do
+    case Keyword.get(opts, :deploy_target) do
+      nil ->
+        :ok
+
+      target_name ->
+        case DeployResolver.resolve(project, target_name) do
+          {:ok, target} ->
+            items = DeployResolver.to_context_items(target)
+            push_items(scope, items, kind: :project_config)
+
+            :telemetry.execute(
+              [:platform, :tasks, :deploy_target_resolved],
+              %{system_time: System.system_time()},
+              %{project_id: project.id, target_name: target_name, target_type: target["type"]}
+            )
+
+            :ok
+
+          {:error, _reason} ->
+            :ok
+        end
+    end
   end
 
   defp push_items(_scope, [], _opts), do: {:ok, 0}
