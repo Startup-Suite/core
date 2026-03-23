@@ -202,6 +202,32 @@ defmodule PlatformWeb.TasksLive do
     {:noreply, socket}
   end
 
+  def handle_event("assign_agent", %{"agent_id" => agent_id}, socket) do
+    task = socket.assigns.selected_task
+
+    if task do
+      attrs =
+        if agent_id == "" do
+          %{assignee_id: nil, assignee_type: nil}
+        else
+          %{assignee_id: agent_id, assignee_type: "agent"}
+        end
+
+      case Tasks.update_task(task, attrs) do
+        {:ok, updated} ->
+          {:noreply,
+           socket
+           |> refresh_board()
+           |> assign(:selected_task, Tasks.get_task_detail(updated.id))}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to assign agent.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   # ── Bottom sheet events ─────────────────────────────────────────────────
 
   def handle_event("toggle_task_sheet", _params, socket) do
