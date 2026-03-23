@@ -91,6 +91,20 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert status.status == :running
       assert status.escalation_count == 0
     end
+
+    test "includes execution_space_id in status", %{task: task, assignee: assignee} do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+
+      Process.sleep(50)
+
+      status = TaskRouter.current_status(task.id)
+      assert is_binary(status.execution_space_id)
+
+      # Verify the space exists and is an execution space
+      space = Platform.Chat.get_space(status.execution_space_id)
+      assert space.kind == "execution"
+      assert space.metadata["task_id"] == task.id
+    end
   end
 
   describe "PubSub event handling" do

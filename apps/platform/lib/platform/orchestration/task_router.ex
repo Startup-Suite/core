@@ -13,7 +13,7 @@ defmodule Platform.Orchestration.TaskRouter do
 
   require Logger
 
-  alias Platform.Orchestration.{ContextAssembler, HeartbeatScheduler}
+  alias Platform.Orchestration.{ContextAssembler, ExecutionSpace, HeartbeatScheduler}
   alias Platform.Tasks
 
   # ── State ──────────────────────────────────────────────────────────────
@@ -24,6 +24,7 @@ defmodule Platform.Orchestration.TaskRouter do
     @type t :: %__MODULE__{
             task_id: String.t(),
             assignee: %{type: :federated, id: String.t()},
+            execution_space_id: String.t() | nil,
             current_stage_id: String.t() | nil,
             stage_started_at: DateTime.t() | nil,
             last_evidence_at: DateTime.t() | nil,
@@ -35,6 +36,7 @@ defmodule Platform.Orchestration.TaskRouter do
     defstruct [
       :task_id,
       :assignee,
+      :execution_space_id,
       :current_stage_id,
       :stage_started_at,
       :last_evidence_at,
@@ -77,9 +79,23 @@ defmodule Platform.Orchestration.TaskRouter do
   def init(%{task_id: task_id, assignee: assignee}) do
     Tasks.subscribe_board()
 
+    execution_space_id =
+      case ExecutionSpace.find_or_create(task_id) do
+        {:ok, space} ->
+          space.id
+
+        {:error, reason} ->
+          Logger.warning(
+            "[TaskRouter] failed to create execution space for #{task_id}: #{inspect(reason)}"
+          )
+
+          nil
+      end
+
     state = %State{
       task_id: task_id,
-      assignee: assignee
+      assignee: assignee,
+      execution_space_id: execution_space_id
     }
 
     # Schedule initial dispatch on next tick
@@ -93,6 +109,7 @@ defmodule Platform.Orchestration.TaskRouter do
     reply = %{
       task_id: state.task_id,
       assignee: state.assignee,
+      execution_space_id: state.execution_space_id,
       status: state.status,
       current_stage_id: state.current_stage_id,
       escalation_count: state.escalation_count,
@@ -112,6 +129,21 @@ defmodule Platform.Orchestration.TaskRouter do
       stage = current_running_stage(plan)
       context = ContextAssembler.build(state.task_id)
       prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
+
+      # Post log message to execution space
+      if state.execution_space_id do
+        stage_count = if plan, do: length(plan.stages || []), else: 0
+        stage_pos = if stage, do: stage.position, else: 1
+
+        log_content =
+          "Task assigned: #{task.title} | Stage: #{stage_pos}/#{stage_count} | Assignee: #{state.assignee.id} | Heartbeat: #{heartbeat_interval_min(stage)}min"
+
+        ExecutionSpace.post_log(state.execution_space_id, log_content)
+
+        ExecutionSpace.post_engagement(state.execution_space_id, prompt,
+          metadata: %{"reason" => "task_assigned"}
+        )
+      end
 
       dispatch_attention(state.assignee, state.task_id, "task_assigned", context, prompt)
 
@@ -192,6 +224,23 @@ defmodule Platform.Orchestration.TaskRouter do
   @impl true
   def terminate(_reason, state) do
     cancel_heartbeat(state)
+
+    # Archive execution space on shutdown (best-effort — DB may be unavailable)
+    if state.execution_space_id do
+      try do
+        ExecutionSpace.post_log(
+          state.execution_space_id,
+          "Task router stopped for task #{state.task_id}"
+        )
+
+        ExecutionSpace.archive(state.task_id)
+      rescue
+        _ -> :ok
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
     :ok
   end
 
@@ -233,6 +282,13 @@ defmodule Platform.Orchestration.TaskRouter do
     context = ContextAssembler.build(state.task_id)
     prompt = HeartbeatScheduler.heartbeat_prompt(task, stage, elapsed, pending_validations)
 
+    # Post heartbeat as engagement message (triggers attention routing)
+    if state.execution_space_id do
+      ExecutionSpace.post_engagement(state.execution_space_id, prompt,
+        metadata: %{"reason" => "task_heartbeat"}
+      )
+    end
+
     dispatch_attention(state.assignee, state.task_id, "task_heartbeat", context, prompt)
   end
 
@@ -267,6 +323,14 @@ defmodule Platform.Orchestration.TaskRouter do
     max_esc = HeartbeatScheduler.max_escalations(stage_type) || 2
     new_count = state.escalation_count + 1
 
+    # Post stall detection log
+    if state.execution_space_id do
+      ExecutionSpace.post_log(
+        state.execution_space_id,
+        "Stall detected: no evidence for stage #{state.current_stage_id || "unknown"} | Escalation #{new_count}/#{max_esc}"
+      )
+    end
+
     if new_count >= max_esc do
       escalate(state, task)
     else
@@ -283,6 +347,14 @@ defmodule Platform.Orchestration.TaskRouter do
     )
 
     state = %{state | status: :stalled, escalation_count: state.escalation_count + 1}
+
+    # Post stall/escalation log to execution space
+    if state.execution_space_id do
+      ExecutionSpace.post_log(
+        state.execution_space_id,
+        "Escalation: task stalled after #{state.escalation_count} missed heartbeats | Assignee: #{state.assignee.id}"
+      )
+    end
 
     # Broadcast stall event to PubSub
     Phoenix.PubSub.broadcast(
@@ -342,5 +414,14 @@ defmodule Platform.Orchestration.TaskRouter do
 
   defp elapsed_seconds(started_at) do
     DateTime.diff(DateTime.utc_now(), started_at, :second) |> max(0)
+  end
+
+  defp heartbeat_interval_min(nil), do: 10
+
+  defp heartbeat_interval_min(stage) do
+    case HeartbeatScheduler.interval_ms(stage.name) do
+      nil -> 0
+      ms -> div(ms, 60_000)
+    end
   end
 end

@@ -7,12 +7,14 @@ defmodule Platform.Orchestration.ContextAssembler do
   pure Repo queries via `Platform.Tasks`.
   """
 
+  alias Platform.Orchestration.ExecutionSpace
   alias Platform.Tasks
 
   @doc """
   Build a full context snapshot for the given task.
 
-  Returns a map with `:project`, `:epic`, `:task`, and `:plan` keys.
+  Returns a map with `:project`, `:epic`, `:task`, `:plan`, and
+  `:execution_space_id` keys.
   """
   @spec build(String.t()) :: map() | nil
   def build(task_id) do
@@ -25,11 +27,18 @@ defmodule Platform.Orchestration.ContextAssembler do
         # with validations) rather than current_plan/1 which only preloads stages.
         plan = find_current_plan(task.plans)
 
+        execution_space_id =
+          case ExecutionSpace.find_or_create(task_id) do
+            {:ok, space} -> space.id
+            _ -> nil
+          end
+
         %{
           project: serialize_project(task.project),
           epic: serialize_epic(task.epic),
           task: serialize_task(task),
-          plan: serialize_plan(plan)
+          plan: serialize_plan(plan),
+          execution_space_id: execution_space_id
         }
     end
   end
