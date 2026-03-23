@@ -175,6 +175,15 @@ defmodule PlatformWeb.TasksLive do
       if task do
         case Tasks.transition_task(task, new_status) do
           {:ok, updated} ->
+            if new_status == "planning" && updated.assignee_type == "agent" && updated.assignee_id do
+              Elixir.Task.start(fn ->
+                Platform.Orchestration.assign_task(task_id, %{
+                  type: :federated,
+                  id: updated.assignee_id
+                })
+              end)
+            end
+
             socket
             |> put_flash(:info, "Task moved to #{new_status}.")
             |> refresh_board()
