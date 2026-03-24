@@ -1,6 +1,6 @@
 defmodule Platform.Skills do
   @moduledoc """
-  Context for the Skills domain.
+  Context for the Skills domain (Skill Library).
 
   Skills are markdown playbooks that describe how agents should work within a
   domain. They can be attached to projects, epics, or tasks and are bundled
