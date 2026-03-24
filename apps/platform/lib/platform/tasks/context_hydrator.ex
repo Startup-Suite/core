@@ -80,7 +80,7 @@ defmodule Platform.Tasks.ContextHydrator do
       # 5. Hydrate attached skills into task session
       version =
         case push_skill_items(task_scope, task_id) do
-          {:ok, v} -> v
+          {:ok, v} when v > 0 -> v
           _ -> version
         end
 
