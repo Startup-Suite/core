@@ -3,6 +3,8 @@ defmodule PlatformWeb.TasksLive do
 
   require Logger
 
+  import Ecto.Query
+
   alias Platform.Chat
   alias Platform.Chat.AttachmentStorage
   alias Platform.Orchestration.ExecutionSpace
@@ -656,8 +658,6 @@ defmodule PlatformWeb.TasksLive do
     if task_ids == [] do
       %{}
     else
-      import Ecto.Query
-
       ReviewRequest
       |> where([rr], rr.task_id in ^task_ids and rr.status == "pending")
       |> group_by([rr], rr.task_id)
