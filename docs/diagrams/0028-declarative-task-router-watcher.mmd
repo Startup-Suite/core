@@ -1,0 +1,76 @@
+---
+title: "ADR 0028: Declarative Task Router Watcher"
+---
+flowchart TD
+    subgraph TRIGGERS["Trigger Sources"]
+        UI["LiveView UI\n(transition_task)"]
+        TOOL["ToolSurface\n(task_update)"]
+        ENGINE["PlanEngine\n(auto-transition)"]
+        BOOT["Application Boot"]
+    end
+
+    subgraph PUBSUB["PubSub: tasks:board"]
+        EVENT["{:task_updated, task}"]
+    end
+
+    UI --> EVENT
+    TOOL --> EVENT
+    ENGINE --> EVENT
+
+    subgraph WATCHER["TaskRouterWatcher (GenServer)"]
+        EVAL{"Evaluate invariant:\nassignee_type == agent?\nstatus ∈ active set?"}
+        RECONCILE["⏱️ Reconcile\nevery 5 min"]
+    end
+
+    EVENT --> EVAL
+    BOOT -->|"init: query DB\nfor active tasks"| EVAL
+    RECONCILE -->|"DB query vs\nRegistry diff"| EVAL
+
+    EVAL -->|"Should run +\nnot running"| START["Start TaskRouter\nvia DynamicSupervisor"]
+    EVAL -->|"Should NOT run +\nis running"| STOP["Stop TaskRouter"]
+    EVAL -->|"Already correct"| NOOP["No-op"]
+
+    subgraph SUPERVISION["Supervision Tree"]
+        direction TB
+        APP["Platform.Application"]
+        ORCH_SUP["Orchestration.Supervisor\n(one_for_one)"]
+        DYN_SUP["TaskRouterSupervisor\n(DynamicSupervisor)"]
+        WATCHER_PROC["TaskRouterWatcher"]
+        
+        APP --> ORCH_SUP
+        ORCH_SUP --> DYN_SUP
+        ORCH_SUP --> WATCHER_PROC
+    end
+
+    START --> DYN_SUP
+    STOP --> DYN_SUP
+
+    subgraph ROUTERS["Running TaskRouters"]
+        R1["Router: task-A\n(planning)"]
+        R2["Router: task-B\n(in_progress)"]
+        R3["Router: task-C\n(in_review)"]
+    end
+
+    DYN_SUP -.->|manages| R1
+    DYN_SUP -.->|manages| R2
+    DYN_SUP -.->|manages| R3
+
+    R1 -->|"dispatch/heartbeat"| RUNTIME["Agent Runtimes\n(WebSocket)"]
+    R2 --> RUNTIME
+    R3 --> RUNTIME
+
+    subgraph REMOVED["❌ Removed"]
+        OLD_ASSIGN["assign_task/2"]
+        OLD_UNASSIGN["unassign_task/1"]
+        OLD_TABLE["task_router_assignments\ntable"]
+        OLD_REHYDRATOR["Rehydrator"]
+        OLD_LIVEVIEW["LiveView trigger\n(transition_task hook)"]
+    end
+
+    style TRIGGERS fill:#4a9eff,color:#fff
+    style WATCHER fill:#10b981,color:#fff
+    style SUPERVISION fill:#8b5cf6,color:#fff
+    style ROUTERS fill:#f59e0b,color:#fff
+    style REMOVED fill:#ef4444,color:#fff
+    style NOOP fill:#6b7280,color:#fff
+    style RECONCILE fill:#06b6d4,color:#fff
