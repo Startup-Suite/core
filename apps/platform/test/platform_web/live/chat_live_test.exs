@@ -331,30 +331,74 @@ defmodule PlatformWeb.ChatLiveTest do
       assert html =~ "🎉"
     end
 
-    test "reacting to a message broadcasts reaction_added and updates UI", %{conn: conn} do
+    test "reacting to a message persists the reaction and updates the reaction count in the UI",
+         %{conn: conn} do
       conn = authenticated_conn(conn)
       {:ok, view, _html} = live(conn, ~p"/chat/general")
 
-      # Send a message first
       view
       |> form("#compose-form", compose: %{text: "emoji test"})
       |> render_submit()
 
-      html = render(view)
-      assert html =~ "emoji test"
-
-      # Find a message ID from the space to trigger the react event
-      slug = "general"
-      space = Chat.get_space_by_slug(slug)
+      space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      # Trigger react event directly
+      # Before reacting — no reaction row for this message in the DB
+      assert Chat.list_reactions(msg.id) == []
+
+      # Trigger the react event (key is "message-id", hyphenated, as Phoenix serializes phx-value-*)
       render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
 
-      # After the PubSub roundtrip the reaction should appear
+      # The reaction is persisted in the DB
+      assert [%{emoji: "👍"}] = Chat.list_reactions(msg.id)
+
+      # The rendered HTML shows the count badge "1" next to the emoji (reaction-row markup)
       html = render(view)
-      # The reaction button shows count ≥ 1
       assert html =~ "👍"
+      # The reaction count span should contain "1" adjacent to the emoji
+      assert Regex.match?(~r/👍[\s\S]*?<span>1<\/span>|<span>1<\/span>[\s\S]*?👍/, html)
+    end
+
+    test "reacting twice to the same message removes the reaction (toggle)", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "toggle reaction"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      # React once — reaction is added
+      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
+      assert [_] = Chat.list_reactions(msg.id)
+
+      # React again (same user, same emoji) — reaction is removed
+      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
+      assert Chat.list_reactions(msg.id) == []
+    end
+
+    test "reacting with a nil/missing participant does not crash the LiveView", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "safety message"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [_msg | _] = Chat.list_messages(space.id)
+
+      # Deliberately send a bad/unknown message-id — handler should not crash
+      html =
+        render_click(view, "react", %{
+          "message-id" => "00000000-0000-0000-0000-000000000000",
+          "emoji" => "👍"
+        })
+
+      assert is_binary(html)
+      assert html =~ "safety message"
     end
   end
 
