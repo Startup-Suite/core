@@ -125,6 +125,104 @@
         </div>
       </.form>
 
+      <%!-- Attachments section --%>
+      <div :if={@skill_attachments_grouped} class="space-y-4 border-t border-base-300 pt-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          Attached To
+        </h3>
+
+        <%!-- Projects --%>
+        <div class="space-y-2">
+          <p class="text-xs font-medium text-base-content/60">Projects</p>
+          <div class="flex flex-wrap gap-2">
+            <div
+              :for={
+                {project_id, project_name} <- Map.get(@skill_attachments_grouped, "project", [])
+              }
+              class="flex items-center gap-1 rounded-full bg-base-200 px-2 py-0.5 text-xs border border-base-300"
+            >
+              <span>{project_name}</span>
+              <button
+                phx-click="detach_skill_from_project"
+                phx-value-project_id={project_id}
+                class="ml-0.5 text-base-content/40 hover:text-error"
+                title="Detach from project"
+              >
+                <span class="hero-x-mark size-3"></span>
+              </button>
+            </div>
+          </div>
+          <% attached_project_ids =
+            Map.get(@skill_attachments_grouped, "project", [])
+            |> Enum.map(fn {id, _} -> id end)
+            |> MapSet.new() %>
+          <% attachable_projects =
+            Enum.reject(@all_projects, fn p -> MapSet.member?(attached_project_ids, p.id) end) %>
+          <div :if={attachable_projects != []}>
+            <select
+              class="select select-bordered select-xs w-full max-w-xs"
+              phx-change="attach_skill_to_project"
+              name="project_id"
+            >
+              <option value="">Attach to project…</option>
+              <option :for={project <- attachable_projects} value={project.id}>
+                {project.name}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <%!-- Epics --%>
+        <div class="space-y-2">
+          <p class="text-xs font-medium text-base-content/60">Epics</p>
+          <div class="flex flex-wrap gap-2">
+            <div
+              :for={{epic_id, epic_name} <- Map.get(@skill_attachments_grouped, "epic", [])}
+              class="flex items-center gap-1 rounded-full bg-base-200 px-2 py-0.5 text-xs border border-base-300"
+            >
+              <span>{epic_name}</span>
+              <button
+                phx-click="detach_skill_from_epic"
+                phx-value-epic_id={epic_id}
+                class="ml-0.5 text-base-content/40 hover:text-error"
+                title="Detach from epic"
+              >
+                <span class="hero-x-mark size-3"></span>
+              </button>
+            </div>
+          </div>
+          <% attached_epic_ids =
+            Map.get(@skill_attachments_grouped, "epic", [])
+            |> Enum.map(fn {id, _} -> id end)
+            |> MapSet.new() %>
+          <% attachable_epics =
+            Enum.reject(@all_epics, fn e -> MapSet.member?(attached_epic_ids, e.id) end) %>
+          <div :if={attachable_epics != []}>
+            <select
+              class="select select-bordered select-xs w-full max-w-xs"
+              phx-change="attach_skill_to_epic"
+              name="epic_id"
+            >
+              <option value="">Attach to epic…</option>
+              <option :for={epic <- attachable_epics} value={epic.id}>{epic.name}</option>
+            </select>
+          </div>
+        </div>
+
+        <%!-- Tasks (read-only) --%>
+        <div :if={Map.get(@skill_attachments_grouped, "task", []) != []} class="space-y-1">
+          <p class="text-xs font-medium text-base-content/60">Tasks (manage from task detail)</p>
+          <div class="flex flex-wrap gap-2">
+            <span
+              :for={{_task_id, task_title} <- Map.get(@skill_attachments_grouped, "task", [])}
+              class="rounded-full bg-base-200 px-2 py-0.5 text-xs border border-base-300 text-base-content/60"
+            >
+              {task_title}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <%!-- Delete confirmation --%>
       <div
         :if={@confirm_delete}

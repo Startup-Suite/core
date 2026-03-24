@@ -3,6 +3,7 @@ defmodule PlatformWeb.SkillsLive do
 
   alias Platform.Skills
   alias Platform.Skills.Skill
+  alias Platform.Tasks
 
   @impl true
   def mount(_params, _session, socket) do
@@ -18,7 +19,10 @@ defmodule PlatformWeb.SkillsLive do
      |> assign(:edit_form, nil)
      |> assign(:create_form, to_form(Skill.changeset(%Skill{}, %{}), as: "skill"))
      |> assign(:confirm_delete, false)
-     |> assign(:save_status, nil)}
+     |> assign(:save_status, nil)
+     |> assign(:skill_attachments_grouped, nil)
+     |> assign(:all_projects, [])
+     |> assign(:all_epics, [])}
   end
 
   @impl true
@@ -32,11 +36,8 @@ defmodule PlatformWeb.SkillsLive do
          |> put_flash(:error, "Skill not found.")}
 
       skill ->
-        edit_form =
-          to_form(
-            Skill.changeset(skill, %{}),
-            as: "skill"
-          )
+        edit_form = to_form(Skill.changeset(skill, %{}), as: "skill")
+        grouped = Skills.entities_for_skill(skill.id)
 
         {:noreply,
          socket
@@ -45,6 +46,9 @@ defmodule PlatformWeb.SkillsLive do
          |> assign(:edit_form, edit_form)
          |> assign(:confirm_delete, false)
          |> assign(:save_status, nil)
+         |> assign(:skill_attachments_grouped, grouped)
+         |> assign(:all_projects, Tasks.list_projects())
+         |> assign(:all_epics, Tasks.list_epics_for_project(nil))
          |> assign(:page_title, "Skills · #{skill.name}")}
     end
   end
@@ -71,6 +75,7 @@ defmodule PlatformWeb.SkillsLive do
      |> assign(:show_detail, false)
      |> assign(:edit_form, nil)
      |> assign(:confirm_delete, false)
+     |> assign(:skill_attachments_grouped, nil)
      |> push_patch(to: ~p"/skills")}
   end
 
@@ -157,6 +162,56 @@ defmodule PlatformWeb.SkillsLive do
          socket
          |> assign(:edit_form, to_form(changeset, as: "skill"))
          |> put_flash(:error, "Could not save skill.")}
+    end
+  end
+
+  # ── Attachment management ────────────────────────────────────────────────
+
+  def handle_event("attach_skill_to_project", %{"project_id" => project_id}, socket) do
+    skill = socket.assigns.selected_skill
+
+    if skill && project_id != "" do
+      Skills.attach_skill(skill.id, "project", project_id)
+      grouped = Skills.entities_for_skill(skill.id)
+      {:noreply, assign(socket, :skill_attachments_grouped, grouped)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("detach_skill_from_project", %{"project_id" => project_id}, socket) do
+    skill = socket.assigns.selected_skill
+
+    if skill do
+      Skills.detach_skill(skill.id, "project", project_id)
+      grouped = Skills.entities_for_skill(skill.id)
+      {:noreply, assign(socket, :skill_attachments_grouped, grouped)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("attach_skill_to_epic", %{"epic_id" => epic_id}, socket) do
+    skill = socket.assigns.selected_skill
+
+    if skill && epic_id != "" do
+      Skills.attach_skill(skill.id, "epic", epic_id)
+      grouped = Skills.entities_for_skill(skill.id)
+      {:noreply, assign(socket, :skill_attachments_grouped, grouped)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("detach_skill_from_epic", %{"epic_id" => epic_id}, socket) do
+    skill = socket.assigns.selected_skill
+
+    if skill do
+      Skills.detach_skill(skill.id, "epic", epic_id)
+      grouped = Skills.entities_for_skill(skill.id)
+      {:noreply, assign(socket, :skill_attachments_grouped, grouped)}
+    else
+      {:noreply, socket}
     end
   end
 
