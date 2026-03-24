@@ -679,6 +679,24 @@ defmodule PlatformWeb.TasksLive do
   defp epic_status_badge_class("closed"), do: "badge badge-success badge-xs"
   defp epic_status_badge_class(_), do: "badge badge-ghost badge-xs"
 
+  defp format_log_timestamp(nil), do: ""
+
+  defp format_log_timestamp(%DateTime{} = dt) do
+    now = DateTime.utc_now()
+
+    if Date.compare(DateTime.to_date(dt), DateTime.to_date(now)) == :eq do
+      # Today — just HH:MM
+      Calendar.strftime(dt, "%H:%M")
+    else
+      # Older — Mon DD HH:MM
+      Calendar.strftime(dt, "%b %d %H:%M")
+    end
+  end
+
+  defp log_sender_color("agent", "system"), do: "text-warning"
+  defp log_sender_color("agent", _content_type), do: "text-info"
+  defp log_sender_color(_sender_type, _content_type), do: "text-base-content/60"
+
   defp stage_status_icon("passed"), do: "hero-check-circle text-success"
   defp stage_status_icon("failed"), do: "hero-x-circle text-error"
   defp stage_status_icon("running"), do: "hero-arrow-path text-info animate-spin"
