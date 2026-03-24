@@ -24,7 +24,11 @@ defmodule PlatformWeb.RuntimeChannel do
         })
         |> Platform.Repo.update()
 
-        agent_name = runtime.agent && runtime.agent.name
+        agent_name =
+          case runtime.agent_id && Platform.Repo.get(Platform.Agents.Agent, runtime.agent_id) do
+            %{name: name} -> name
+            _ -> nil
+          end
 
         Logger.info(
           "[RuntimeChannel] runtime connected: runtime_id=#{runtime_id} agent=#{inspect(agent_name)}"

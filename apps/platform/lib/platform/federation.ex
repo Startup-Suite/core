@@ -166,16 +166,29 @@ defmodule Platform.Federation do
   connected_at, last_seen_at, and historical last_connected_at.
   """
   def federation_status do
-    runtimes = Repo.all(from(r in AgentRuntime, where: r.status == "active", preload: [:agent]))
+    runtimes = Repo.all(from(r in AgentRuntime, where: r.status == "active"))
     presence = RuntimePresence.list_all()
+
+    # Build agent lookup — AgentRuntime has agent_id as a raw field, no association
+    agent_ids = runtimes |> Enum.map(& &1.agent_id) |> Enum.reject(&is_nil/1)
+
+    agents =
+      if agent_ids != [] do
+        from(a in Platform.Agents.Agent, where: a.id in ^agent_ids)
+        |> Repo.all()
+        |> Map.new(&{&1.id, &1})
+      else
+        %{}
+      end
 
     Enum.map(runtimes, fn runtime ->
       online_info = Map.get(presence, runtime.runtime_id)
+      agent = Map.get(agents, runtime.agent_id)
 
       %{
         runtime_id: runtime.runtime_id,
-        agent_name: runtime.agent && runtime.agent.name,
-        agent_slug: runtime.agent && runtime.agent.slug,
+        agent_name: agent && agent.name,
+        agent_slug: agent && agent.slug,
         agent_id: runtime.agent_id,
         status: runtime.status,
         online: online_info != nil,
