@@ -390,6 +390,11 @@ defmodule PlatformWeb.ChatLive do
     end
 
     {:noreply, socket}
+  rescue
+    e ->
+      require Logger
+      Logger.error("Reaction handler crashed: #{Exception.message(e)}")
+      {:noreply, socket}
   end
 
   def handle_event("open_thread", %{"message-id" => message_id}, socket) do
@@ -982,6 +987,11 @@ defmodule PlatformWeb.ChatLive do
       )
 
     {:noreply, assign(socket, :reactions_map, reactions_map)}
+  rescue
+    e ->
+      require Logger
+      Logger.error("Reaction broadcast (added) crashed: #{Exception.message(e)}")
+      {:noreply, socket}
   end
 
   def handle_info({:reaction_removed, data}, socket) do
@@ -993,6 +1003,11 @@ defmodule PlatformWeb.ChatLive do
       )
 
     {:noreply, assign(socket, :reactions_map, reactions_map)}
+  rescue
+    e ->
+      require Logger
+      Logger.error("Reaction broadcast (removed) crashed: #{Exception.message(e)}")
+      {:noreply, socket}
   end
 
   def handle_info({:pin_added, pin}, socket) do
