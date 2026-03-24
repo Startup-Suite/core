@@ -373,16 +373,8 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
-  def handle_event("react", params, socket) when is_map(params) do
-    msg_id =
-      params["message_id"] || params["message-id"] || params[:message_id] || params[:"message-id"] ||
-        get_in(params, ["value", "message_id"]) || get_in(params, ["value", "message-id"])
-
-    emoji = params["emoji"] || params[:emoji] || get_in(params, ["value", "emoji"])
-
-    with participant when not is_nil(participant) <- socket.assigns.current_participant,
-         true <- is_binary(msg_id) and msg_id != "",
-         true <- is_binary(emoji) and emoji != "" do
+  def handle_event("react", %{"message_id" => msg_id, "emoji" => emoji}, socket) do
+    with participant when not is_nil(participant) <- socket.assigns.current_participant do
       groups = Map.get(socket.assigns.reactions_map, msg_id, [])
       already_reacted = Enum.any?(groups, &(&1.emoji == emoji && &1.reacted_by_me))
 
@@ -395,8 +387,6 @@ defmodule PlatformWeb.ChatLive do
           emoji: emoji
         })
       end
-    else
-      _ -> :ok
     end
 
     {:noreply, socket}
@@ -1695,7 +1685,7 @@ defmodule PlatformWeb.ChatLive do
                     <button
                       :for={emoji <- @quick_emojis}
                       phx-click="react"
-                      phx-value-message-id={msg.id}
+                      phx-value-message_id={msg.id}
                       phx-value-emoji={emoji}
                       title={"React with #{emoji}"}
                       class="rounded px-1.5 py-0.5 text-sm hover:bg-base-300 transition-colors"
@@ -1818,7 +1808,7 @@ defmodule PlatformWeb.ChatLive do
                   <button
                     :for={r <- Map.get(@reactions_map, msg.id, [])}
                     phx-click="react"
-                    phx-value-message-id={msg.id}
+                    phx-value-message_id={msg.id}
                     phx-value-emoji={r.emoji}
                     class={[
                       "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors",
