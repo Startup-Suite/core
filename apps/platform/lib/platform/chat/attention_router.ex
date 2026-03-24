@@ -134,10 +134,8 @@ defmodule Platform.Chat.AttentionRouter do
   """
   @spec resolve_attention_mode(Space.t(), Participant.t()) :: String.t()
   def resolve_attention_mode(%Space{} = space, _participant) do
-    case space.agent_attention do
-      nil -> default_for_kind(space.kind)
-      mode -> mode
-    end
+    # ADR 0027: agent_attention removed; always use kind-based default
+    default_for_kind(space.kind)
   end
 
   defp default_for_kind("channel"), do: "on_mention"
@@ -387,11 +385,6 @@ defmodule Platform.Chat.AttentionRouter do
       mentioned_agents != [] ->
         Enum.flat_map(mentioned_agents, fn participant ->
           case Map.get(roster_by_agent_id, participant.participant_id) do
-            %SpaceAgent{role: "dismissed"} ->
-              # Re-invite dismissed agent on @-mention
-              Chat.reinvite_space_agent(space.id, participant.participant_id)
-              [%{participant_id: participant.id, reason: :mention}]
-
             %SpaceAgent{role: role} when role in ["principal", "member"] ->
               [%{participant_id: participant.id, reason: :mention}]
 

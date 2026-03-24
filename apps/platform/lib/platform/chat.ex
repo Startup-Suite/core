@@ -1510,19 +1510,13 @@ defmodule Platform.Chat do
               |> SpaceAgent.changeset(%{
                 space_id: space_id,
                 agent_id: agent_id,
-                role: "principal",
-                dismissed_by: nil,
-                dismissed_at: nil
+                role: "principal"
               })
               |> repo.insert()
 
             %SpaceAgent{} = existing ->
               existing
-              |> SpaceAgent.changeset(%{
-                role: "principal",
-                dismissed_by: nil,
-                dismissed_at: nil
-              })
+              |> SpaceAgent.changeset(%{role: "principal"})
               |> repo.update()
           end
       end
@@ -1613,95 +1607,8 @@ defmodule Platform.Chat do
     end
   end
 
-  @doc """
-  Dismiss an agent from a space (soft — sets role to `"dismissed"`).
-
-  The agent stops receiving attention signals but the roster entry is preserved
-  for re-invite.
-  """
-  @spec dismiss_space_agent(binary(), binary(), keyword()) ::
-          {:ok, SpaceAgent.t()} | {:error, term()}
-  def dismiss_space_agent(space_id, agent_id, opts \\ []) do
-    dismissed_by = Keyword.get(opts, :dismissed_by)
-
-    case Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
-      nil ->
-        {:error, :not_found}
-
-      %SpaceAgent{role: "dismissed"} = sa ->
-        {:ok, sa}
-
-      %SpaceAgent{} = sa ->
-        result =
-          sa
-          |> SpaceAgent.changeset(%{
-            role: "dismissed",
-            dismissed_by: dismissed_by,
-            dismissed_at: DateTime.utc_now()
-          })
-          |> Repo.update()
-
-        case result do
-          {:ok, updated} ->
-            :telemetry.execute(
-              [:platform, :chat, :agent_dismissed],
-              %{system_time: System.system_time()},
-              %{space_id: space_id, agent_id: agent_id, dismissed_by: dismissed_by}
-            )
-
-            Phoenix.PubSub.broadcast(
-              Platform.PubSub,
-              "space_agents:#{space_id}",
-              {:roster_changed, space_id}
-            )
-
-            {:ok, updated}
-
-          error ->
-            error
-        end
-    end
-  end
-
-  @doc "Re-invite a dismissed agent, restoring role to `\"member\"`."
-  @spec reinvite_space_agent(binary(), binary()) ::
-          {:ok, SpaceAgent.t()} | {:error, term()}
-  def reinvite_space_agent(space_id, agent_id) do
-    case Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
-      nil ->
-        {:error, :not_found}
-
-      %SpaceAgent{role: "dismissed"} = sa ->
-        result =
-          sa
-          |> SpaceAgent.changeset(%{role: "member", dismissed_by: nil, dismissed_at: nil})
-          |> Repo.update()
-
-        case result do
-          {:ok, updated} ->
-            :telemetry.execute(
-              [:platform, :chat, :agent_reinvited],
-              %{system_time: System.system_time()},
-              %{space_id: space_id, agent_id: agent_id}
-            )
-
-            Phoenix.PubSub.broadcast(
-              Platform.PubSub,
-              "space_agents:#{space_id}",
-              {:roster_changed, space_id}
-            )
-
-            {:ok, updated}
-
-          error ->
-            error
-        end
-
-      %SpaceAgent{} = sa ->
-        # Already active — no-op
-        {:ok, sa}
-    end
-  end
+  # ADR 0027: dismiss_space_agent/3 and reinvite_space_agent/2 removed.
+  # The 'dismissed' role no longer exists — use remove_space_agent/2 instead.
 
   @doc "List all agents in a space's roster, with preloaded agent data."
   @spec list_space_agents(binary()) :: [SpaceAgent.t()]
@@ -1731,11 +1638,11 @@ defmodule Platform.Chat do
     Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id)
   end
 
-  @doc "List active (non-dismissed) agents in a space's roster."
+  @doc "List all agents in a space's roster (all roles are active now — ADR 0027)."
   @spec list_active_space_agents(binary()) :: [SpaceAgent.t()]
   def list_active_space_agents(space_id) do
     from(sa in SpaceAgent,
-      where: sa.space_id == ^space_id and sa.role != "dismissed",
+      where: sa.space_id == ^space_id,
       preload: [:agent],
       order_by: [asc: sa.inserted_at]
     )

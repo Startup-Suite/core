@@ -793,7 +793,6 @@ defmodule PlatformWeb.ChatLive do
         "name" => space.name || "",
         "description" => space.description || "",
         "topic" => space.topic || "",
-        "agent_attention" => space.agent_attention || "",
         "promote_name" => ""
       })
 
@@ -810,12 +809,6 @@ defmodule PlatformWeb.ChatLive do
   def handle_event("save_settings", params, socket) do
     space = socket.assigns.active_space
 
-    attention =
-      case params["agent_attention"] do
-        "" -> nil
-        val -> val
-      end
-
     attrs =
       case space.kind do
         "channel" ->
@@ -830,18 +823,14 @@ defmodule PlatformWeb.ChatLive do
             name: params["name"],
             slug: slug,
             description: params["description"],
-            topic: params["topic"],
-            agent_attention: attention
+            topic: params["topic"]
           }
 
         "group" ->
-          %{
-            name: params["name"],
-            agent_attention: attention
-          }
+          %{name: params["name"]}
 
         "dm" ->
-          %{agent_attention: attention}
+          %{}
       end
 
     case Chat.update_space(space, attrs) do
@@ -2269,38 +2258,7 @@ defmodule PlatformWeb.ChatLive do
               </div>
             <% end %>
 
-            <%!-- Agent Attention Mode — shown for all space kinds --%>
-            <div class="form-control mb-4">
-              <label class="label"><span class="label-text">Agent Attention Mode</span></label>
-              <select name="agent_attention" class="select select-bordered w-full">
-                <option value="" selected={is_nil(@active_space.agent_attention)}>
-                  Default ({default_attention_label(@active_space.kind)})
-                </option>
-                <option value="on_mention" selected={@active_space.agent_attention == "on_mention"}>
-                  On Mention
-                </option>
-                <option
-                  value="collaborative"
-                  selected={@active_space.agent_attention == "collaborative"}
-                >
-                  Collaborative
-                </option>
-                <option value="directed" selected={@active_space.agent_attention == "directed"}>
-                  Directed
-                </option>
-              </select>
-              <p class="text-xs text-base-content/50 mt-1">
-                <%= case @active_space.agent_attention || default_attention_mode(@active_space.kind) do %>
-                  <% "on_mention" -> %>
-                    Agent responds only when @mentioned
-                  <% "collaborative" -> %>
-                    Agent observes and engages when it can add value
-                  <% "directed" -> %>
-                    Every message goes to the agent
-                  <% _ -> %>
-                <% end %>
-              </p>
-            </div>
+            <%!-- ADR 0027: Agent attention mode removed; replaced by active agent mutex (Stage 3) --%>
 
             <div class="flex justify-end gap-2">
               <button type="button" phx-click="close_settings" class="btn btn-ghost btn-sm">
@@ -3028,15 +2986,8 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
-  defp default_attention_mode("channel"), do: "on_mention"
-  defp default_attention_mode("dm"), do: "directed"
-  defp default_attention_mode("group"), do: "collaborative"
-  defp default_attention_mode(_), do: "on_mention"
-
-  defp default_attention_label("channel"), do: "On Mention"
-  defp default_attention_label("dm"), do: "Directed"
-  defp default_attention_label("group"), do: "Collaborative"
-  defp default_attention_label(_), do: "On Mention"
+  # ADR 0027: default_attention_mode/1 and default_attention_label/1 removed
+  # (agent_attention field no longer exists on Space)
 
   defp ensure_participant(space_id, user_id) do
     existing =

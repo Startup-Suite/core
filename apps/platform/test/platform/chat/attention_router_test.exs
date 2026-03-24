@@ -144,38 +144,48 @@ defmodule Platform.Chat.AttentionRouterTest do
       drain()
     end
 
-    test "group space with explicit agent_attention='directed' routes all messages" do
-      space = create_space(%{kind: "group", agent_attention: "directed"})
+    # ADR 0027: agent_attention field removed. Attention mode is now always
+    # determined by space kind. Group spaces default to "collaborative" mode
+    # which (in legacy routing) only routes on @mention — full collaborative
+    # routing is implemented in Stage 3.
+
+    test "group space routes only @mentions (collaborative kind-based default)" do
+      space = create_space(%{kind: "group"})
       user = create_participant(space.id)
       agent = create_agent()
 
       {:ok, agent_participant} =
         Chat.ensure_agent_participant(space.id, agent, display_name: "Zip")
 
-      message = create_message(space.id, user.id, %{content: "no mention needed"})
+      # Unmentioned message → no routing (collaborative doesn't auto-route yet)
+      message = create_message(space.id, user.id, %{content: "no mention"})
+      assert {:ok, []} = AttentionRouter.route(message)
+
+      # @-mention → routes
+      mention = create_message(space.id, user.id, %{content: "@Zip help me"})
       agent_participant_id = agent_participant.id
 
-      assert {:ok, [%{participant_id: ^agent_participant_id, reason: :directed}]} =
-               AttentionRouter.route(message)
+      assert {:ok, [%{participant_id: ^agent_participant_id, reason: :mention}]} =
+               AttentionRouter.route(mention)
 
-      assert_receive {:agent_chat_called, "no mention needed", _opts}, 500
+      assert_receive {:agent_chat_called, "@Zip help me", _opts}, 500
       drain()
     end
 
-    test "space with agent_attention=nil falls back to kind-based default" do
-      # Channel with nil agent_attention → on_mention
-      channel = create_space(%{kind: "channel", agent_attention: nil})
+    test "attention mode uses kind-based defaults" do
+      # Channel → on_mention (no response without @mention)
+      channel = create_space(%{kind: "channel"})
       user = create_participant(channel.id)
       agent = create_agent()
 
-      {:ok, agent_participant} =
+      {:ok, _agent_participant} =
         Chat.ensure_agent_participant(channel.id, agent, display_name: "Zip")
 
       message = create_message(channel.id, user.id, %{content: "no mention"})
       assert {:ok, []} = AttentionRouter.route(message)
 
-      # DM with nil agent_attention → directed
-      dm = create_space(%{kind: "dm", agent_attention: nil})
+      # DM → directed (all messages route to agent)
+      dm = create_space(%{kind: "dm"})
       user2 = create_participant(dm.id)
 
       {:ok, dm_agent_participant} =
@@ -312,28 +322,23 @@ defmodule Platform.Chat.AttentionRouterTest do
   end
 
   describe "resolve_attention_mode/2" do
-    test "returns space-level mode when set" do
-      space = %Platform.Chat.Space{kind: "channel", agent_attention: "directed"}
-      participant = %Platform.Chat.Participant{}
+    # ADR 0027: agent_attention removed — always uses kind-based default
 
-      assert AttentionRouter.resolve_attention_mode(space, participant) == "directed"
-    end
-
-    test "falls back to kind-based default when agent_attention is nil" do
+    test "returns kind-based default for each space kind" do
       participant = %Platform.Chat.Participant{}
 
       assert AttentionRouter.resolve_attention_mode(
-               %Platform.Chat.Space{kind: "channel", agent_attention: nil},
+               %Platform.Chat.Space{kind: "channel"},
                participant
              ) == "on_mention"
 
       assert AttentionRouter.resolve_attention_mode(
-               %Platform.Chat.Space{kind: "dm", agent_attention: nil},
+               %Platform.Chat.Space{kind: "dm"},
                participant
              ) == "directed"
 
       assert AttentionRouter.resolve_attention_mode(
-               %Platform.Chat.Space{kind: "group", agent_attention: nil},
+               %Platform.Chat.Space{kind: "group"},
                participant
              ) == "collaborative"
     end
