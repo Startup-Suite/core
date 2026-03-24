@@ -1,6 +1,6 @@
 # ADR 0027: Active Agent Mutex — Simplified Attention Routing
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-03-24  
 **Deciders:** Ryan Milvenan  
 **Supersedes:** ADR 0013 (Attention Routing and Channel Policy), ADR 0017 (Silence Hardening)  
