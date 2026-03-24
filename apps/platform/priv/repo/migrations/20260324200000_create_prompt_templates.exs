@@ -8,7 +8,7 @@ defmodule Platform.Repo.Migrations.CreatePromptTemplates do
       add(:name, :string, null: false)
       add(:description, :text)
       add(:content, :text, null: false)
-      add(:variables, :map, default: [])
+      add(:variables, {:array, :string}, default: [])
       add(:updated_by, :string)
 
       timestamps(type: :utc_datetime_usec)
