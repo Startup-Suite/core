@@ -373,8 +373,16 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
-  def handle_event("react", %{"message_id" => msg_id, "emoji" => emoji}, socket) do
-    with participant when not is_nil(participant) <- socket.assigns.current_participant do
+  def handle_event("react", params, socket) when is_map(params) do
+    msg_id =
+      params["message_id"] || params["message-id"] || params[:message_id] || params[:"message-id"] ||
+        get_in(params, ["value", "message_id"]) || get_in(params, ["value", "message-id"])
+
+    emoji = params["emoji"] || params[:emoji] || get_in(params, ["value", "emoji"])
+
+    with participant when not is_nil(participant) <- socket.assigns.current_participant,
+         true <- is_binary(msg_id) and msg_id != "",
+         true <- is_binary(emoji) and emoji != "" do
       groups = Map.get(socket.assigns.reactions_map, msg_id, [])
       already_reacted = Enum.any?(groups, &(&1.emoji == emoji && &1.reacted_by_me))
 
@@ -387,6 +395,8 @@ defmodule PlatformWeb.ChatLive do
           emoji: emoji
         })
       end
+    else
+      _ -> :ok
     end
 
     {:noreply, socket}
