@@ -1946,6 +1946,7 @@ defmodule PlatformWeb.ChatLive do
                 <textarea
                   name="compose[text]"
                   id={@compose_form[:text].id}
+                  data-space-id={@active_space && @active_space.id}
                   placeholder={"Message ##{(@active_space && @active_space.name) || ""}"}
                   autocomplete="off"
                   rows="1"

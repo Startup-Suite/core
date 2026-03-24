@@ -627,4 +627,59 @@ defmodule PlatformWeb.ChatLiveTest do
       assert archived.archived_at != nil
     end
   end
+
+  describe "compose draft persistence" do
+    test "compose textarea renders with data-space-id matching the active space", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      {:ok, space} =
+        Chat.create_channel(%{
+          name: "draft-space-attr",
+          slug: "draft-space-attr",
+          description: ""
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/chat/draft-space-attr")
+
+      assert render(view) =~ ~s(data-space-id="#{space.id}")
+    end
+
+    test "data-space-id attribute updates when navigating to a different space", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      {:ok, space_a} =
+        Chat.create_channel(%{name: "draft-nav-a", slug: "draft-nav-a", description: ""})
+
+      {:ok, space_b} =
+        Chat.create_channel(%{name: "draft-nav-b", slug: "draft-nav-b", description: ""})
+
+      {:ok, view_a, _} = live(conn, ~p"/chat/draft-nav-a")
+      assert render(view_a) =~ ~s(data-space-id="#{space_a.id}")
+
+      {:ok, view_b, _} = live(conn, ~p"/chat/draft-nav-b")
+      assert render(view_b) =~ ~s(data-space-id="#{space_b.id}")
+    end
+
+    test "sending a message resets compose textarea value", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      {:ok, _space} =
+        Chat.create_channel(%{name: "draft-send", slug: "draft-send", description: ""})
+
+      {:ok, view, _html} = live(conn, ~p"/chat/draft-send")
+
+      view
+      |> form("#compose-form", compose: %{text: "xUniqueTextInTextarea999x"})
+      |> render_submit()
+
+      # After send, the textarea itself should be empty (server resets compose_form to "")
+      # The sent message content appears in the stream, not in the textarea value
+      textarea_html =
+        view
+        |> element("textarea[name='compose[text]']")
+        |> render()
+
+      refute textarea_html =~ "xUniqueTextInTextarea999x"
+    end
+  end
 end

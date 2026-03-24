@@ -1,4 +1,9 @@
 // ComposeInput hook — auto-expanding textarea, Enter for newline, @mention autocomplete
+
+// Per-space draft store. Module-level so it survives LiveView re-renders and space
+// navigation for the lifetime of the page session.
+const draftStore = {};
+
 const ComposeInput = {
   mounted() {
     this._lastMentionQuery = null;
@@ -14,6 +19,18 @@ const ComposeInput = {
     // Only resize if field-sizing:content isn't supported
     if (!CSS.supports("field-sizing", "content")) {
       this._autoResize();
+    }
+
+    // Track current space for draft keying
+    this._spaceId = this.el.dataset.spaceId;
+
+    // Restore any saved draft for this space
+    const saved = this._spaceId && draftStore[this._spaceId];
+    if (saved) {
+      this.el.value = saved;
+      if (!CSS.supports("field-sizing", "content")) { this._autoResize(); }
+      // Sync server-side assign so incoming re-renders don't overwrite the restored value
+      this.pushEvent("compose_changed", { compose: { text: saved } });
     }
 
     // Reset viewport after iOS keyboard dismisses
@@ -55,6 +72,8 @@ const ComposeInput = {
         this._autoResize();
       }
       this._detectMention();
+      // Save draft on every keystroke
+      if (this._spaceId) { draftStore[this._spaceId] = this.el.value; }
     });
 
     // Reset height after form submission (LiveView clears the value)
@@ -63,6 +82,8 @@ const ComposeInput = {
         this.el.style.height = "33px";
         this.el.style.overflowY = "hidden";
       }
+      // Clear saved draft for this space after a successful send
+      if (this._spaceId) { delete draftStore[this._spaceId]; }
     });
 
     // Handle insert-mention events dispatched by suggestion buttons
@@ -92,10 +113,32 @@ const ComposeInput = {
     });
   },
 
+  beforeUpdate() {
+    // Capture draft before LiveView patches the DOM. On space navigation,
+    // handle_params calls assign_compose("") which would overwrite the textarea —
+    // saving here preserves whatever the user had typed.
+    if (this._spaceId) {
+      draftStore[this._spaceId] = this.el.value;
+    }
+  },
+
   updated() {
     // Re-apply auto-resize when LiveView patches the textarea (e.g., after send clears it)
     if (!CSS.supports("field-sizing", "content")) {
       this._autoResize();
+    }
+
+    // Detect space navigation: data-space-id changes when handle_params loads a new space
+    const newSpaceId = this.el.dataset.spaceId;
+    if (newSpaceId !== this._spaceId) {
+      this._spaceId = newSpaceId;
+      const draft = (this._spaceId && draftStore[this._spaceId]) || "";
+      this.el.value = draft;
+      if (!CSS.supports("field-sizing", "content")) { this._autoResize(); }
+      // Sync server state so re-renders don't stomp the restored draft
+      if (draft) {
+        this.pushEvent("compose_changed", { compose: { text: draft } });
+      }
     }
   },
 
