@@ -248,7 +248,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [root_message | _] = Chat.list_messages(space.id)
 
-      render_click(view, "open_thread", %{"message_id" => root_message.id})
+      render_click(view, "open_thread", %{"message-id" => root_message.id})
 
       view
       |> form("#thread-compose-form", thread_compose: %{text: "Phoenix lives in threads too"})
@@ -269,7 +269,7 @@ defmodule PlatformWeb.ChatLiveTest do
 
       assert html =~ "Thread"
 
-      html = render_click(view, "open_search_result", %{"message_id" => thread_message.id})
+      html = render_click(view, "open_search_result", %{"message-id" => thread_message.id})
 
       assert html =~ "thread-compose-form"
       assert html =~ "Phoenix lives in threads too"
@@ -349,7 +349,7 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       # Trigger react event directly
-      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
+      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
 
       # After the PubSub roundtrip the reaction should appear
       html = render(view)
@@ -374,7 +374,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug(slug)
       [msg | _] = Chat.list_messages(space.id)
 
-      html = render_click(view, "open_thread", %{"message_id" => msg.id})
+      html = render_click(view, "open_thread", %{"message-id" => msg.id})
 
       assert html =~ "Thread"
       assert html =~ "thread-compose-form"
@@ -391,7 +391,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      render_click(view, "open_thread", %{"message_id" => msg.id})
+      render_click(view, "open_thread", %{"message-id" => msg.id})
       html = render_click(view, "close_thread", %{})
 
       refute html =~ "thread-compose-form"
@@ -408,7 +408,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      render_click(view, "open_thread", %{"message_id" => msg.id})
+      render_click(view, "open_thread", %{"message-id" => msg.id})
 
       view
       |> form("#thread-compose-form", thread_compose: %{text: "thread reply"})
@@ -431,7 +431,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      render_click(view, "open_thread", %{"message_id" => msg.id})
+      render_click(view, "open_thread", %{"message-id" => msg.id})
 
       view
       |> form("#thread-compose-form",
@@ -474,7 +474,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      render_click(view, "open_thread", %{"message_id" => msg.id})
+      render_click(view, "open_thread", %{"message-id" => msg.id})
 
       view
       |> form("#thread-compose-form", thread_compose: %{text: "timestamp thread reply"})
@@ -503,7 +503,7 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       # Toggle pin
-      render_click(view, "toggle_pin", %{"message_id" => msg.id, "space_id" => msg.space_id})
+      render_click(view, "toggle_pin", %{"message-id" => msg.id, "space-id" => msg.space_id})
 
       # Toggle pins panel open
       html = render_click(view, "toggle_pins_panel", %{})
@@ -523,7 +523,7 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
-      render_click(view, "toggle_pin", %{"message_id" => msg.id, "space_id" => msg.space_id})
+      render_click(view, "toggle_pin", %{"message-id" => msg.id, "space-id" => msg.space_id})
 
       html_open = render_click(view, "toggle_pins_panel", %{})
       assert html_open =~ "Pinned Messages"
