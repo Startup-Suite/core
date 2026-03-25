@@ -14,10 +14,8 @@ defmodule Platform.Repo.Migrations.ActiveAgentMutex do
       remove(:attention_config, :map, default: %{})
     end
 
-    # NOTE: chat_attention_state table is NOT dropped here because
-    # attention_router.ex and Chat context functions (get_attention_state,
-    # engage_agent, etc.) still depend on it. It will be dropped in Stage 6
-    # when those functions are removed.
+    # ── Drop deprecated chat_attention_state table (Stage 6 cleanup) ─────────
+    drop_if_exists(table(:chat_attention_state))
 
     # ── Remove 'dismissed' SpaceAgent entries and drop dismissed columns ──────
     # Delete any dismissed roster entries

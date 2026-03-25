@@ -39,7 +39,6 @@ defmodule Platform.Chat do
 
   alias Platform.Chat.{
     Attachment,
-    AttentionState,
     Canvas,
     Message,
     Participant,
@@ -581,84 +580,6 @@ defmodule Platform.Chat do
       %Agent{} = agent -> ensure_agent_participant(space_id, agent, opts)
       nil -> {:error, :not_found}
     end
-  end
-
-  # ── Attention State ─────────────────────────────────────────────────────────
-
-  @doc "Fetch the current attention state for an agent in a space."
-  @spec get_attention_state(binary(), binary()) :: AttentionState.t() | nil
-  def get_attention_state(space_id, agent_participant_id) do
-    Repo.get_by(AttentionState,
-      space_id: space_id,
-      agent_participant_id: agent_participant_id
-    )
-  end
-
-  @doc "Upsert an attention state record for a space/agent pair."
-  @spec upsert_attention_state(binary(), map()) ::
-          {:ok, AttentionState.t()} | {:error, Ecto.Changeset.t()}
-  def upsert_attention_state(space_id, attrs) do
-    agent_participant_id =
-      Map.get(attrs, :agent_participant_id) || Map.get(attrs, "agent_participant_id")
-
-    case get_attention_state(space_id, agent_participant_id) do
-      nil ->
-        attrs = Map.merge(attrs, %{space_id: space_id, updated_at: DateTime.utc_now()})
-
-        %AttentionState{}
-        |> AttentionState.changeset(attrs)
-        |> Repo.insert()
-
-      existing ->
-        existing
-        |> AttentionState.changeset(Map.put(attrs, :updated_at, DateTime.utc_now()))
-        |> Repo.update()
-    end
-  end
-
-  @doc "Enter sticky engagement state for an agent in a space."
-  @spec engage_agent(binary(), binary(), String.t()) ::
-          {:ok, AttentionState.t()} | {:error, Ecto.Changeset.t()}
-  def engage_agent(space_id, agent_participant_id, context \\ "") do
-    upsert_attention_state(space_id, %{
-      agent_participant_id: agent_participant_id,
-      state: "engaged",
-      engaged_since: DateTime.utc_now(),
-      engaged_context: context,
-      silenced_until: nil
-    })
-  end
-
-  @doc "Clear engagement and return agent to idle state."
-  @spec disengage_agent(binary(), binary()) ::
-          {:ok, AttentionState.t()} | {:error, Ecto.Changeset.t()}
-  def disengage_agent(space_id, agent_participant_id) do
-    upsert_attention_state(space_id, %{
-      agent_participant_id: agent_participant_id,
-      state: "idle",
-      engaged_since: nil,
-      engaged_context: nil
-    })
-  end
-
-  @doc "Silence an agent in a space. If `until` is nil, silenced until re-mentioned."
-  @spec silence_agent(binary(), binary(), DateTime.t() | nil) ::
-          {:ok, AttentionState.t()} | {:error, Ecto.Changeset.t()}
-  def silence_agent(space_id, agent_participant_id, until \\ nil) do
-    upsert_attention_state(space_id, %{
-      agent_participant_id: agent_participant_id,
-      state: "silenced",
-      silenced_until: until,
-      engaged_since: nil,
-      engaged_context: nil
-    })
-  end
-
-  @doc "Unsilence an agent, returning to idle state."
-  @spec unsilence_agent(binary(), binary()) ::
-          {:ok, AttentionState.t()} | {:error, Ecto.Changeset.t()}
-  def unsilence_agent(space_id, agent_participant_id) do
-    disengage_agent(space_id, agent_participant_id)
   end
 
   # ── Messages ────────────────────────────────────────────────────────────────
