@@ -176,6 +176,49 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert status.last_runtime_event_at != nil
     end
 
+    test "hydrates active manual approval stage into waiting_human review state", %{
+      task: task,
+      assignee: assignee,
+      plan: plan
+    } do
+      {:ok, task} = Tasks.transition_task(task, "planning")
+      {:ok, task} = Tasks.transition_task(task, "ready")
+      {:ok, _task} = Tasks.transition_task(task, "in_progress")
+
+      {:ok, review_stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 2,
+          name: "Manual approval",
+          description: "Wait for human sign-off",
+          status: "running",
+          started_at: DateTime.utc_now()
+        })
+
+      {:ok, _validation} =
+        Tasks.create_validation(%{stage_id: review_stage.id, kind: "manual_approval"})
+
+      {:ok, _event} =
+        Platform.Orchestration.record_runtime_event(%{
+          "task_id" => task.id,
+          "phase" => "execution",
+          "runtime_id" => assignee.id,
+          "event_type" => "execution.progress",
+          "payload" => %{"summary" => "waiting for review"}
+        })
+
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(100)
+
+      status = TaskRouter.current_status(task.id)
+      assert status.status == :waiting_human
+      assert status.lease_status == "active"
+      assert status.current_stage_id == review_stage.id
+
+      updated_task = Tasks.get_task_detail(task.id)
+      assert updated_task.status == "in_review"
+    end
+
     test "approved plan starts the first pending execution stage", %{
       task: task,
       assignee: assignee,

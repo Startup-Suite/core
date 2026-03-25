@@ -109,10 +109,17 @@ defmodule Platform.Orchestration.TaskRouter do
         execution_space_id: execution_space_id
       }
       |> maybe_hydrate_from_lease()
+      |> maybe_hydrate_current_stage()
 
     case state.lease_status do
       "active" ->
-        {:ok, schedule_heartbeat(%{state | status: :running})}
+        if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+          maybe_transition_task_to_in_review(state.task_id)
+          send(self(), :dispatch)
+          {:ok, %{state | status: :waiting_human}}
+        else
+          {:ok, schedule_heartbeat(%{state | status: :running})}
+        end
 
       "blocked" ->
         {:ok, %{state | status: :waiting_human}}
@@ -548,6 +555,13 @@ defmodule Platform.Orchestration.TaskRouter do
       _ ->
         state
     end
+  end
+
+  defp maybe_hydrate_current_stage(%State{} = state) do
+    plan = Tasks.current_plan(state.task_id)
+    running_stage = current_running_stage(plan)
+
+    maybe_set_stage(state, running_stage)
   end
 
   defp apply_runtime_event(state, event) do
