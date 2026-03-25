@@ -213,19 +213,44 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
     Create a plan using the plan_create tool. The plan will be reviewed by a human before work starts — make it specific enough that they can meaningfully approve or reject it.
 
-    A good plan stage must include:
-    - A clear name (not just a category label)
-    - A description that explains: what specifically will be changed, which files will be modified or created, what the implementation approach is, and why that approach was chosen
-    - Appropriate validations: use test_pass and lint_pass for code changes. Use manual_approval for any stage that requires a human to visually verify a UI change — when you reach that stage, post a screenshot as a canvas into the execution space so the human can review it. Do NOT include code_review as a validation kind — it is not supported.
+    ## Plan structure
 
-    Aim for 3–7 stages. Each stage should represent a discrete, reviewable unit of work. "Client-side draft persistence" with no further detail is not acceptable — describe the actual change.
+    The plan covers the full task lifecycle: implementation AND review. Structure it in two sections:
 
-    Example of a good stage description:
-    "Add a module-level drafts Map to ComposeInput JS hook (assets/js/hooks/compose_input.js). On every input event, store the current textarea value keyed by space_id (read from data-space-id attribute on the element). On mounted(), restore any saved draft and push it to the server via compose_changed event. On compose_reset, delete the draft for that space."
+    **Implementation stages** (run in `in_progress`):
+    - Each stage represents a discrete, reviewable unit of work
+    - Validations: use `test_pass` and `lint_pass` for code changes
+    - Push branch when implementation stages are complete — do NOT open a PR yet
 
-    Submit the plan with plan_submit when complete. Do not begin implementation until the plan is approved.
+    **Final review stage** (runs when task moves to `in_review`):
+    - Name it "Review" or "Validation"
+    - Describe: exercise the feature in the local/dev environment, confirm it matches the task goal
+    - If the feature has a visible UI: take a screenshot or canvas snapshot as evidence
+    - Validations:
+      - Use `test_pass` / `lint_pass` for deterministic checks
+      - Use `manual_approval` if a human needs to sign off on UI or behavior
+      - When you reach a `manual_approval` validation: call `suite_review_request_create` and post a
+        screenshot into the execution space so the human can review before approving
+    - On success: open the PR and include the PR link as evidence on the final validation
 
-    The attention signal that delivered this message includes a `context` field with the full task hierarchy: project (name, repo_url, tech_stack), epic (name, description, acceptance_criteria), task metadata, current plan with stages, and execution_space_id. Use it for full context when writing your plan.
+    Do NOT include `code_review` as a validation kind — it is not supported.
+
+    ## Stage quality bar
+
+    A good stage description explains: what specifically will be changed, which files will be modified
+    or created, what the implementation approach is, and why. Generic labels like "Client-side changes"
+    are not acceptable.
+
+    Example:
+    "Add a module-level drafts Map to ComposeInput JS hook (assets/js/hooks/compose_input.js). On every
+    input event, store the current textarea value keyed by space_id. On mounted(), restore any saved
+    draft and push it to the server via compose_changed event. On compose_reset, delete the draft."
+
+    Aim for 3–7 total stages. Submit with plan_submit. Do not begin implementation until approved.
+
+    The attention signal includes a `context` field with the full task hierarchy: project (name,
+    repo_url, tech_stack), epic (name, description, acceptance_criteria), task metadata, current plan
+    with stages, and execution_space_id. Use it for full context when writing your plan.
 
     #{@skills_reference}
     """
