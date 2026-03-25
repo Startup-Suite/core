@@ -137,6 +137,45 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert status.last_evidence_at != nil
     end
 
+    test "tracks runtime events as liveness evidence", %{task: task, assignee: assignee} do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(50)
+
+      {:ok, _event} =
+        Platform.Orchestration.record_runtime_event(%{
+          "task_id" => task.id,
+          "phase" => "execution",
+          "runtime_id" => assignee.id,
+          "event_type" => "execution.heartbeat"
+        })
+
+      Process.sleep(50)
+
+      status = TaskRouter.current_status(task.id)
+      assert status.lease_status == "active"
+      assert status.last_runtime_event_at != nil
+      assert status.status == :running
+    end
+
+    test "hydrates router state from an existing active lease", %{task: task, assignee: assignee} do
+      {:ok, _event} =
+        Platform.Orchestration.record_runtime_event(%{
+          "task_id" => task.id,
+          "phase" => "execution",
+          "runtime_id" => assignee.id,
+          "event_type" => "execution.progress",
+          "payload" => %{"summary" => "already working"}
+        })
+
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(25)
+
+      status = TaskRouter.current_status(task.id)
+      assert status.status == :running
+      assert status.lease_status == "active"
+      assert status.last_runtime_event_at != nil
+    end
+
     test "completed plan transitions in_progress task to in_review", %{
       task: task,
       assignee: assignee,

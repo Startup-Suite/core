@@ -16,7 +16,8 @@ defmodule Platform.Orchestration.TaskRouter do
   alias Platform.Orchestration.{
     ContextAssembler,
     ExecutionSpace,
-    HeartbeatScheduler
+    HeartbeatScheduler,
+    RuntimeSupervision
   }
 
   alias Platform.Tasks
@@ -33,6 +34,8 @@ defmodule Platform.Orchestration.TaskRouter do
             current_stage_id: String.t() | nil,
             stage_started_at: DateTime.t() | nil,
             last_evidence_at: DateTime.t() | nil,
+            last_runtime_event_at: DateTime.t() | nil,
+            lease_status: String.t() | nil,
             heartbeat_ref: reference() | nil,
             escalation_count: non_neg_integer(),
             status: :dispatching | :running | :stalled | :complete | :escalated | :waiting_human
@@ -45,6 +48,8 @@ defmodule Platform.Orchestration.TaskRouter do
       :current_stage_id,
       :stage_started_at,
       :last_evidence_at,
+      :last_runtime_event_at,
+      :lease_status,
       :heartbeat_ref,
       escalation_count: 0,
       status: :dispatching
@@ -97,16 +102,26 @@ defmodule Platform.Orchestration.TaskRouter do
           nil
       end
 
-    state = %State{
-      task_id: task_id,
-      assignee: assignee,
-      execution_space_id: execution_space_id
-    }
+    state =
+      %State{
+        task_id: task_id,
+        assignee: assignee,
+        execution_space_id: execution_space_id
+      }
+      |> maybe_hydrate_from_lease()
 
-    # Schedule initial dispatch on next tick
-    send(self(), :dispatch)
+    case state.lease_status do
+      "active" ->
+        {:ok, schedule_heartbeat(%{state | status: :running})}
 
-    {:ok, state}
+      "blocked" ->
+        {:ok, %{state | status: :waiting_human}}
+
+      _ ->
+        # Schedule initial dispatch on next tick
+        send(self(), :dispatch)
+        {:ok, state}
+    end
   end
 
   @impl true
@@ -119,7 +134,9 @@ defmodule Platform.Orchestration.TaskRouter do
       current_stage_id: state.current_stage_id,
       escalation_count: state.escalation_count,
       stage_started_at: state.stage_started_at,
-      last_evidence_at: state.last_evidence_at
+      last_evidence_at: state.last_evidence_at,
+      last_runtime_event_at: state.last_runtime_event_at,
+      lease_status: state.lease_status
     }
 
     {:reply, reply, state}
@@ -180,10 +197,10 @@ defmodule Platform.Orchestration.TaskRouter do
       task = Tasks.get_task_detail(state.task_id)
 
       if task do
-        elapsed = elapsed_seconds(state.stage_started_at)
+        idle_ms = latest_activity_age_ms(state)
         stall_threshold = HeartbeatScheduler.stall_threshold_ms(stage_type)
 
-        if stall_threshold && elapsed * 1_000 >= stall_threshold do
+        if stall_threshold && idle_ms >= stall_threshold do
           {:noreply, handle_possible_stall(state, task)}
         else
           send_heartbeat(state, task)
@@ -204,6 +221,11 @@ defmodule Platform.Orchestration.TaskRouter do
       |> schedule_heartbeat()
 
     {:noreply, state}
+  end
+
+  def handle_info({:runtime_event, event}, %State{task_id: task_id} = state)
+      when event.task_id == task_id do
+    {:noreply, apply_runtime_event(state, event)}
   end
 
   # Board PubSub: stage transitioned
@@ -398,11 +420,13 @@ defmodule Platform.Orchestration.TaskRouter do
     max_esc = HeartbeatScheduler.max_escalations(stage_type) || 2
     new_count = state.escalation_count + 1
 
+    idle_seconds = div(latest_activity_age_ms(state), 1_000)
+
     # Post stall detection log
     if state.execution_space_id do
       ExecutionSpace.post_log(
         state.execution_space_id,
-        "Stall detected: no evidence for stage #{state.current_stage_id || "unknown"} | Escalation #{new_count}/#{max_esc}"
+        "Stall detected: no runtime activity for #{idle_seconds}s on stage #{state.current_stage_id || "unknown"} | Escalation #{new_count}/#{max_esc}"
       )
     end
 
@@ -450,6 +474,80 @@ defmodule Platform.Orchestration.TaskRouter do
     else
       %{state | escalation_count: 0}
     end
+  end
+
+  defp maybe_hydrate_from_lease(%State{} = state) do
+    case RuntimeSupervision.current_lease_for_task(state.task_id) do
+      %{runtime_id: runtime_id} = lease when runtime_id == state.assignee.id ->
+        last_runtime_event_at =
+          lease.last_progress_at || lease.last_heartbeat_at || lease.started_at
+
+        %{
+          state
+          | last_runtime_event_at: last_runtime_event_at,
+            lease_status: lease.status
+        }
+
+      _ ->
+        state
+    end
+  end
+
+  defp apply_runtime_event(state, event) do
+    event_time = event.occurred_at || DateTime.utc_now()
+    lease_status = event.lease && event.lease.status
+
+    base_state =
+      state
+      |> Map.put(:last_runtime_event_at, event_time)
+      |> Map.put(:lease_status, lease_status || state.lease_status)
+      |> reset_escalation()
+
+    case event.event_type do
+      type
+      when type in [
+             "assignment.accepted",
+             "execution.started",
+             "execution.heartbeat",
+             "execution.progress",
+             "execution.unblocked"
+           ] ->
+        base_state
+        |> Map.put(:status, :running)
+        |> schedule_heartbeat()
+
+      "execution.blocked" ->
+        base_state
+        |> cancel_heartbeat()
+        |> Map.put(:status, :waiting_human)
+
+      "execution.finished" ->
+        base_state
+        |> cancel_heartbeat()
+        |> Map.put(:status, :running)
+
+      type when type in ["execution.failed", "execution.abandoned", "assignment.rejected"] ->
+        base_state
+        |> cancel_heartbeat()
+        |> Map.put(:status, :stalled)
+
+      _ ->
+        base_state
+    end
+  end
+
+  defp latest_activity_at(state) do
+    [state.last_runtime_event_at, state.last_evidence_at, state.stage_started_at]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> DateTime.utc_now()
+      values -> Enum.max_by(values, &DateTime.to_unix(&1, :microsecond))
+    end
+  end
+
+  defp latest_activity_age_ms(state) do
+    DateTime.diff(DateTime.utc_now(), latest_activity_at(state), :millisecond)
+    |> max(0)
   end
 
   # ── Stage helpers ──────────────────────────────────────────────────────
