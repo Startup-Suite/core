@@ -286,8 +286,8 @@ defmodule Platform.Chat.AttentionRouter do
         mentioned?(participant, message) and
           case Map.get(roster_by_agent_id, participant.participant_id) do
             %{role: role} when role in ["principal", "member"] -> true
-            # No roster entry but is a participant — still allow mention
-            nil -> true
+            # Agent is a participant but NOT in roster — block mention (ADR 0027)
+            nil -> roster == []
             _ -> false
           end
       end)
