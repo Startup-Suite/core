@@ -72,6 +72,8 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Auth is broken"
       assert prompt =~ "plan_create"
       assert prompt =~ "plan_submit"
+      assert prompt =~ "Final review stage"
+      assert prompt =~ "suite_review_request_create"
       assert prompt =~ "Do NOT include `code_review` as a validation kind"
       assert prompt =~ "high"
     end
