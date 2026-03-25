@@ -109,13 +109,16 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
       skills_reference: @skills_reference
     }
 
-    case PromptTemplates.render_template("dispatch.in_progress", assigns) do
-      {:ok, rendered} ->
-        rendered
+    prompt =
+      case PromptTemplates.render_template("dispatch.in_progress", assigns) do
+        {:ok, rendered} ->
+          rendered
 
-      {:error, :not_found} ->
-        hardcoded_dispatch_in_progress(task, plan, stage)
-    end
+        {:error, :not_found} ->
+          hardcoded_dispatch_in_progress(task, plan, stage)
+      end
+
+    enrich_in_progress_prompt(prompt, task, stage)
   end
 
   def dispatch_prompt(%{status: "in_review"} = task, plan, stage) do
@@ -192,13 +195,16 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
       pending_validations: pending_str
     }
 
-    case PromptTemplates.render_template("heartbeat", assigns) do
-      {:ok, rendered} ->
-        rendered
+    prompt =
+      case PromptTemplates.render_template("heartbeat", assigns) do
+        {:ok, rendered} ->
+          rendered
 
-      {:error, :not_found} ->
-        hardcoded_heartbeat(task, stage_name, stage_status, elapsed_str, pending_str)
-    end
+        {:error, :not_found} ->
+          hardcoded_heartbeat(task, stage_name, stage_status, elapsed_str, pending_str)
+      end
+
+    enrich_heartbeat_prompt(prompt, task, stage, pending_validations)
   end
 
   # ── Hardcoded fallback prompts ─────────────────────────────────────────
@@ -258,31 +264,6 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   defp hardcoded_dispatch_in_progress(task, plan, stage) do
     stage_info = format_stage_info(plan, stage)
-    repo_url = project_attr(task, :repo_url, "")
-    default_branch = project_attr(task, :default_branch, "main")
-    task_slug = short_task_id(task)
-
-    git_section =
-      """
-
-      ## Git Workflow (CRITICAL)
-      Repository: #{repo_url}
-      Base branch: #{default_branch}
-
-      1. Create a worktree from the latest #{default_branch} branch:
-         ```
-         git fetch origin
-         git worktree add ../worktrees/#{task_slug} -b task/#{task_slug} origin/#{default_branch}
-         cd ../worktrees/#{task_slug}
-         ```
-      2. Do ALL work in the worktree directory.
-      3. When implementation is complete:
-         - Run the full test suite and lint checks
-         - Commit all changes with a descriptive message referencing task #{short_task_id(task)}
-         - Push the branch: `git push -u origin task/#{task_slug}`
-         - Do NOT open a PR yet — PR opening happens after successful review in `in_review`
-      4. NEVER work on an existing branch. ALWAYS branch from latest origin/#{default_branch}.
-      """
 
     """
     Plan approved — execute the current stage.
@@ -292,11 +273,12 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     Push evidence using validation_pass or stage_complete as you finish each step. \
     Post commentary to the execution space so reviewers can follow along. \
     Use report_blocker if you are stuck.
-    #{git_section}
+
     The attention signal that delivered this message includes a `context` field with the full task hierarchy: project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
 
     #{@skills_reference}
     """
+    |> enrich_in_progress_prompt(task, stage)
   end
 
   defp hardcoded_dispatch_in_review(task, plan, stage) do
@@ -382,6 +364,155 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
   end
 
   # ── Private helpers ────────────────────────────────────────────────────
+
+  defp enrich_in_progress_prompt(prompt, task, stage) do
+    prompt
+    |> maybe_strip_git_workflow(task)
+    |> insert_before_context(execution_contract(task, stage))
+    |> maybe_insert_git_workflow(task)
+  end
+
+  defp enrich_heartbeat_prompt(prompt, task, stage, pending_validations) do
+    prompt
+    |> append_unless_present(heartbeat_contract(task, stage, pending_validations))
+  end
+
+  defp maybe_strip_git_workflow(prompt, task) do
+    if real_repo_url?(project_attr(task, :repo_url, "")) do
+      prompt
+    else
+      Regex.replace(
+        ~r/\n## Git Workflow \(CRITICAL\).*?(?=\nThe attention signal|\z)/s,
+        prompt,
+        "\n"
+      )
+    end
+  end
+
+  defp maybe_insert_git_workflow(prompt, task) do
+    repo_url = project_attr(task, :repo_url, "")
+
+    if real_repo_url?(repo_url) and not String.contains?(prompt, "## Git Workflow (CRITICAL)") do
+      insert_before_context(prompt, git_workflow_section(task))
+    else
+      prompt
+    end
+  end
+
+  defp execution_contract(_task, nil), do: ""
+
+  defp execution_contract(task, stage) do
+    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
+    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
+
+    validation_lines =
+      case validations do
+        [] ->
+          "- This stage has no validations. Once the stage work is genuinely complete, call `stage_complete` with `stage_id=#{stage_id}`."
+
+        items ->
+          Enum.map_join(items, "\n", fn validation ->
+            kind = Map.get(validation, :kind) || Map.get(validation, "kind") || "validation"
+            id = Map.get(validation, :id) || Map.get(validation, "id") || "<missing-id>"
+
+            "- `#{kind}` → validation_id=`#{id}` (use `validation_pass`, then call `stage_complete` with `stage_id=#{stage_id}` once all required validations are passed)"
+          end)
+      end
+
+    """
+
+    ## Stage Execution Contract
+    Current task_id: `#{task_id}`
+    Current stage_id: `#{stage_id}`
+    #{validation_lines}
+    - If you get blocked, call `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}`.
+    """
+  end
+
+  defp heartbeat_contract(_task, nil, _pending_validations), do: ""
+
+  defp heartbeat_contract(task, stage, pending_validations) do
+    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
+    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+
+    pending_lines =
+      case pending_validations do
+        [] ->
+          "- No validations are pending. If the work is complete, call `stage_complete` with `stage_id=#{stage_id}`."
+
+        items ->
+          Enum.map_join(items, "\n", fn validation ->
+            kind = Map.get(validation, :kind) || Map.get(validation, "kind") || "validation"
+            id = Map.get(validation, :id) || Map.get(validation, "id") || "<missing-id>"
+            "- Pending `#{kind}` → validation_id=`#{id}`"
+          end)
+      end
+
+    """
+
+    ## Completion Reminder
+    Current task_id: `#{task_id}`
+    Current stage_id: `#{stage_id}`
+    #{pending_lines}
+    - Use `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}` if you cannot make forward progress.
+    """
+  end
+
+  defp git_workflow_section(task) do
+    repo_url = project_attr(task, :repo_url, "")
+    default_branch = project_attr(task, :default_branch, "main")
+    task_slug = short_task_id(task)
+
+    """
+
+    ## Git Workflow (CRITICAL)
+    Repository: #{repo_url}
+    Base branch: #{default_branch}
+
+    1. Create a worktree from the latest #{default_branch} branch:
+       ```
+       git fetch origin
+       git worktree add ../worktrees/#{task_slug} -b task/#{task_slug} origin/#{default_branch}
+       cd ../worktrees/#{task_slug}
+       ```
+    2. Do ALL work in the worktree directory.
+    3. When implementation is complete:
+       - Run the full test suite and lint checks
+       - Commit all changes with a descriptive message referencing task #{short_task_id(task)}
+       - Push the branch: `git push -u origin task/#{task_slug}`
+       - Do NOT open a PR yet — PR opening happens after successful review in `in_review`
+    4. NEVER work on an existing branch. ALWAYS branch from latest origin/#{default_branch}.
+    """
+  end
+
+  defp insert_before_context(prompt, ""), do: prompt
+
+  defp insert_before_context(prompt, addition) do
+    context_anchor = "\nThe attention signal"
+
+    if String.contains?(prompt, context_anchor) do
+      String.replace(prompt, context_anchor, addition <> context_anchor, global: false)
+    else
+      prompt <> addition
+    end
+  end
+
+  defp append_unless_present(prompt, ""), do: prompt
+
+  defp append_unless_present(prompt, addition) do
+    if String.contains?(prompt, String.trim(addition)) do
+      prompt
+    else
+      prompt <> addition
+    end
+  end
+
+  defp real_repo_url?(repo_url) when is_binary(repo_url) do
+    repo_url != "" and not String.contains?(repo_url, "example.invalid")
+  end
+
+  defp real_repo_url?(_repo_url), do: false
 
   defp format_stage_info(nil, _stage), do: ""
 

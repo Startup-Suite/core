@@ -75,7 +75,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "high"
     end
 
-    test "in_progress generates execution prompt with git workflow" do
+    test "in_progress generates execution prompt with git workflow and completion contract" do
       task = %{
         id: "task-1234abcd",
         title: "Fix auth bug",
@@ -86,7 +86,13 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       }
 
       plan = %{version: 1, stages: [%{}]}
-      stage = %{position: 1, name: "coding"}
+
+      stage = %{
+        id: "stage-123",
+        position: 1,
+        name: "coding",
+        validations: [%{id: "val-123", kind: "test_pass"}]
+      }
 
       prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
 
@@ -97,6 +103,35 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Git Workflow (CRITICAL)"
       assert prompt =~ "git worktree add ../worktrees/task"
       assert prompt =~ "https://github.com/test/router"
+      assert prompt =~ "Current stage_id: `stage-123`"
+      assert prompt =~ "validation_id=`val-123`"
+      assert prompt =~ "task_id=task-1234abcd"
+    end
+
+    test "in_progress omits git workflow for placeholder repos and still includes completion contract" do
+      task = %{
+        id: "task-local-proof",
+        title: "Proof task",
+        description: "Use the local proof stack",
+        status: "in_progress",
+        priority: "medium",
+        project: %{
+          repo_url: "https://example.invalid/local-task-lifecycle-proof",
+          default_branch: "main"
+        }
+      }
+
+      plan = %{version: 1, stages: [%{}]}
+      stage = %{id: "stage-local", position: 1, name: "proof", validations: []}
+
+      prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
+
+      refute prompt =~ "Git Workflow (CRITICAL)"
+      refute prompt =~ "example.invalid"
+      assert prompt =~ "Current stage_id: `stage-local`"
+      assert prompt =~ "This stage has no validations"
+      assert prompt =~ "stage_complete"
+      assert prompt =~ "report_blocker"
     end
 
     test "in_review generates explicit validation prompt" do
@@ -171,12 +206,14 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
     end
 
     test "handles zero pending validations" do
-      task = %{title: "Task"}
-      stage = %{name: "review", status: "running"}
+      task = %{id: "task-1", title: "Task"}
+      stage = %{id: "stage-1", name: "review", status: "running"}
 
       prompt = HeartbeatScheduler.heartbeat_prompt(task, stage, 60, [])
 
       assert prompt =~ "none"
+      assert prompt =~ "Current stage_id: `stage-1`"
+      assert prompt =~ "stage_complete"
     end
 
     test "formats hours correctly" do
