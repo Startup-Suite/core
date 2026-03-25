@@ -170,6 +170,8 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Current stage_id: `stage-review-1`"
       assert prompt =~ "validation_id=`val-pass-1`"
       assert prompt =~ "validation_id=`val-manual-1`"
+      assert prompt =~ "Do NOT call `task_update` for lifecycle status changes"
+      assert prompt =~ "Review outcomes flow through validations and review requests"
       assert prompt =~ "in_progress"
       refute prompt =~ "call `task_update` to move the task to `done`"
       refute prompt =~ "call `task_update` to move the task back to `in_progress`"
