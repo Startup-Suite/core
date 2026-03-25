@@ -70,7 +70,7 @@ defmodule Platform.Orchestration.TaskRouterWatcher do
   end
 
   @impl true
-  def handle_info({:task_updated, task}, state) do
+  def handle_info({event, task}, state) when event in [:task_created, :task_updated] do
     evaluate_task(task)
     {:noreply, state}
   end
