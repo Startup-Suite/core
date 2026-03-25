@@ -159,36 +159,61 @@ defmodule Platform.Orchestration.TaskRouter do
       context = ContextAssembler.build(state.task_id)
       prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
 
-      # Post log message to execution space
-      if state.execution_space_id do
-        stage_count = if plan, do: length(plan.stages || []), else: 0
-        stage_pos = if stage, do: stage.position, else: 1
+      case dispatch_attention(state.assignee, state.task_id, "task_assigned", context, prompt) do
+        :ok ->
+          # Post log message to execution space after successful runtime dispatch so
+          # boot retries do not duplicate task-assigned chatter.
+          if state.execution_space_id do
+            stage_count = if plan, do: length(plan.stages || []), else: 0
+            stage_pos = if stage, do: stage.position, else: 1
 
-        log_content =
-          "Task assigned: #{task.title} | Stage: #{stage_pos}/#{stage_count} | Assignee: #{state.assignee.id} | Heartbeat: #{heartbeat_interval_min(stage)}min"
+            log_content =
+              "Task assigned: #{task.title} | Stage: #{stage_pos}/#{stage_count} | Assignee: #{state.assignee.id} | Heartbeat: #{heartbeat_interval_min(stage)}min"
 
-        ExecutionSpace.post_log(state.execution_space_id, log_content)
+            ExecutionSpace.post_log(state.execution_space_id, log_content)
 
-        ExecutionSpace.post_engagement(state.execution_space_id, prompt,
-          metadata: %{"reason" => "task_assigned"}
-        )
+            ExecutionSpace.post_engagement(state.execution_space_id, prompt,
+              metadata: %{"reason" => "task_assigned"}
+            )
+          end
+
+          state =
+            state
+            |> Map.put(:status, :running)
+            |> maybe_set_stage(stage)
+
+          state =
+            if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+              state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
+            else
+              schedule_heartbeat(state)
+            end
+
+          {:noreply, state}
+
+        {:error, :endpoint_not_ready} ->
+          Logger.warning(
+            "[TaskRouter] endpoint not ready for task #{state.task_id}; retrying dispatch"
+          )
+
+          Process.send_after(self(), :dispatch, 1_000)
+          {:noreply, state}
+
+        {:error, _reason} ->
+          state =
+            state
+            |> Map.put(:status, :running)
+            |> maybe_set_stage(stage)
+
+          state =
+            if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+              state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
+            else
+              schedule_heartbeat(state)
+            end
+
+          {:noreply, state}
       end
-
-      dispatch_attention(state.assignee, state.task_id, "task_assigned", context, prompt)
-
-      state =
-        state
-        |> Map.put(:status, :running)
-        |> maybe_set_stage(stage)
-
-      state =
-        if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
-          state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
-        else
-          schedule_heartbeat(state)
-        end
-
-      {:noreply, state}
     else
       Logger.warning("[TaskRouter] task #{state.task_id} not found, stopping")
       {:stop, :normal, state}
@@ -423,6 +448,13 @@ defmodule Platform.Orchestration.TaskRouter do
         Logger.error("[TaskRouter] broadcast failed to #{topic}: #{inspect(err)}")
         {:error, :broadcast_failed}
     end
+  rescue
+    error in ArgumentError ->
+      Logger.warning(
+        "[TaskRouter] endpoint not ready while dispatching #{reason} for task #{task_id}: #{Exception.message(error)}"
+      )
+
+      {:error, :endpoint_not_ready}
   end
 
   defp send_heartbeat(state, task) do
