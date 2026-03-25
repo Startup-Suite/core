@@ -79,6 +79,10 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "take a screenshot or canvas snapshot as evidence"
       assert prompt =~ "manual_approval"
       assert prompt =~ "suite_review_request_create"
+
+      assert prompt =~
+               "screenshot into the execution space so the human can review before approving"
+
       assert prompt =~ "open the PR and include the PR link as evidence on the final validation"
       assert prompt =~ "Do NOT include `code_review` as a validation kind"
       assert prompt =~ "Do not begin implementation until approved"
