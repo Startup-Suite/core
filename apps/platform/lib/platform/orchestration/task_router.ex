@@ -241,21 +241,44 @@ defmodule Platform.Orchestration.TaskRouter do
         |> Map.put(:last_evidence_at, DateTime.utc_now())
         |> reset_escalation()
 
-      # Re-evaluate stage type using state (which now has current_stage_id set)
-      # This correctly detects manual_approval gates via validation inspection
-      stage_type = current_stage_type(state)
-
+      # If a review stage fails, bounce the task back to in_progress
       state =
-        if HeartbeatScheduler.manual_approval?(stage_type) do
-          state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
-        else
-          # When a new stage becomes running, re-dispatch so the agent gets
-          # an updated prompt that describes the current stage
-          if stage.status == "running" do
-            send(self(), :dispatch)
+        if stage.status == "failed" do
+          task = Tasks.get_task_detail(state.task_id)
+
+          if task && task.status == "in_review" do
+            case Tasks.transition_task(task, "in_progress") do
+              {:ok, _updated} ->
+                Logger.info(
+                  "[TaskRouter] review stage failed — bounced task #{state.task_id} back to in_progress"
+                )
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[TaskRouter] failed to bounce task #{state.task_id} to in_progress: #{inspect(reason)}"
+                )
+            end
           end
 
-          schedule_heartbeat(state)
+          # Re-dispatch so the agent picks up the in_progress prompt
+          send(self(), :dispatch)
+          state |> Map.put(:status, :running) |> schedule_heartbeat()
+        else
+          # Re-evaluate stage type using state (which now has current_stage_id set)
+          # This correctly detects manual_approval gates via validation inspection
+          stage_type = current_stage_type(state)
+
+          if HeartbeatScheduler.manual_approval?(stage_type) do
+            state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
+          else
+            # When a new stage becomes running, re-dispatch so the agent gets
+            # an updated prompt that describes the current stage
+            if stage.status == "running" do
+              send(self(), :dispatch)
+            end
+
+            schedule_heartbeat(state)
+          end
         end
 
       {:noreply, state}
@@ -264,26 +287,39 @@ defmodule Platform.Orchestration.TaskRouter do
     end
   end
 
-  # Board PubSub: plan completed for our task — auto-transition task to in_review
+  # Board PubSub: plan completed for our task
+  # in_progress → in_review (execution plan done, hand off to review)
+  # in_review   → done      (review plan done, all validations passed)
   def handle_info(
         {:plan_updated, %{task_id: task_id, status: "completed"} = _plan},
         %State{task_id: task_id} = state
       ) do
     task = Tasks.get_task_detail(task_id)
 
-    if task && task.status == "in_progress" do
-      case Tasks.transition_task(task, "in_review") do
-        {:ok, _updated} ->
-          Logger.info("[TaskRouter] plan completed — transitioned task #{task_id} to in_review")
+    if task do
+      {target_status, log_label} =
+        case task.status do
+          "in_progress" -> {"in_review", "execution plan completed"}
+          "in_review" -> {"done", "review plan completed"}
+          other -> {nil, other}
+        end
 
-        {:error, reason} ->
-          Logger.warning(
-            "[TaskRouter] failed to transition task #{task_id} to in_review: #{inspect(reason)}"
-          )
+      if target_status do
+        case Tasks.transition_task(task, target_status) do
+          {:ok, _updated} ->
+            Logger.info(
+              "[TaskRouter] #{log_label} — transitioned task #{task_id} to #{target_status}"
+            )
+
+          {:error, reason} ->
+            Logger.warning(
+              "[TaskRouter] failed to transition task #{task_id} to #{target_status}: #{inspect(reason)}"
+            )
+        end
       end
     end
 
-    # Re-dispatch so the agent picks up the in_review prompt
+    # Re-dispatch so the agent picks up the updated status prompt
     send(self(), :dispatch)
     {:noreply, state}
   end

@@ -115,11 +115,14 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
 
       assert prompt =~ "Review task"
       assert prompt =~ "validate the implementation"
-      assert prompt =~ "git merge-base --is-ancestor origin/main HEAD"
-      assert prompt =~ "git merge --no-commit --no-ff origin/main"
-      assert prompt =~ "task_update"
+      assert prompt =~ "exercise"
+      assert prompt =~ "suite_validation_evaluate"
+      assert prompt =~ "suite_review_request_create"
+      assert prompt =~ "manual_approval"
       assert prompt =~ "in_progress"
       assert prompt =~ "done"
+      # plan engine drives transitions — agent should NOT call task_update for status changes
+      refute prompt =~ "call `task_update` to move the task to `done`"
     end
 
     test "fallback generates generic assignment prompt" do

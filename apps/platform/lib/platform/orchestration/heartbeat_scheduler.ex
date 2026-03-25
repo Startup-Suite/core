@@ -280,28 +280,46 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     default_branch = project_attr(task, :default_branch, "main")
 
     """
-    Task is in review — validate the implementation before marking it done.
+    Task is in review — validate the implementation by exercising it in the local/dev environment.
 
     Task: #{task.title}
     #{stage_info}\
-    Run these checks exactly and push evidence for each result:
-    - Confirm the task branch is up to date with #{default_branch}: `git fetch origin && git merge-base --is-ancestor origin/#{default_branch} HEAD`
-    - Check CI / GitHub Actions status with `gh` CLI#{gh_repo_suffix(repo_url)}
-    - Check for merge conflicts: `git merge --no-commit --no-ff origin/#{default_branch}` and then immediately abort with `git merge --abort`
-    - Run the local test suite and any required lint checks
+    Your job is to exercise and validate the feature, not just check static artifacts.
+    Work through the current review stage's validations and push evidence for each:
 
-    If ALL checks pass:
-    - call `task_update` to move the task to `done`
-    - include the validation evidence, CI status, and PR link in your update
+    1. **Verify the implementation is exercisable:**
+       - Confirm the task branch exists and is pushed: `git fetch origin && git branch -r | grep task/`
+       - Check CI / GitHub Actions status#{gh_repo_suffix(repo_url)}
+       - Run the local test suite and lint checks
 
-    If ANY check fails:
-    - provide specific feedback describing what failed and how to reproduce it
-    - call `task_update` to move the task back to `in_progress`
-    - do not mark the task done
+    2. **Exercise the feature in the local/dev environment:**
+       - Start the dev server if needed and manually verify the feature works as described in the task
+       - Take a screenshot or canvas snapshot as evidence if the feature has a visible UI component
+         (use `suite_canvas_create` and post the evidence into the execution space)
+       - Confirm the feature matches the task goal and acceptance criteria
 
-    Do not self-approve code_review or manual_approval stages — a human must approve those.
+    3. **For each validation in the current stage:**
+       - Call `suite_validation_evaluate` to record a `passed` result with your evidence
+       - If a validation requires human sign-off, call `suite_review_request_create` to gate on
+         a `manual_approval` — do NOT self-approve manual_approval validations
+       - The plan engine will automatically advance to the next stage once all validations on
+         the current stage resolve
 
-    The attention signal that delivered this message includes a `context` field with the full task hierarchy: project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
+    4. **When all review stages pass:**
+       - The plan engine will complete the plan and the task will automatically move to `done`
+       - At that point, open a PR against #{default_branch}#{pr_repo_suffix(repo_url)} if not already open
+         and include the PR link as evidence on the final validation
+
+    5. **If any check fails:**
+       - Record a `failed` result on the relevant validation with specific failure details
+       - The plan engine will mark the stage failed and the task will automatically move back to `in_progress`
+       - Do NOT manually call `task_update` to move statuses — the plan engine drives transitions
+
+    Do not self-approve `manual_approval` validations — they require a human. Post screenshots or canvas
+    evidence so the human can review before approving.
+
+    The attention signal that delivered this message includes a `context` field with the full task hierarchy:
+    project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
 
     #{@skills_reference}
     """

@@ -200,6 +200,59 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert updated_task.status == "in_review"
     end
 
+    test "completed plan transitions in_review task to done", %{
+      task: task,
+      assignee: assignee,
+      plan: plan
+    } do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(50)
+
+      {:ok, task} = Tasks.transition_task(task, "planning")
+      {:ok, task} = Tasks.transition_task(task, "ready")
+      {:ok, task} = Tasks.transition_task(task, "in_progress")
+      {:ok, _task} = Tasks.transition_task(task, "in_review")
+
+      completed_plan =
+        plan
+        |> Ecto.Changeset.change(%{status: "completed"})
+        |> Platform.Repo.update!()
+
+      Tasks.broadcast_board({:plan_updated, completed_plan})
+      Process.sleep(100)
+
+      updated_task = Tasks.get_task_detail(task.id)
+      assert updated_task.status == "done"
+    end
+
+    test "failed review stage bounces task from in_review back to in_progress", %{
+      task: task,
+      assignee: assignee,
+      plan: plan
+    } do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(50)
+
+      {:ok, task} = Tasks.transition_task(task, "planning")
+      {:ok, task} = Tasks.transition_task(task, "ready")
+      {:ok, task} = Tasks.transition_task(task, "in_progress")
+      {:ok, _task} = Tasks.transition_task(task, "in_review")
+
+      plan_with_stages = Platform.Repo.preload(plan, :stages)
+      [stage | _] = plan_with_stages.stages
+
+      failed_stage =
+        stage
+        |> Ecto.Changeset.change(%{status: "failed", completed_at: DateTime.utc_now()})
+        |> Platform.Repo.update!()
+
+      Tasks.broadcast_board({:stage_transitioned, failed_stage})
+      Process.sleep(100)
+
+      updated_task = Tasks.get_task_detail(task.id)
+      assert updated_task.status == "in_progress"
+    end
+
     test "ignores task_updated for other tasks", %{
       task: task,
       assignee: assignee,
