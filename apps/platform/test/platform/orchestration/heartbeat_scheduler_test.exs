@@ -76,6 +76,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "test_pass"
       assert prompt =~ "lint_pass"
       assert prompt =~ "Final review stage"
+      assert prompt =~ "take a screenshot or canvas snapshot as evidence"
       assert prompt =~ "manual_approval"
       assert prompt =~ "suite_review_request_create"
       assert prompt =~ "open the PR and include the PR link as evidence on the final validation"
