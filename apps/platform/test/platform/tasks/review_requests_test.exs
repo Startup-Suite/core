@@ -190,18 +190,31 @@ defmodule Platform.Tasks.ReviewRequestsTest do
       validation = Repo.get!(Validation, ctx.validation.id)
       assert validation.status == "failed"
     end
+
+    test "single rejection resolves immediately even when other items are still pending", ctx do
+      {:ok, request} = create_request(ctx, ["Desktop", "Mobile", "Tablet"])
+      [item_a | _rest] = request.items
+
+      {:ok, _} = ReviewRequests.reject_item(item_a.id, "ryan", "Desktop state is incorrect")
+
+      resolved = ReviewRequests.get_review_request(request.id)
+      assert resolved.status == "resolved"
+
+      validation = Repo.get!(Validation, ctx.validation.id)
+      assert validation.status == "failed"
+    end
   end
 
   # ── maybe_resolve_request/1 ─────────────────────────────────────────────
 
   describe "maybe_resolve_request/1" do
-    test "returns :not_yet when items are still pending", ctx do
+    test "returns :not_yet when only approvals exist and items are still pending", ctx do
       {:ok, request} = create_request(ctx, ["A", "B"])
 
       # Approve only one item
       {:ok, _} = ReviewRequests.approve_item(hd(request.items).id, "ryan")
 
-      # Calling directly — second item is still pending
+      # Calling directly — second item is still pending and no rejection exists yet
       assert :not_yet == ReviewRequests.maybe_resolve_request(request.id)
 
       # Request still pending

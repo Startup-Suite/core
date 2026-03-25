@@ -116,11 +116,12 @@ defmodule Platform.Tasks.ReviewRequests do
   # ── Resolution ──────────────────────────────────────────────────────────
 
   @doc """
-  Check whether all items in a request are dispositioned.
+  Check whether a review request can be resolved.
 
-  If yes, marks the request as `resolved` and evaluates the validation:
-  * all approved → validation passes
-  * any needs_revision → validation fails + feedback posted to execution space
+  Resolution rules:
+  * any `needs_revision` item → resolve immediately and fail the validation
+  * all items approved → resolve and pass the validation
+  * otherwise → keep waiting
 
   Returns `:resolved` or `:not_yet`.
   """
@@ -131,12 +132,15 @@ defmodule Platform.Tasks.ReviewRequests do
     if request == nil do
       :not_yet
     else
-      pending_count = Enum.count(request.items, &(&1.status == "pending"))
+      cond do
+        Enum.any?(request.items, &(&1.status == "needs_revision")) ->
+          resolve_request(request)
 
-      if pending_count > 0 do
-        :not_yet
-      else
-        resolve_request(request)
+        Enum.all?(request.items, &(&1.status == "approved")) ->
+          resolve_request(request)
+
+        true ->
+          :not_yet
       end
     end
   end
