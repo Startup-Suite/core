@@ -75,6 +75,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Implementation stages"
       assert prompt =~ "test_pass"
       assert prompt =~ "lint_pass"
+      assert prompt =~ "Push branch when implementation stages are complete"
       assert prompt =~ "do NOT open a PR yet"
       assert prompt =~ "Final review stage"
       assert prompt =~ "take a screenshot or canvas snapshot as evidence"
