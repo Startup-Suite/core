@@ -103,6 +103,8 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Git Workflow (CRITICAL)"
       assert prompt =~ "git worktree add ../worktrees/task"
       assert prompt =~ "https://github.com/test/router"
+      assert prompt =~ "Do NOT open a PR yet"
+      assert prompt =~ "PR opening happens after successful review in `in_review`"
       assert prompt =~ "Current stage_id: `stage-123`"
       assert prompt =~ "validation_id=`val-123`"
       assert prompt =~ "task_id=task-1234abcd"
