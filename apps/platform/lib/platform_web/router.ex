@@ -48,6 +48,7 @@ defmodule PlatformWeb.Router do
       live("/tasks/:task_id", TasksLive, :show)
       live("/skills", SkillsLive, :index)
       live("/skills/:slug", SkillsLive, :show)
+      live("/changelog", ChangelogLive, :index)
       live("/control", ControlCenterLive, :index)
       live("/control/usage", UsageLive, :index)
       live("/control/:agent_slug", ControlCenterLive, :show)
