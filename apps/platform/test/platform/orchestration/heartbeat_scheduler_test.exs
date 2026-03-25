@@ -136,6 +136,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
 
     test "in_review generates explicit validation prompt" do
       task = %{
+        id: "task-review-1",
         title: "Review task",
         description: "Check it",
         status: "in_review",
@@ -144,20 +145,65 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       }
 
       plan = %{version: 1, stages: [%{}]}
-      stage = %{position: 1, name: "review"}
+
+      stage = %{
+        id: "stage-review-1",
+        position: 1,
+        name: "review",
+        validations: [
+          %{id: "val-pass-1", kind: "test_pass"},
+          %{id: "val-manual-1", kind: "manual_approval"}
+        ]
+      }
 
       prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
 
       assert prompt =~ "Review task"
       assert prompt =~ "validate the implementation"
-      assert prompt =~ "exercise"
       assert prompt =~ "suite_validation_evaluate"
       assert prompt =~ "suite_review_request_create"
       assert prompt =~ "manual_approval"
+      assert prompt =~ "Current task_id: `task-review-1`"
+      assert prompt =~ "Current stage_id: `stage-review-1`"
+      assert prompt =~ "validation_id=`val-pass-1`"
+      assert prompt =~ "validation_id=`val-manual-1`"
       assert prompt =~ "in_progress"
-      assert prompt =~ "done"
-      # plan engine drives transitions — agent should NOT call task_update for status changes
       refute prompt =~ "call `task_update` to move the task to `done`"
+      refute prompt =~ "call `task_update` to move the task back to `in_progress`"
+    end
+
+    test "in_review strips placeholder repo git instructions from stale template" do
+      task = %{
+        id: "task-review-local",
+        title: "Proof review task",
+        description: "Check the local proof",
+        status: "in_review",
+        priority: "medium",
+        project: %{
+          repo_url: "https://example.invalid/local-task-lifecycle-proof",
+          default_branch: "main"
+        }
+      }
+
+      plan = %{version: 1, stages: [%{}]}
+
+      stage = %{
+        id: "stage-review-local",
+        position: 1,
+        name: "review",
+        validations: [%{id: "val-manual-local", kind: "manual_approval"}]
+      }
+
+      prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
+
+      refute prompt =~ "example.invalid"
+      refute prompt =~ "git merge-base"
+      refute prompt =~ "gh` CLI"
+      refute prompt =~ "call `task_update` to move the task to `done`"
+      refute prompt =~ "call `task_update` to move the task back to `in_progress`"
+      assert prompt =~ "suite_review_request_create"
+      assert prompt =~ "validation_id=`val-manual-local`"
+      assert prompt =~ "Current stage_id: `stage-review-local`"
     end
 
     test "fallback generates generic assignment prompt" do

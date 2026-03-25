@@ -227,25 +227,18 @@ defmodule Platform.Orchestration.PromptTemplates do
           "skills_reference"
         ],
         content: """
-        Task is in review — validate the implementation before marking it done.
+        Task is in review — validate the implementation by exercising it in the local/dev environment.
 
         Task: {{task_title}}
-        {{stage_info}}Run these checks exactly and push evidence for each result:
-        - Confirm the task branch is up to date with {{default_branch}}: `git fetch origin && git merge-base --is-ancestor origin/{{default_branch}} HEAD`
-        - Check CI / GitHub Actions status with `gh` CLI for {{repo_url}}
-        - Check for merge conflicts: `git merge --no-commit --no-ff origin/{{default_branch}}` and then immediately abort with `git merge --abort`
-        - Run the local test suite and any required lint checks
+        {{stage_info}}Your job is to validate the current review stage and push evidence for each validation.
 
-        If ALL checks pass:
-        - call `task_update` to move the task to `done`
-        - include the validation evidence, CI status, and PR link in your update
-
-        If ANY check fails:
-        - provide specific feedback describing what failed and how to reproduce it
-        - call `task_update` to move the task back to `in_progress`
-        - do not mark the task done
-
-        Do not self-approve code_review or manual_approval stages — a human must approve those.
+        Review rules:
+        - Use `suite_validation_evaluate` for deterministic review validations (`passed` / `failed`).
+        - Use `suite_review_request_create` for `manual_approval` validations and include labelled checklist items plus screenshots/canvas/evidence links.
+        - Do NOT self-approve `manual_approval` validations.
+        - Do NOT call `task_update` for lifecycle status changes — review outcomes flow through validations and review requests.
+        - If review fails, record the failure on the relevant validation with concrete reproduction details so the task can return to `in_progress`.
+        - If review passes, let the plan engine advance the task; do not force status changes manually.
 
         The attention signal that delivered this message includes a `context` field with the full task hierarchy: project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
 

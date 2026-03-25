@@ -136,13 +136,16 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
       skills_reference: @skills_reference
     }
 
-    case PromptTemplates.render_template("dispatch.in_review", assigns) do
-      {:ok, rendered} ->
-        rendered
+    prompt =
+      case PromptTemplates.render_template("dispatch.in_review", assigns) do
+        {:ok, rendered} ->
+          rendered
 
-      {:error, :not_found} ->
-        hardcoded_dispatch_in_review(task, plan, stage)
-    end
+        {:error, :not_found} ->
+          hardcoded_dispatch_in_review(task, plan, stage)
+      end
+
+    enrich_in_review_prompt(prompt, task, stage)
   end
 
   def dispatch_prompt(task, plan, stage) do
@@ -372,6 +375,13 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     |> maybe_insert_git_workflow(task)
   end
 
+  defp enrich_in_review_prompt(prompt, task, stage) do
+    prompt
+    |> maybe_strip_review_git_checks(task)
+    |> maybe_strip_task_update_status_instructions()
+    |> insert_before_context(review_contract(task, stage))
+  end
+
   defp enrich_heartbeat_prompt(prompt, task, stage, pending_validations) do
     prompt
     |> append_unless_present(heartbeat_contract(task, stage, pending_validations))
@@ -397,6 +407,53 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     else
       prompt
     end
+  end
+
+  defp maybe_strip_review_git_checks(prompt, task) do
+    if real_repo_url?(project_attr(task, :repo_url, "")) do
+      prompt
+    else
+      Regex.replace(
+        ~r/\nRun these checks exactly and push evidence for each result:.*?(?=\nIf ALL checks pass:|\n## Review Validation Contract|\nThe attention signal|\z)/s,
+        prompt,
+        "\n"
+      )
+      |> String.replace(
+        "Check CI / GitHub Actions status with `gh` CLI for #{project_attr(task, :repo_url, "")}",
+        ""
+      )
+      |> String.replace(
+        "Check CI / GitHub Actions status#{gh_repo_suffix(project_attr(task, :repo_url, ""))}",
+        ""
+      )
+      |> String.replace(
+        "   - Confirm the task branch exists and is pushed: `git fetch origin && git branch -r | grep task/`\n",
+        ""
+      )
+      |> String.replace(
+        "   - At that point, open a PR against #{project_attr(task, :default_branch, "main")}#{pr_repo_suffix(project_attr(task, :repo_url, ""))} if not already open\n",
+        ""
+      )
+      |> String.replace(project_attr(task, :repo_url, ""), "")
+    end
+  end
+
+  defp maybe_strip_task_update_status_instructions(prompt) do
+    prompt
+    |> then(fn text ->
+      Regex.replace(
+        ~r/\nIf ALL checks pass:.*?(?=\nIf ANY check fails:|\n## Review Validation Contract|\nThe attention signal|\z)/s,
+        text,
+        "\n"
+      )
+    end)
+    |> then(fn text ->
+      Regex.replace(
+        ~r/\nIf ANY check fails:.*?(?=\nDo not self-approve|\n## Review Validation Contract|\nThe attention signal|\z)/s,
+        text,
+        "\n"
+      )
+    end)
   end
 
   defp execution_contract(_task, nil), do: ""
@@ -427,6 +484,44 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     Current stage_id: `#{stage_id}`
     #{validation_lines}
     - If you get blocked, call `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}`.
+    """
+  end
+
+  defp review_contract(_task, nil), do: ""
+
+  defp review_contract(task, stage) do
+    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
+    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
+
+    validation_lines =
+      case validations do
+        [] ->
+          "- This review stage has no explicit validations. Gather evidence in the execution space and only move forward when the human review is genuinely complete."
+
+        items ->
+          Enum.map_join(items, "\n", fn validation ->
+            kind = Map.get(validation, :kind) || Map.get(validation, "kind") || "validation"
+            id = Map.get(validation, :id) || Map.get(validation, "id") || "<missing-id>"
+
+            case kind do
+              "manual_approval" ->
+                "- `manual_approval` → validation_id=`#{id}` (create a `suite_review_request_create` for this validation with labelled checklist items and evidence links/screenshots; do NOT self-approve it)"
+
+              _ ->
+                "- `#{kind}` → validation_id=`#{id}` (record results with `suite_validation_evaluate`; use status `passed` or `failed` and include concrete evidence)"
+            end
+          end)
+      end
+
+    """
+
+    ## Review Validation Contract
+    Current task_id: `#{task_id}`
+    Current stage_id: `#{stage_id}`
+    #{validation_lines}
+    - Do NOT call `task_update` for lifecycle status changes. Review outcomes flow through validations and review requests.
+    - If review evidence shows the feature is not good enough, fail the relevant validation so the task can return to `in_progress`.
     """
   end
 
