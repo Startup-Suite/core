@@ -763,8 +763,8 @@ defmodule PlatformWeb.TasksLive do
   defp available_transitions("in_progress"),
     do: [{"in_review", "Submit for Review"}, {"done", "Mark Done"}]
 
-  defp available_transitions("in_review"),
-    do: [{"done", "Approve"}, {"in_progress", "Return"}]
+  # Review outcomes flow through validations / review requests, not blunt status buttons.
+  defp available_transitions("in_review"), do: []
 
   defp available_transitions("blocked"),
     do: [{"backlog", "To Backlog"}, {"in_progress", "Resume"}]

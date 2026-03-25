@@ -342,6 +342,19 @@ defmodule PlatformWeb.TasksLiveTest do
     assert updated_plan.status == "rejected"
   end
 
+  test "in_review task detail does not show direct approve/return status buttons", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Review Flow Task", status: "in_review"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refute html =~ "phx-value-status=\"done\""
+    refute html =~ "phx-value-status=\"in_progress\""
+    refute html =~ ">Approve<"
+    refute html =~ ">Return<"
+  end
+
   test "pending plan count badge appears in board header", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Badge Task", status: "planning"})
