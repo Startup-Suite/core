@@ -176,6 +176,35 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert status.last_runtime_event_at != nil
     end
 
+    test "approved plan starts the first pending execution stage", %{
+      task: task,
+      assignee: assignee,
+      plan: plan,
+      stage: stage
+    } do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(50)
+
+      {:ok, task} = Tasks.transition_task(task, "planning")
+      {:ok, task} = Tasks.transition_task(task, "ready")
+      {:ok, _task} = Tasks.transition_task(task, "in_progress")
+
+      approved_plan =
+        plan
+        |> Ecto.Changeset.change(%{status: "approved"})
+        |> Platform.Repo.update!()
+
+      Tasks.broadcast_board({:plan_updated, approved_plan})
+      Process.sleep(100)
+
+      started_stage = Platform.Repo.get!(Platform.Tasks.Stage, stage.id)
+      assert started_stage.status == "running"
+      assert started_stage.started_at != nil
+
+      status = TaskRouter.current_status(task.id)
+      assert status.current_stage_id == stage.id
+    end
+
     test "completed plan transitions in_progress task to in_review", %{
       task: task,
       assignee: assignee,

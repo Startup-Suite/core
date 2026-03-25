@@ -332,7 +332,10 @@ defmodule Platform.Orchestration.TaskRouter do
           state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
 
         "approved" ->
-          state |> Map.put(:status, :running) |> schedule_heartbeat()
+          state
+          |> Map.put(:status, :running)
+          |> ensure_execution_stage_started(task_id)
+          |> schedule_heartbeat()
 
         "rejected" ->
           state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
@@ -598,11 +601,49 @@ defmodule Platform.Orchestration.TaskRouter do
     }
   end
 
+  defp ensure_execution_stage_started(state, task_id) do
+    task = Tasks.get_task_detail(task_id)
+    plan = Tasks.current_plan(task_id)
+
+    cond do
+      task == nil or task.status != "in_progress" or is_nil(plan) ->
+        state
+
+      running_stage = current_running_stage(plan) ->
+        send(self(), :dispatch)
+        maybe_set_stage(state, running_stage)
+
+      pending_stage = first_pending_stage(plan) ->
+        case Platform.Tasks.PlanEngine.start_stage(pending_stage.id) do
+          {:ok, started_stage} ->
+            maybe_set_stage(state, started_stage)
+
+          {:error, reason} ->
+            Logger.warning(
+              "[TaskRouter] failed to start first execution stage for task #{task_id}: #{inspect(reason)}"
+            )
+
+            state
+        end
+
+      true ->
+        send(self(), :dispatch)
+        state
+    end
+  end
+
   defp current_running_stage(nil), do: nil
 
   defp current_running_stage(plan) do
     (plan.stages || [])
     |> Enum.find(&(&1.status == "running"))
+  end
+
+  defp first_pending_stage(nil), do: nil
+
+  defp first_pending_stage(plan) do
+    (plan.stages || [])
+    |> Enum.find(&(&1.status == "pending"))
   end
 
   defp current_stage_type(%State{current_stage_id: nil}), do: "coding"
