@@ -17,6 +17,7 @@ AGENT_WORKSPACE_PATH="${AGENT_WORKSPACE_PATH:-$HOME/.openclaw}"
 PROOF_OPENCLAW_PROFILE="${PROOF_OPENCLAW_PROFILE:-suite-dev}"
 PROOF_OPENCLAW_CONFIG_PATH="${PROOF_OPENCLAW_CONFIG_PATH:-$HOME/.openclaw-${PROOF_OPENCLAW_PROFILE}/openclaw.json}"
 PROOF_OPENCLAW_GATEWAY_PORT="${PROOF_OPENCLAW_GATEWAY_PORT:-19001}"
+PROOF_AGENT_AUTH_PATH="${PROOF_AGENT_AUTH_PATH:-$HOME/.openclaw-${PROOF_OPENCLAW_PROFILE}/agents/main/agent/auth-profiles.json}"
 
 mkdir -p "$RUN_DIR"
 
@@ -75,6 +76,56 @@ print(data['gateway']['auth']['token'])
 PY
 }
 
+normalize_proof_agent_model() {
+  python3 - "$PROOF_OPENCLAW_CONFIG_PATH" "$PROOF_AGENT_AUTH_PATH" <<'PY'
+import json, os, sys
+
+config_path, auth_path = sys.argv[1], sys.argv[2]
+
+with open(config_path, 'r', encoding='utf-8') as f:
+    data = json.load(f)
+
+agents = data.setdefault('agents', {}).setdefault('list', [])
+main_agent = next((agent for agent in agents if agent.get('id') == 'main'), None)
+if main_agent is None:
+    print('no-main-agent')
+    raise SystemExit(0)
+
+model = main_agent.setdefault('model', {})
+primary = model.get('primary')
+fallbacks = model.setdefault('fallbacks', [])
+
+auth_profiles = {}
+if os.path.exists(auth_path):
+    try:
+        with open(auth_path, 'r', encoding='utf-8') as f:
+            auth_profiles = json.load(f)
+    except Exception:
+        auth_profiles = {}
+
+providers = set()
+for profile_name in (auth_profiles.get('profiles') or {}).keys():
+    providers.add(str(profile_name).split(':', 1)[0])
+
+if 'anthropic' in providers or not str(primary).startswith('anthropic/'):
+    print('unchanged')
+    raise SystemExit(0)
+
+filtered_fallbacks = [m for m in fallbacks if not str(m).startswith('anthropic/')]
+if 'openai-codex/gpt-5.4' not in filtered_fallbacks:
+    filtered_fallbacks.insert(0, 'openai-codex/gpt-5.4')
+
+model['primary'] = 'openai-codex/gpt-5.4'
+model['fallbacks'] = filtered_fallbacks
+
+with open(config_path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+    f.write('\n')
+
+print('patched-codex-primary')
+PY
+}
+
 require_bin python3
 require_bin curl
 require_bin openclaw
@@ -84,6 +135,21 @@ if [[ ! -f "$PROOF_OPENCLAW_CONFIG_PATH" ]]; then
   printf 'OpenClaw config not found: %s\n' "$PROOF_OPENCLAW_CONFIG_PATH" >&2
   exit 1
 fi
+
+PROOF_MODEL_NORMALIZATION="$(normalize_proof_agent_model)"
+case "$PROOF_MODEL_NORMALIZATION" in
+  patched-codex-primary)
+    log "Patched $PROOF_OPENCLAW_PROFILE main agent to Codex-first for local proof (no Anthropic auth found)"
+    ;;
+  unchanged)
+    ;;
+  no-main-agent)
+    log "No main agent found in $PROOF_OPENCLAW_CONFIG_PATH; leaving model config untouched"
+    ;;
+  *)
+    log "Model preflight result: $PROOF_MODEL_NORMALIZATION"
+    ;;
+esac
 
 GATEWAY_TOKEN="$(read_gateway_token)"
 
