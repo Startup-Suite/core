@@ -75,6 +75,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Final review stage"
       assert prompt =~ "suite_review_request_create"
       assert prompt =~ "Do NOT include `code_review` as a validation kind"
+      assert prompt =~ "Do not begin implementation until approved"
       assert prompt =~ "high"
     end
 
