@@ -55,12 +55,12 @@ defmodule Platform.Tasks do
   # ── Valid status transitions (ADR 0018 §7) ───────────────────────────────
 
   @valid_task_transitions %{
-    "backlog" => ~w(planning blocked),
-    "planning" => ~w(ready blocked backlog),
+    "backlog" => ~w(planning blocked in_progress),
+    "planning" => ~w(in_progress ready blocked backlog),
     "ready" => ~w(in_progress blocked planning),
     "in_progress" => ~w(in_review blocked done),
     "in_review" => ~w(done in_progress blocked),
-    "blocked" => ~w(backlog planning ready in_progress),
+    "blocked" => ~w(backlog planning ready in_progress in_review),
     "done" => []
   }
 
@@ -240,15 +240,32 @@ defmodule Platform.Tasks do
   def approve_plan(%Plan{status: "pending_review"} = plan, approved_by) do
     now = DateTime.utc_now()
 
-    case plan
-         |> Plan.changeset(%{status: "approved", approved_by: approved_by, approved_at: now})
-         |> Repo.update() do
+    Repo.transaction(fn ->
+      {:ok, updated_plan} =
+        plan
+        |> Plan.changeset(%{status: "approved", approved_by: approved_by, approved_at: now})
+        |> Repo.update()
+
+      task = Repo.get!(Task, updated_plan.task_id)
+
+      case task.status do
+        status when status in ["planning", "ready", "backlog"] ->
+          {:ok, _task} = transition_task_status(task, "in_progress")
+          :ok
+
+        _ ->
+          :ok
+      end
+
+      updated_plan
+    end)
+    |> case do
       {:ok, updated} ->
         broadcast_board({:plan_updated, updated})
         {:ok, updated}
 
-      error ->
-        error
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
