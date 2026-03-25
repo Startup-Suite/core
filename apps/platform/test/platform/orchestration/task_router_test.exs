@@ -254,6 +254,45 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert updated_task.status == "done"
     end
 
+    test "running manual approval stage moves task from in_progress to in_review", %{
+      task: task,
+      assignee: assignee,
+      plan: plan
+    } do
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+      Process.sleep(50)
+
+      {:ok, task} = Tasks.transition_task(task, "planning")
+      {:ok, task} = Tasks.transition_task(task, "ready")
+      {:ok, _task} = Tasks.transition_task(task, "in_progress")
+
+      {:ok, review_stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 2,
+          name: "Manual approval",
+          description: "Wait for human sign-off"
+        })
+
+      {:ok, _validation} =
+        Tasks.create_validation(%{stage_id: review_stage.id, kind: "manual_approval"})
+
+      running_review_stage =
+        review_stage
+        |> Ecto.Changeset.change(%{status: "running", started_at: DateTime.utc_now()})
+        |> Platform.Repo.update!()
+
+      Tasks.broadcast_board({:stage_transitioned, running_review_stage})
+      Process.sleep(100)
+
+      updated_task = Tasks.get_task_detail(task.id)
+      assert updated_task.status == "in_review"
+
+      status = TaskRouter.current_status(task.id)
+      assert status.status == :waiting_human
+      assert status.current_stage_id == review_stage.id
+    end
+
     test "failed review stage bounces task from in_review back to in_progress", %{
       task: task,
       assignee: assignee,

@@ -173,7 +173,13 @@ defmodule Platform.Orchestration.TaskRouter do
         state
         |> Map.put(:status, :running)
         |> maybe_set_stage(stage)
-        |> schedule_heartbeat()
+
+      state =
+        if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+          state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
+        else
+          schedule_heartbeat(state)
+        end
 
       {:noreply, state}
     else
@@ -218,7 +224,13 @@ defmodule Platform.Orchestration.TaskRouter do
       state
       |> Map.put(:last_evidence_at, DateTime.utc_now())
       |> reset_escalation()
-      |> schedule_heartbeat()
+
+    state =
+      if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+        state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
+      else
+        schedule_heartbeat(state)
+      end
 
     {:noreply, state}
   end
@@ -269,6 +281,12 @@ defmodule Platform.Orchestration.TaskRouter do
           stage_type = current_stage_type(state)
 
           if HeartbeatScheduler.manual_approval?(stage_type) do
+            maybe_transition_task_to_in_review(state.task_id)
+
+            if stage.status == "running" do
+              send(self(), :dispatch)
+            end
+
             state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
           else
             # When a new stage becomes running, re-dispatch so the agent gets
@@ -599,6 +617,26 @@ defmodule Platform.Orchestration.TaskRouter do
       | current_stage_id: stage.id,
         stage_started_at: stage.started_at || DateTime.utc_now()
     }
+  end
+
+  defp maybe_transition_task_to_in_review(task_id) do
+    case Tasks.get_task_detail(task_id) do
+      %{status: "in_progress"} = task ->
+        case Tasks.transition_task(task, "in_review") do
+          {:ok, _updated} ->
+            Logger.info(
+              "[TaskRouter] review gate started — transitioned task #{task_id} to in_review"
+            )
+
+          {:error, reason} ->
+            Logger.warning(
+              "[TaskRouter] failed to transition task #{task_id} to in_review on review gate: #{inspect(reason)}"
+            )
+        end
+
+      _other ->
+        :ok
+    end
   end
 
   defp ensure_execution_stage_started(state, task_id) do
