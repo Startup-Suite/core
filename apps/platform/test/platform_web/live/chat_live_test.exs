@@ -349,7 +349,7 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       # Trigger react event directly
-      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
+      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
 
       # After the PubSub roundtrip the reaction should appear
       html = render(view)
