@@ -43,6 +43,8 @@ defmodule Platform.Application do
         Platform.Federation.DeadLetterBuffer,
         # Context plane — shared ETS context for federation (after Repo, before AttentionRouter)
         Platform.Chat.ContextPlane,
+        # Active agent mutex — ETS-backed per-space agent tracking (ADR 0027)
+        Platform.Chat.ActiveAgentStore,
         # Chat presence — must start after PubSub
         Platform.Chat.Presence,
         # Vault OAuth token refresh worker — must start after Repo and Vault.Encryption
