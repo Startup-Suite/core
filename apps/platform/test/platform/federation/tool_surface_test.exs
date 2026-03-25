@@ -61,8 +61,10 @@ defmodule Platform.Federation.ToolSurfaceTest do
       assert "stage_complete" in tool_names
       assert "report_blocker" in tool_names
       assert "validation_list" in tool_names
+      assert "review_request_create" in tool_names
       assert "prompt_template_list" in tool_names
       assert "prompt_template_update" in tool_names
+      assert "federation_status" in tool_names
 
       for tool <- tools do
         assert Map.has_key?(tool, :name)
