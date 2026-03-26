@@ -17,9 +17,10 @@ const KanbanDragDrop = {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", this._draggedTaskId);
 
-      // Subtle ghost styling
+      // Apply dragging class after a frame so the drag image captures the
+      // original appearance, then the source card fades out.
       requestAnimationFrame(() => {
-        card.classList.add("opacity-40", "scale-95");
+        card.classList.add("kanban-dragging");
       });
     };
 
@@ -27,7 +28,7 @@ const KanbanDragDrop = {
     this._onDragEnd = (e) => {
       const card = e.target.closest("[data-task-id]");
       if (card) {
-        card.classList.remove("opacity-40", "scale-95");
+        card.classList.remove("kanban-dragging");
       }
       this._clearHighlights();
       this._draggedTaskId = null;
@@ -44,14 +45,14 @@ const KanbanDragDrop = {
 
       // Highlight only the hovered column
       this._clearHighlights();
-      column.classList.add("ring-2", "ring-primary/40", "bg-primary/5");
+      column.classList.add("kanban-drag-over");
     };
 
     // ── Drag leave ─────────────────────────────────────────────────────
     this._onDragLeave = (e) => {
       const column = e.target.closest("[data-column]");
       if (column && !column.contains(e.relatedTarget)) {
-        column.classList.remove("ring-2", "ring-primary/40", "bg-primary/5");
+        column.classList.remove("kanban-drag-over");
       }
     };
 
@@ -95,9 +96,7 @@ const KanbanDragDrop = {
   _clearHighlights() {
     this.el
       .querySelectorAll("[data-column]")
-      .forEach((col) =>
-        col.classList.remove("ring-2", "ring-primary/40", "bg-primary/5")
-      );
+      .forEach((col) => col.classList.remove("kanban-drag-over"));
   },
 };
 
