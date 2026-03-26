@@ -13,6 +13,8 @@ defmodule Platform.Orchestration.TaskRouter do
 
   require Logger
 
+  alias Platform.Execution.CredentialLease
+
   alias Platform.Orchestration.{
     ContextAssembler,
     ExecutionSpace,
@@ -21,7 +23,7 @@ defmodule Platform.Orchestration.TaskRouter do
   }
 
   alias Platform.Tasks
-  alias Platform.Tasks.ReviewRequests
+  alias Platform.Tasks.{DeployResolver, ReviewRequests}
 
   # Cooldown window for runtime activity: if the runtime sent a progress/heartbeat
   # event within this window, suppress the next heartbeat to avoid interrupting
@@ -45,6 +47,7 @@ defmodule Platform.Orchestration.TaskRouter do
             task_status: String.t() | nil,
             lease_status: String.t() | nil,
             heartbeat_ref: reference() | nil,
+            deploy_lease: CredentialLease.t() | nil,
             escalation_count: non_neg_integer(),
             status: :dispatching | :running | :stalled | :complete | :escalated | :waiting_human
           }
@@ -61,6 +64,7 @@ defmodule Platform.Orchestration.TaskRouter do
       :task_status,
       :lease_status,
       :heartbeat_ref,
+      :deploy_lease,
       escalation_count: 0,
       status: :dispatching
     ]
@@ -178,7 +182,11 @@ defmodule Platform.Orchestration.TaskRouter do
     if task do
       plan = Tasks.current_plan(state.task_id)
       stage = current_running_stage(plan)
-      context = ContextAssembler.build(state.task_id)
+
+      # Lease deploy credentials if this is a deploy stage
+      state = maybe_lease_deploy_credentials(state, task, stage)
+
+      context = ContextAssembler.build(state.task_id, state.deploy_lease)
       prompt = HeartbeatScheduler.dispatch_prompt(task, plan, stage)
 
       case dispatch_attention(state.assignee, state.task_id, "task_assigned", context, prompt) do
@@ -337,6 +345,14 @@ defmodule Platform.Orchestration.TaskRouter do
     plan = Tasks.current_plan(state.task_id)
 
     if plan && stage.plan_id == plan.id do
+      # Revoke deploy lease when a deploy stage completes (passed or failed)
+      state =
+        if stage.status in ["passed", "failed"] do
+          revoke_deploy_lease(state)
+        else
+          state
+        end
+
       state =
         state
         |> Map.put(:current_stage_id, stage.id)
@@ -462,6 +478,7 @@ defmodule Platform.Orchestration.TaskRouter do
   @impl true
   def terminate(_reason, state) do
     cancel_heartbeat(state)
+    revoke_deploy_lease(state)
 
     # Archive execution space on shutdown (best-effort — DB may be unavailable)
     if state.execution_space_id do
@@ -586,7 +603,7 @@ defmodule Platform.Orchestration.TaskRouter do
         []
       end
 
-    context = ContextAssembler.build(state.task_id)
+    context = ContextAssembler.build(state.task_id, state.deploy_lease)
     prompt = HeartbeatScheduler.heartbeat_prompt(task, stage, elapsed, pending_validations, plan)
 
     # Post heartbeat as engagement message (triggers attention routing)
@@ -988,5 +1005,111 @@ defmodule Platform.Orchestration.TaskRouter do
       nil -> 0
       ms -> div(ms, 60_000)
     end
+  end
+
+  # ── Deploy credential leasing ──────────────────────────────────────────
+
+  # Deploy stall threshold — 15 minutes TTL for deploy leases
+  @deploy_lease_ttl_seconds 900
+
+  defp maybe_lease_deploy_credentials(%State{deploy_lease: existing} = state, _task, _stage)
+       when not is_nil(existing) do
+    # Already have an active lease — check validity
+    if CredentialLease.valid?(existing) do
+      state
+    else
+      # Lease expired — try to re-lease
+      %{state | deploy_lease: nil}
+      |> maybe_lease_deploy_credentials(Tasks.get_task_detail(state.task_id), nil)
+    end
+  end
+
+  defp maybe_lease_deploy_credentials(%State{} = state, task, stage) do
+    if deploy_stage?(stage) do
+      lease_deploy_credentials(state, task, stage)
+    else
+      state
+    end
+  end
+
+  defp lease_deploy_credentials(%State{} = state, task, stage) do
+    task = Tasks.ensure_project_loaded(task)
+    project = task.project
+
+    if project do
+      strategy = Tasks.resolve_deploy_strategy(task)
+      target_name = get_in(strategy, ["config", "target"])
+
+      if target_name do
+        run_id = "#{state.task_id}:#{stage && stage.id}"
+
+        case DeployResolver.resolve(project, target_name) do
+          {:ok, target} ->
+            case DeployResolver.lease_for_target(target, run_id, ttl: @deploy_lease_ttl_seconds) do
+              {:ok, lease} ->
+                Logger.info(
+                  "[TaskRouter] leased deploy credentials for task #{state.task_id}, " <>
+                    "target: #{target_name}, TTL: #{@deploy_lease_ttl_seconds}s"
+                )
+
+                if state.execution_space_id do
+                  ExecutionSpace.post_log(
+                    state.execution_space_id,
+                    "Deploy credentials leased for target '#{target_name}' (TTL: #{div(@deploy_lease_ttl_seconds, 60)}min)"
+                  )
+                end
+
+                %{state | deploy_lease: lease}
+
+              {:error, reason} ->
+                Logger.warning(
+                  "[TaskRouter] failed to lease deploy credentials for task #{state.task_id}: #{inspect(reason)}"
+                )
+
+                state
+            end
+
+          {:error, reason} ->
+            Logger.warning(
+              "[TaskRouter] failed to resolve deploy target '#{target_name}' for task #{state.task_id}: #{inspect(reason)}"
+            )
+
+            state
+        end
+      else
+        # No target configured — deploy without credentials (agent uses its own)
+        state
+      end
+    else
+      state
+    end
+  end
+
+  defp revoke_deploy_lease(%State{deploy_lease: nil} = state), do: state
+
+  defp revoke_deploy_lease(%State{deploy_lease: lease} = state) do
+    case CredentialLease.revoke(lease) do
+      {:ok, _revoked} ->
+        Logger.info("[TaskRouter] revoked deploy lease #{lease.id} for task #{state.task_id}")
+
+        if state.execution_space_id do
+          ExecutionSpace.post_log(
+            state.execution_space_id,
+            "Deploy credentials revoked (lease #{lease.id})"
+          )
+        end
+
+      _ ->
+        :ok
+    end
+
+    %{state | deploy_lease: nil}
+  end
+
+  defp deploy_stage?(nil), do: false
+
+  defp deploy_stage?(stage) do
+    name = String.downcase(stage.name || "")
+    String.starts_with?(name, "deploy:")
   end
 end
