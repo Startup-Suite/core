@@ -125,16 +125,10 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   def dispatch_prompt(%{status: "in_review"} = task, plan, stage) do
     stage_info = format_stage_info(plan, stage)
-    repo_url = project_attr(task, :repo_url, "")
-    default_branch = project_attr(task, :default_branch, "main")
-    task_slug = short_task_id(task)
 
     assigns = %{
       task_title: task.title,
       stage_info: stage_info,
-      repo_url: repo_url,
-      default_branch: default_branch,
-      task_slug: task_slug,
       skills_reference: @skills_reference
     }
 
@@ -324,35 +318,43 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   defp hardcoded_dispatch_in_review(task, plan, stage) do
     stage_info = format_stage_info(plan, stage)
-    repo_url = project_attr(task, :repo_url, "")
-    default_branch = project_attr(task, :default_branch, "main")
 
     """
-    Task is in review — validate the implementation by exercising it in the local/dev environment.
+    Task is in review — exercise and validate the implementation.
 
     Task: #{task.title}
     #{stage_info}\
-    Your job is to exercise and validate the feature, not just check static artifacts.
-    Work through the current review stage's validations and push evidence for each.
+    Your job is experiential review: exercise the feature in a running environment and produce \
+    evidence that it works as intended. Tests and lint were already validated during execution — \
+    do not re-check them here.
 
-    First-turn rule (CRITICAL):
-    - If the dispatch already includes `Current task_id`, `Current stage_id`, `validation_id`, and execution-space context, do NOT spend your first substantive turn on broad task/plan rediscovery.
-    - For a `manual_approval` review stage, your first substantive turn should normally do the review work and then create the human gate in the same attempt:
-      1. exercise the implementation,
-      2. publish evidence into the execution space,
-      3. call `suite_review_request_create` for the provided validation with labelled checklist items and links to that evidence.
-    - Only call `suite_task_get`, `suite_plan_get`, or `suite_validation_list` if an identifier is missing, the dispatch context is contradicted by direct evidence, or you need a specific field that is not already present.
-    - Do not stop after status-check churn — reach the evidence + review-request step unless a real blocker prevents it.
-    - Do NOT spend this review attempt inspecting unrelated repository history or workspace state first (for example `git status`, `git log`, broad `git diff`, or listing the whole workspace) unless a specific blocker explicitly requires it.
-    - Prefer direct review actions over repo archaeology: use the local app, execution-space artifacts, screenshots, and Suite review tools before exploring source diffs.
+    ## How to review
+    - Start a local dev server for the worktree (reference the dev server skill via attached skills if available)
+    - For UI changes: navigate to the relevant pages, take screenshots, verify visual correctness and interaction behavior
+    - For non-UI changes: exercise the feature via API calls, CLI, or functional tests that demonstrate the behavior
+    - Post screenshots, canvas snapshots, or other concrete evidence into the execution space
 
-    Review rules:
+    ## First-turn rule (CRITICAL)
+    - Do NOT spend your first substantive turn re-discovering broad task/plan state if the dispatch already provides \
+    `Current task_id`, `Current stage_id`, `validation_id`, and `execution_space_id`.
+    - For a `manual_approval` review stage, your first substantive turn should do the real review work and then create \
+    the human gate:
+      1. exercise the implementation in a running environment,
+      2. publish concrete evidence into the execution space,
+      3. call `suite_review_request_create` for the provided `validation_id` with labelled checklist items and links to that evidence.
+    - Only call `suite_task_get`, `suite_plan_get`, or `suite_validation_list` if an identifier is actually missing or \
+    the dispatch context is contradicted by direct evidence.
+    - Reach the evidence + review-request step in the same attempt unless a real blocker prevents it.
+
+    ## Review rules
     - Use `suite_validation_evaluate` for deterministic review validations (`passed` / `failed`).
-    - Use `suite_review_request_create` for `manual_approval` validations and include labelled checklist items plus screenshots/canvas/evidence links.
+    - Use `suite_review_request_create` for `manual_approval` validations — include labelled checklist items plus \
+    screenshots/canvas/evidence links.
+    - Do NOT call `stage_complete` before the required review request and evidence have been created.
     - Do NOT self-approve `manual_approval` validations.
-    - Do NOT call `stage_complete` before the required manual-review request and evidence have been created.
-    - Do NOT manually call `task_update` to move statuses — the plan engine drives transitions.
-    - If review fails, record a `failed` result on the relevant validation with specific failure details so the task can return to `in_progress`.
+    - Do NOT call `task_update` for lifecycle status changes — review outcomes flow through validations and review requests.
+    - If the feature does not work as intended, fail the relevant validation with concrete reproduction details so \
+    the task can return to `in_progress`.
     - If review passes, let the plan engine advance the task; do not force status changes manually.
 
     The attention signal that delivered this message includes a `context` field with the full task hierarchy:
@@ -517,8 +519,6 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   defp enrich_in_review_prompt(prompt, task, stage) do
     prompt
-    |> maybe_strip_review_git_checks(task)
-    |> maybe_strip_task_update_status_instructions()
     |> insert_before_context(review_contract(task, stage))
   end
 
@@ -581,53 +581,6 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     else
       prompt
     end
-  end
-
-  defp maybe_strip_review_git_checks(prompt, task) do
-    if real_repo_url?(project_attr(task, :repo_url, "")) do
-      prompt
-    else
-      Regex.replace(
-        ~r/\nRun these checks exactly and push evidence for each result:.*?(?=\nIf ALL checks pass:|\n## Review Validation Contract|\nThe attention signal|\z)/s,
-        prompt,
-        "\n"
-      )
-      |> String.replace(
-        "Check CI / GitHub Actions status with `gh` CLI for #{project_attr(task, :repo_url, "")}",
-        ""
-      )
-      |> String.replace(
-        "Check CI / GitHub Actions status#{gh_repo_suffix(project_attr(task, :repo_url, ""))}",
-        ""
-      )
-      |> String.replace(
-        "   - Confirm the task branch exists and is pushed: `git fetch origin && git branch -r | grep task/`\n",
-        ""
-      )
-      |> String.replace(
-        "   - At that point, open a PR against #{project_attr(task, :default_branch, "main")}#{pr_repo_suffix(project_attr(task, :repo_url, ""))} if not already open\n",
-        ""
-      )
-      |> String.replace(project_attr(task, :repo_url, ""), "")
-    end
-  end
-
-  defp maybe_strip_task_update_status_instructions(prompt) do
-    prompt
-    |> then(fn text ->
-      Regex.replace(
-        ~r/\nIf ALL checks pass:.*?(?=\nIf ANY check fails:|\n## Review Validation Contract|\nThe attention signal|\z)/s,
-        text,
-        "\n"
-      )
-    end)
-    |> then(fn text ->
-      Regex.replace(
-        ~r/\nIf ANY check fails:.*?(?=\nDo not self-approve|\n## Review Validation Contract|\nThe attention signal|\z)/s,
-        text,
-        "\n"
-      )
-    end)
   end
 
   defp execution_contract(_task, nil), do: ""
@@ -809,12 +762,6 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     |> String.split("-")
     |> List.first()
   end
-
-  defp pr_repo_suffix(""), do: ""
-  defp pr_repo_suffix(repo_url), do: " on #{repo_url}"
-
-  defp gh_repo_suffix(""), do: ""
-  defp gh_repo_suffix(repo_url), do: " for #{repo_url}"
 
   defp format_elapsed(seconds) when seconds < 60, do: "#{seconds} seconds"
 
