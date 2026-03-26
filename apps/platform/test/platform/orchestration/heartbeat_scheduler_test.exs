@@ -280,9 +280,17 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "pr_merge"
       assert prompt =~ "validation_pass"
       assert prompt =~ "report_blocker"
+
+      # Deploy contract with phase-appropriate validation instructions
+      assert prompt =~ "Deploy Stage Contract"
       assert prompt =~ "Current stage_id: `stage-deploy-1`"
       assert prompt =~ "validation_id=`val-test-1`"
       assert prompt =~ "validation_id=`val-manual-1`"
+      # manual_approval gets review_request instruction, not validation_pass
+      assert prompt =~ "suite_review_request_create"
+      assert prompt =~ "human must merge"
+      # blocker instruction specific to deploy
+      assert prompt =~ "do NOT attempt code fixes"
 
       # Deploy boundaries — no code modification, no local test re-runs
       assert prompt =~ "Do NOT modify code"

@@ -513,7 +513,17 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     """
   end
 
-  # ── Private helpers ────────────────────────────────────────────────────
+  # ── Enrichment pipeline ─────────────────────────────────────────────────
+  #
+  # Each phase has an enrichment function that injects a phase-specific
+  # contract block (with validation IDs, tool instructions, and blocker info)
+  # into the rendered prompt — whether it came from DB or hardcoded fallback.
+  #
+  # Phase → Contract → Concern
+  # in_progress → execution_contract → code, tests, commit, push (no PR)
+  # in_review   → review_contract   → exercise feature, screenshots, evidence
+  # deploying   → deploy_contract   → PR, CI, merge (no code changes)
+  # heartbeat   → heartbeat_contract → pending validations reminder
 
   defp enrich_in_progress_prompt(prompt, task, stage) do
     prompt
@@ -529,9 +539,7 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   defp enrich_deploying_prompt(prompt, task, stage) do
     prompt
-    |> maybe_strip_git_workflow(task)
-    |> insert_before_context(execution_contract(task, stage))
-    |> maybe_insert_git_workflow(task)
+    |> insert_before_context(deploy_contract(task, stage))
   end
 
   defp resolve_task_deploy_strategy(task) do
@@ -654,6 +662,43 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     #{validation_lines}
     - Do NOT call `task_update` for lifecycle status changes. Review outcomes flow through validations and review requests.
     - If review evidence shows the feature is not good enough, fail the relevant validation so the task can return to `in_progress`.
+    """
+  end
+
+  defp deploy_contract(_task, nil), do: ""
+
+  defp deploy_contract(task, stage) do
+    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
+    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
+
+    validation_lines =
+      case validations do
+        [] ->
+          "- This deploy stage has no validations. Once the deploy is complete, call `stage_complete` with `stage_id=#{stage_id}`."
+
+        items ->
+          Enum.map_join(items, "\n", fn validation ->
+            kind = Map.get(validation, :kind) || Map.get(validation, "kind") || "validation"
+            id = Map.get(validation, :id) || Map.get(validation, "id") || "<missing-id>"
+
+            case kind do
+              "manual_approval" ->
+                "- `manual_approval` → validation_id=`#{id}` (create a `suite_review_request_create` with the PR URL and CI status as evidence; do NOT self-approve — a human must merge)"
+
+              _ ->
+                "- `#{kind}` → validation_id=`#{id}` (use `validation_pass` when the check passes, then call `stage_complete` with `stage_id=#{stage_id}` once all required validations are passed)"
+            end
+          end)
+      end
+
+    """
+
+    ## Deploy Stage Contract
+    Current task_id: `#{task_id}`
+    Current stage_id: `#{stage_id}`
+    #{validation_lines}
+    - If CI fails or the deploy breaks, call `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}` — do NOT attempt code fixes.
     """
   end
 
