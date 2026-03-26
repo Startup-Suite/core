@@ -351,4 +351,55 @@ defmodule PlatformWeb.GithubWebhookControllerTest do
       assert %{"status" => "ignored"} = json_response(conn, 200)
     end
   end
+
+  # ── Auto-merge query tests ─────────────────────────────────────────────
+
+  describe "find_pending_pr_merged_validation/1" do
+    test "finds pending pr_merged validation on running deploy stage" do
+      %{task: task, pr_validation: pr_validation} = create_task_with_ci_validation!()
+
+      found =
+        PlatformWeb.GithubWebhookController.find_pending_pr_merged_validation(task.id)
+
+      assert found != nil
+      assert found.id == pr_validation.id
+    end
+
+    test "returns nil when no pending pr_merged validation exists" do
+      task = create_task!()
+      assert PlatformWeb.GithubWebhookController.find_pending_pr_merged_validation(task.id) == nil
+    end
+
+    test "finds ci_check kind validation (used when auto_merge is true)" do
+      {:ok, project} =
+        Tasks.create_project(%{
+          name: "Auto Merge Query #{System.unique_integer([:positive])}",
+          repo_url: "https://github.com/test/auto-merge-query"
+        })
+
+      {:ok, task} =
+        Tasks.create_task(%{project_id: project.id, title: "Auto merge query"})
+
+      {:ok, plan} =
+        Tasks.create_plan(%{task_id: task.id, status: "approved"})
+
+      {:ok, stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 1,
+          name: "Deploy: PR merge"
+        })
+
+      {:ok, _} = Tasks.transition_stage(stage, "running")
+
+      {:ok, ci_check_val} =
+        Tasks.create_validation(%{stage_id: stage.id, kind: "ci_check"})
+
+      found =
+        PlatformWeb.GithubWebhookController.find_pending_pr_merged_validation(task.id)
+
+      assert found != nil
+      assert found.id == ci_check_val.id
+    end
+  end
 end

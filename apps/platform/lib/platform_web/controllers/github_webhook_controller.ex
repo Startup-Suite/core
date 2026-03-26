@@ -18,7 +18,7 @@ defmodule PlatformWeb.GithubWebhookController do
   alias Platform.Changelog
   alias Platform.Repo
   alias Platform.Tasks
-  alias Platform.Tasks.{PlanEngine, Plan, Stage, Task, Validation}
+  alias Platform.Tasks.{AutoMerger, PlanEngine, Plan, Stage, Task, Validation}
 
   require Logger
 
@@ -106,6 +106,11 @@ defmodule PlatformWeb.GithubWebhookController do
                   "for task #{task_id} (#{event_type}, conclusion: #{conclusion})"
               )
 
+              # After CI passes, check if auto-merge should fire
+              if status == "passed" do
+                maybe_trigger_auto_merge(task_id, branch)
+              end
+
               conn
               |> put_status(:created)
               |> json(%{
@@ -151,6 +156,114 @@ defmodule PlatformWeb.GithubWebhookController do
       )
 
     Repo.one(query)
+  end
+
+  # ── Auto-merge ───────────────────────────────────────────────────────────
+
+  defp maybe_trigger_auto_merge(task_id, branch) do
+    task = Tasks.get_task_detail(task_id)
+
+    if task do
+      task = Tasks.ensure_project_loaded(task)
+      strategy = Tasks.resolve_deploy_strategy(task)
+
+      if AutoMerger.should_auto_merge?(strategy) do
+        # Find the pending pr_merged validation for this task
+        case find_pending_pr_merged_validation(task_id) do
+          nil ->
+            Logger.debug(
+              "[Webhook] No pending pr_merged validation for auto-merge on task #{task_id}"
+            )
+
+          pr_validation ->
+            # Find the PR number from the branch
+            repo_url = task.project && task.project.repo_url
+            method = AutoMerger.merge_method(strategy)
+
+            if repo_url do
+              # Spawn async task for the merge (with timeout)
+              Elixir.Task.start(fn ->
+                case find_pr_number_for_branch(repo_url, branch) do
+                  {:ok, pr_number} ->
+                    result = AutoMerger.execute_merge(repo_url, pr_number, method)
+                    AutoMerger.record_merge_result(pr_validation.id, result)
+
+                  {:error, reason} ->
+                    Logger.warning(
+                      "[Webhook] Could not find PR for branch #{branch}: #{inspect(reason)}"
+                    )
+
+                    AutoMerger.record_merge_result(
+                      pr_validation.id,
+                      {:error, :not_found,
+                       "Could not find PR for branch #{branch}: #{inspect(reason)}"}
+                    )
+                end
+              end)
+            else
+              Logger.warning(
+                "[Webhook] No repo_url configured for task #{task_id}, skipping auto-merge"
+              )
+            end
+        end
+      end
+    end
+  end
+
+  @doc false
+  def find_pending_pr_merged_validation(task_id) do
+    query =
+      from(v in Validation,
+        join: s in Stage,
+        on: s.id == v.stage_id,
+        join: p in Plan,
+        on: p.id == s.plan_id,
+        join: t in Task,
+        on: t.id == p.task_id,
+        where: t.id == ^task_id,
+        where: p.status in ~w(approved),
+        where: s.status == "running",
+        where: v.kind in ~w(pr_merged ci_check),
+        where: v.status == "pending",
+        order_by: [asc: s.position],
+        limit: 1
+      )
+
+    Repo.one(query)
+  end
+
+  defp find_pr_number_for_branch(repo_url, branch) do
+    args = [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "open",
+      "--json",
+      "number",
+      "--limit",
+      "1",
+      "-R",
+      repo_url
+    ]
+
+    case System.cmd("gh", args, stderr_to_stdout: true) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, [%{"number" => number} | _]} ->
+            {:ok, number}
+
+          {:ok, []} ->
+            {:error, :no_open_pr}
+
+          _ ->
+            {:error, :parse_error}
+        end
+
+      {output, _} ->
+        {:error, {:gh_error, String.trim(output)}}
+    end
   end
 
   # ── Merged PR processing (changelog) ────────────────────────────────────
