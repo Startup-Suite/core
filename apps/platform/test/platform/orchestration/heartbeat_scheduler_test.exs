@@ -283,6 +283,11 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "Current stage_id: `stage-deploy-1`"
       assert prompt =~ "validation_id=`val-test-1`"
       assert prompt =~ "validation_id=`val-manual-1`"
+
+      # Deploy boundaries — no code modification, no local test re-runs
+      assert prompt =~ "Do NOT modify code"
+      assert prompt =~ "Do NOT re-run tests or lint locally"
+      assert prompt =~ "branch is already pushed from execution"
     end
 
     test "deploying uses manual fallback when no strategy set" do

@@ -410,6 +410,11 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
     #{strategy_instructions}
 
+    ### Deploy boundaries
+    - Do NOT modify code — if CI fails, report a blocker so the task returns to in_progress
+    - Do NOT re-run tests or lint locally — CI handles that
+    - The branch is already pushed from execution; your job is to get it merged and deployed
+
     Push evidence using validation_pass as you complete each deploy step.
     Use report_blocker if you are stuck or the deploy fails.
 
