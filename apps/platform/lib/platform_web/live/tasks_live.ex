@@ -540,47 +540,43 @@ defmodule PlatformWeb.TasksLive do
 
   # ── Kanban drag-and-drop ────────────────────────────────────────────────
 
-  @column_target_status %{
-    "backlog" => "backlog",
-    "in_progress" => "in_progress",
-    "in_review" => "in_review",
-    "deploying" => "deploying",
-    "done" => "done"
-  }
-
   def handle_event("kanban_drop", %{"task_id" => task_id, "column" => column}, socket) do
-    target_status = Map.get(@column_target_status, column)
+    task = Tasks.get_task_detail(task_id)
 
-    if is_nil(target_status) do
-      {:noreply, put_flash(socket, :error, "Unknown column.")}
+    if is_nil(task) do
+      {:noreply, put_flash(socket, :error, "Task not found.")}
     else
-      task = Tasks.get_task_detail(task_id)
+      case Tasks.drop_task_to_column(task, column) do
+        {:ok, _updated} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Task moved to #{status_label(column_to_status(column))}.")
+           |> refresh_board()
+           |> reload_selected_task()}
 
-      if is_nil(task) do
-        {:noreply, put_flash(socket, :error, "Task not found.")}
-      else
-        case Tasks.transition_task(task, target_status) do
-          {:ok, _updated} ->
-            {:noreply,
-             socket
-             |> put_flash(:info, "Task moved to #{status_label(target_status)}.")
-             |> refresh_board()
-             |> reload_selected_task()}
+        {:error, :unknown_column} ->
+          {:noreply, put_flash(socket, :error, "Unknown column.")}
 
-          {:error, :invalid_transition} ->
-            {:noreply,
-             put_flash(
-               socket,
-               :error,
-               "Cannot move task from #{status_label(task.status)} to #{status_label(target_status)}."
-             )}
+        {:error, :invalid_drop} ->
+          {:noreply,
+           put_flash(
+             socket,
+             :error,
+             "Cannot move task from #{status_label(task.status)} to #{status_label(column_to_status(column))}."
+           )}
 
-          {:error, reason} ->
-            {:noreply, put_flash(socket, :error, "Move failed: #{inspect(reason)}")}
-        end
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Move failed: #{inspect(reason)}")}
       end
     end
   end
+
+  defp column_to_status("backlog"), do: "backlog"
+  defp column_to_status("in_progress"), do: "in_progress"
+  defp column_to_status("in_review"), do: "in_review"
+  defp column_to_status("deploying"), do: "deploying"
+  defp column_to_status("done"), do: "done"
+  defp column_to_status(_), do: "unknown"
 
   # Upload cancel
   def handle_event("cancel_task_upload", %{"ref" => ref}, socket) do
