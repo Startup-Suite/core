@@ -506,17 +506,28 @@ defmodule PlatformWeb.TasksLive do
   end
 
   def handle_event("validate_task", %{"task" => params}, socket) do
+    Logger.debug(
+      "[TasksLive] validate_task: deploy_strategy_type=#{inspect(Map.get(params, "deploy_strategy_type"))}"
+    )
+
     changeset =
       %Task{}
       |> Task.changeset(params)
       |> Map.put(:action, :validate)
+
+    strategy_type = Map.get(params, "deploy_strategy_type", socket.assigns.deploy_strategy_type)
+    auto_merge = Map.get(params, "auto_merge") == "true"
+    merge_method = Map.get(params, "merge_method", socket.assigns.merge_method)
 
     {:noreply,
      socket
      |> assign(:task_form, to_form(changeset, as: "task"))
      |> assign(:sheet_what, Map.get(params, "what", ""))
      |> assign(:sheet_why, Map.get(params, "why", ""))
-     |> assign(:manual_validation_text, Map.get(params, "manual_validation_text", ""))}
+     |> assign(:manual_validation_text, Map.get(params, "manual_validation_text", ""))
+     |> assign(:deploy_strategy_type, strategy_type)
+     |> assign(:auto_merge_enabled, auto_merge)
+     |> assign(:merge_method, merge_method)}
   end
 
   def handle_event("toggle_validation_mode", %{"mode" => mode}, socket) do
@@ -528,20 +539,6 @@ defmodule PlatformWeb.TasksLive do
         else: MapSet.put(modes, mode)
 
     {:noreply, assign(socket, :validation_modes, updated)}
-  end
-
-  def handle_event(
-        "deploy_strategy_changed",
-        %{"task" => %{"deploy_strategy_type" => type}},
-        socket
-      ) do
-    socket =
-      socket
-      |> assign(:deploy_strategy_type, type)
-      |> assign(:auto_merge_enabled, false)
-      |> assign(:merge_method, "squash")
-
-    {:noreply, socket}
   end
 
   def handle_event("toggle_auto_merge", _params, socket) do
