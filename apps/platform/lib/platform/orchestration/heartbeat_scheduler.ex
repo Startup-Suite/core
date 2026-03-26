@@ -750,7 +750,7 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
        - Run the full test suite and lint checks
        - Commit all changes with a descriptive message referencing task #{short_task_id(task)}
        - Push the branch: `git push -u origin task/#{task_slug}`
-       - Do NOT open a PR yet — PR opening happens after successful review in `in_review`
+       - Do NOT open a PR yet — PR opening happens in the deploy phase
     4. NEVER work on an existing branch. ALWAYS branch from latest origin/#{default_branch}.
     """
   end

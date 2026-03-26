@@ -205,7 +205,7 @@ defmodule Platform.Orchestration.PromptTemplates do
            - Run the full test suite and lint checks
            - Commit all changes with a descriptive message referencing task {{task_slug}}
            - Push the branch: `git push -u origin task/{{task_slug}}`
-           - Open a PR against {{default_branch}}{{repo_url}}
+           - Do NOT open a PR yet — PR opening happens in the deploy phase
         4. NEVER work on an existing branch. ALWAYS branch from latest origin/{{default_branch}}.
 
         The attention signal that delivered this message includes a `context` field with the full task hierarchy: project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
