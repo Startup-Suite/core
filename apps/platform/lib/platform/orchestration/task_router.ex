@@ -577,6 +577,7 @@ defmodule Platform.Orchestration.TaskRouter do
 
   defp runtime_phase_for_task(%{status: "planning"}), do: "planning"
   defp runtime_phase_for_task(%{status: "in_review"}), do: "review"
+  defp runtime_phase_for_task(%{status: "deploying"}), do: "deploying"
   defp runtime_phase_for_task(_task), do: "execution"
 
   defp escalate(state, _task) do
@@ -831,6 +832,7 @@ defmodule Platform.Orchestration.TaskRouter do
     cond do
       String.contains?(name_lower, "planning") -> "planning"
       String.contains?(name_lower, "review") -> "review"
+      String.contains?(name_lower, "deploy") -> "deploying"
       String.contains?(name_lower, "ci") -> "ci_check"
       String.contains?(name_lower, "manual_approval") -> "manual_approval"
       true -> "coding"
