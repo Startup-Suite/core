@@ -339,7 +339,8 @@ defmodule Platform.Orchestration.TaskRouter do
 
   # Board PubSub: plan completed for our task
   # in_progress → in_review (execution plan done, hand off to review)
-  # in_review   → done      (review plan done, all validations passed)
+  # in_review   → deploying (review plan done, deploy stage injected by PlanEngine)
+  # deploying   → done      (deploy stage passed)
   def handle_info(
         {:plan_updated, %{task_id: task_id, status: "completed"} = _plan},
         %State{task_id: task_id} = state
@@ -350,7 +351,8 @@ defmodule Platform.Orchestration.TaskRouter do
       {target_status, log_label} =
         case task.status do
           "in_progress" -> {"in_review", "execution plan completed"}
-          "in_review" -> {"done", "review plan completed"}
+          "in_review" -> {"deploying", "review plan completed"}
+          "deploying" -> {"done", "deploy completed"}
           other -> {nil, other}
         end
 
