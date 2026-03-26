@@ -131,10 +131,16 @@ defmodule Platform.Tasks.PlanEngine do
 
       emit_validation_telemetry(updated)
 
-      # Auto-advance: if no more pending/running validations on this stage, advance
+      # Auto-advance: if no more pending/running validations on this stage, advance.
+      # For any stage, a single validation failure is enough to fail the stage
+      # immediately — no point waiting for remaining validations.
       stage = Repo.get!(Stage, updated.stage_id)
 
-      if stage.status == "running" and all_validations_resolved?(stage.id) do
+      should_advance =
+        stage.status == "running" and
+          (all_validations_resolved?(stage.id) or status == "failed")
+
+      if should_advance do
         advance_stage(stage)
       end
 
@@ -306,11 +312,70 @@ defmodule Platform.Tasks.PlanEngine do
         maybe_advance_next(plan, stages, stage.position)
 
       :has_failures ->
-        transition_stage(stage, "failed")
+        {:ok, failed_stage} = transition_stage(stage, "failed")
+
+        if deploy_stage?(failed_stage) do
+          emit_deploy_failure_telemetry(failed_stage)
+        end
+
+        {:ok, failed_stage}
 
       :pending ->
         :ok
     end
+  end
+
+  @doc """
+  Returns true if the stage is a deploy stage (has ci_passed or pr_merged validations,
+  or its name starts with "Deploy:").
+  """
+  @spec deploy_stage?(Stage.t()) :: boolean()
+  def deploy_stage?(%Stage{} = stage) do
+    name_match = String.starts_with?(stage.name || "", "Deploy:")
+
+    if name_match do
+      true
+    else
+      validations = Repo.all(from(v in Validation, where: v.stage_id == ^stage.id))
+
+      Enum.any?(validations, fn v ->
+        v.kind in ~w(ci_passed pr_merged)
+      end)
+    end
+  end
+
+  defp emit_deploy_failure_telemetry(%Stage{} = stage) do
+    # Collect failure evidence from failed validations
+    failed_validations =
+      Repo.all(
+        from(v in Validation,
+          where: v.stage_id == ^stage.id and v.status == "failed"
+        )
+      )
+
+    failure_reason =
+      failed_validations
+      |> Enum.map(fn v -> "#{v.kind}: #{inspect(v.evidence)}" end)
+      |> Enum.join("; ")
+
+    # Extract merge SHA from any validation evidence (for potential revert)
+    merge_sha =
+      failed_validations
+      |> Enum.find_value(fn v ->
+        get_in(v.evidence, ["sha"]) || get_in(v.evidence, ["merge_sha"])
+      end)
+
+    :telemetry.execute(
+      [:platform, :tasks, :deploy_stage_failed],
+      %{system_time: System.system_time()},
+      %{
+        stage_id: stage.id,
+        plan_id: stage.plan_id,
+        failure_reason: failure_reason,
+        merge_sha: merge_sha,
+        failed_validations: Enum.map(failed_validations, & &1.kind)
+      }
+    )
   end
 
   defp maybe_advance_next(plan, _old_stages, current_position) do

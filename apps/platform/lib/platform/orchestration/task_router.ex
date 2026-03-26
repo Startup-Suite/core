@@ -360,23 +360,32 @@ defmodule Platform.Orchestration.TaskRouter do
         |> Map.put(:last_evidence_at, DateTime.utc_now())
         |> reset_escalation()
 
-      # If a review stage fails, bounce the task back to in_progress
+      # If a review or deploy stage fails, bounce the task back to in_progress
       state =
         if stage.status == "failed" do
           task = Tasks.get_task_detail(state.task_id)
 
-          if task && task.status == "in_review" do
-            case Tasks.transition_task(task, "in_progress") do
-              {:ok, _updated} ->
-                Logger.info(
-                  "[TaskRouter] review stage failed — bounced task #{state.task_id} back to in_progress"
-                )
+          cond do
+            # Deploy stage failed — bounce deploying → in_progress
+            task && task.status == "deploying" ->
+              handle_deploy_stage_failure(state, task, stage)
 
-              {:error, reason} ->
-                Logger.warning(
-                  "[TaskRouter] failed to bounce task #{state.task_id} to in_progress: #{inspect(reason)}"
-                )
-            end
+            # Review stage failed — bounce in_review → in_progress
+            task && task.status == "in_review" ->
+              case Tasks.transition_task(task, "in_progress") do
+                {:ok, _updated} ->
+                  Logger.info(
+                    "[TaskRouter] review stage failed — bounced task #{state.task_id} back to in_progress"
+                  )
+
+                {:error, reason} ->
+                  Logger.warning(
+                    "[TaskRouter] failed to bounce task #{state.task_id} to in_progress: #{inspect(reason)}"
+                  )
+              end
+
+            true ->
+              :ok
           end
 
           # Re-dispatch so the agent picks up the in_progress prompt
@@ -1112,4 +1121,79 @@ defmodule Platform.Orchestration.TaskRouter do
     name = String.downcase(stage.name || "")
     String.starts_with?(name, "deploy:")
   end
+
+  # ── Deploy failure handling ────────────────────────────────────────────
+
+  defp handle_deploy_stage_failure(%State{} = state, task, stage) do
+    # Extract failure evidence from the stage's failed validations
+    failed_validations = extract_failed_validations(stage)
+
+    evidence_summary =
+      failed_validations
+      |> Enum.map(fn {kind, evidence} -> "#{kind}: #{summarize_evidence(evidence)}" end)
+      |> Enum.join("; ")
+
+    # Extract merge SHA for potential revert tracking
+    merge_sha =
+      failed_validations
+      |> Enum.find_value(fn {_kind, evidence} ->
+        Map.get(evidence, "sha") || Map.get(evidence, "merge_sha")
+      end)
+
+    # Transition task back to in_progress
+    case Tasks.transition_task(task, "in_progress") do
+      {:ok, _updated} ->
+        Logger.info(
+          "[TaskRouter] deploy stage failed — bounced task #{state.task_id} back to in_progress" <>
+            if(merge_sha, do: " (merge SHA: #{merge_sha})", else: "")
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "[TaskRouter] failed to bounce task #{state.task_id} to in_progress after deploy failure: #{inspect(reason)}"
+        )
+    end
+
+    # Log to execution space with failure details
+    if state.execution_space_id do
+      log_parts = [
+        "Deploy stage failed: #{evidence_summary}.",
+        "Task returned to in_progress for retry.",
+        if(merge_sha, do: "Merge SHA for potential revert: #{merge_sha}", else: nil)
+      ]
+
+      log_content = log_parts |> Enum.reject(&is_nil/1) |> Enum.join(" ")
+      ExecutionSpace.post_log(state.execution_space_id, log_content)
+    end
+  end
+
+  defp extract_failed_validations(stage) do
+    validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
+
+    validations
+    |> Enum.filter(fn v ->
+      status = Map.get(v, :status) || Map.get(v, "status")
+      status == "failed"
+    end)
+    |> Enum.map(fn v ->
+      kind = Map.get(v, :kind) || Map.get(v, "kind") || "unknown"
+      evidence = Map.get(v, :evidence) || Map.get(v, "evidence") || %{}
+      {kind, evidence}
+    end)
+  end
+
+  defp summarize_evidence(evidence) when is_map(evidence) do
+    case Map.get(evidence, "conclusion") || Map.get(evidence, "reason") do
+      nil ->
+        case map_size(evidence) do
+          0 -> "no details"
+          _ -> inspect(evidence) |> String.slice(0, 200)
+        end
+
+      summary ->
+        to_string(summary)
+    end
+  end
+
+  defp summarize_evidence(_), do: "no details"
 end
