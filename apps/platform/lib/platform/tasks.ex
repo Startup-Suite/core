@@ -59,7 +59,7 @@ defmodule Platform.Tasks do
     "backlog" => ~w(planning blocked in_progress),
     "planning" => ~w(in_progress ready blocked backlog),
     "ready" => ~w(in_progress blocked planning),
-    "in_progress" => ~w(in_review blocked done),
+    "in_progress" => ~w(in_review deploying blocked done),
     "in_review" => ~w(deploying in_progress blocked),
     "deploying" => ~w(done in_progress blocked),
     "blocked" => ~w(backlog planning ready in_progress in_review deploying),
