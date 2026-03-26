@@ -3,7 +3,16 @@ defmodule Platform.Tasks.ReviewRequestsTest do
 
   alias Platform.Repo
   alias Platform.Tasks
-  alias Platform.Tasks.{PlanEngine, ReviewItem, ReviewRequest, ReviewRequests, Stage, Validation}
+
+  alias Platform.Tasks.{
+    PlanEngine,
+    ReviewItem,
+    ReviewRequest,
+    ReviewRequests,
+    Stage,
+    Task,
+    Validation
+  }
 
   setup do
     {:ok, project} = Tasks.create_project(%{name: "Review Project"})
@@ -56,6 +65,40 @@ defmodule Platform.Tasks.ReviewRequestsTest do
 
       # Nothing persisted
       assert ReviewRequests.list_pending_for_task(ctx.task.id) == []
+    end
+
+    test "creating a new review request reopens a failed manual approval gate", ctx do
+      task =
+        ctx.task
+        |> Task.changeset(%{status: "in_review"})
+        |> Repo.update!()
+
+      {:ok, request} = create_request(%{ctx | task: task}, ["Desktop"])
+      {:ok, _} = ReviewRequests.reject_item(hd(request.items).id, "ryan", "Needs work")
+
+      assert Repo.get!(Task, task.id).status == "in_progress"
+      assert Repo.get!(Validation, ctx.validation.id).status == "failed"
+      assert Repo.get!(Stage, ctx.stage.id).status == "failed"
+
+      assert {:ok, retried_request} =
+               ReviewRequests.create_review_request(%{
+                 validation_id: ctx.validation.id,
+                 task_id: task.id,
+                 items: [%{label: "Retried desktop"}]
+               })
+
+      assert retried_request.status == "pending"
+      assert Repo.get!(Task, task.id).status == "in_review"
+
+      retried_validation = Repo.get!(Validation, ctx.validation.id)
+      assert retried_validation.status == "pending"
+      assert retried_validation.evidence == %{}
+      assert retried_validation.evaluated_by == nil
+      assert retried_validation.evaluated_at == nil
+
+      retried_stage = Repo.get!(Stage, ctx.stage.id)
+      assert retried_stage.status == "running"
+      assert retried_stage.completed_at == nil
     end
   end
 
@@ -170,6 +213,34 @@ defmodule Platform.Tasks.ReviewRequestsTest do
 
       validation = Repo.get!(Validation, ctx.validation.id)
       assert validation.status == "failed"
+    end
+
+    test "rejecting an item resolves sibling pending review requests for the same validation",
+         ctx do
+      {:ok, request_a} = create_request(ctx, ["Desktop"])
+      {:ok, request_b} = create_request(ctx, ["Mobile"])
+
+      item = hd(request_a.items)
+      {:ok, _} = ReviewRequests.reject_item(item.id, "ryan", "Needs work")
+
+      assert ReviewRequests.list_pending_for_task(ctx.task.id) == []
+
+      assert ReviewRequests.get_review_request(request_a.id).status == "resolved"
+      assert ReviewRequests.get_review_request(request_b.id).status == "resolved"
+    end
+
+    test "rejecting review feedback returns an in-review task to in_progress", ctx do
+      task =
+        ctx.task
+        |> Task.changeset(%{status: "in_review"})
+        |> Repo.update!()
+
+      {:ok, request} = create_request(%{ctx | task: task}, ["Desktop"])
+      item = hd(request.items)
+
+      {:ok, _} = ReviewRequests.reject_item(item.id, "ryan", "Needs work")
+
+      assert Repo.get!(Task, task.id).status == "in_progress"
     end
   end
 

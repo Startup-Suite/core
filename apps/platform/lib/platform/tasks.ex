@@ -18,9 +18,10 @@ defmodule Platform.Tasks do
   alias Platform.{Artifacts, Context, Execution}
   alias Platform.Context.Session
   alias Platform.Execution.Run
+  alias Platform.Orchestration.{RuntimeSupervision, TaskRouterWatcher}
   alias Platform.Repo
 
-  alias Platform.Tasks.{Epic, Plan, Project, Stage, Task, Validation}
+  alias Platform.Tasks.{Epic, Plan, PlanEngine, Project, Stage, Task, Validation}
 
   # ── Legacy summary/detail structs (backward compat) ──────────────────────
 
@@ -394,14 +395,60 @@ defmodule Platform.Tasks do
   Transition a task's status and broadcast the change to the board topic.
   """
   def transition_task(%Task{} = task, new_status) do
-    case transition_task_status(task, new_status) do
-      {:ok, updated} ->
-        updated = Repo.preload(updated, [:project, :epic, plans: :stages])
-        broadcast_board({:task_updated, updated})
-        {:ok, updated}
-
+    with :ok <- maybe_prepare_transition(task, new_status),
+         {:ok, updated} <- transition_task_status(task, new_status) do
+      updated = Repo.preload(updated, [:project, :epic, plans: :stages])
+      broadcast_board({:task_updated, updated})
+      maybe_finalize_transition(task, updated, new_status)
+      {:ok, updated}
+    else
       error ->
         error
+    end
+  end
+
+  defp maybe_prepare_transition(%Task{status: "in_progress"} = task, "in_review") do
+    case failed_manual_approval_validation(task.id) do
+      nil ->
+        :ok
+
+      validation ->
+        case PlanEngine.reopen_manual_approval(validation.id) do
+          {:ok, _validation} -> :ok
+          {:error, :already_passed} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp maybe_prepare_transition(_task, _new_status), do: :ok
+
+  defp maybe_finalize_transition(%Task{status: "in_progress"}, %Task{} = task, "in_review") do
+    RuntimeSupervision.abandon_current_lease_for_task(task.id, "execution")
+    TaskRouterWatcher.force_dispatch(task.id)
+    :ok
+  end
+
+  defp maybe_finalize_transition(_previous_task, _task, _new_status), do: :ok
+
+  defp failed_manual_approval_validation(task_id) do
+    case current_plan(task_id) do
+      %{stages: stages} ->
+        stages
+        |> Enum.sort_by(& &1.position)
+        |> Enum.find_value(fn stage ->
+          if stage.status == "failed" do
+            Enum.find(
+              stage.validations,
+              &(&1.kind == "manual_approval" and &1.status == "failed")
+            )
+          else
+            nil
+          end
+        end)
+
+      _ ->
+        nil
     end
   end
 

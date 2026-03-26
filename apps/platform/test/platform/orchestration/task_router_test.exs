@@ -1,7 +1,9 @@
 defmodule Platform.Orchestration.TaskRouterTest do
   use Platform.DataCase, async: false
 
-  alias Platform.Orchestration.TaskRouter
+  import Ecto.Query
+
+  alias Platform.Orchestration.{ExecutionLease, TaskRouter}
   alias Platform.Tasks
 
   setup do
@@ -176,11 +178,12 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert status.last_runtime_event_at != nil
     end
 
-    test "hydrates active manual approval stage into waiting_human review state", %{
-      task: task,
-      assignee: assignee,
-      plan: plan
-    } do
+    test "hydrates active manual approval stage into waiting_human review state when a review request is pending",
+         %{
+           task: task,
+           assignee: assignee,
+           plan: plan
+         } do
       {:ok, task} = Tasks.transition_task(task, "planning")
       {:ok, task} = Tasks.transition_task(task, "ready")
       {:ok, _task} = Tasks.transition_task(task, "in_progress")
@@ -195,8 +198,18 @@ defmodule Platform.Orchestration.TaskRouterTest do
           started_at: DateTime.utc_now()
         })
 
-      {:ok, _validation} =
+      {:ok, validation} =
         Tasks.create_validation(%{stage_id: review_stage.id, kind: "manual_approval"})
+
+      {:ok, execution_space} = Platform.Orchestration.ExecutionSpace.find_or_create(task.id)
+
+      assert {:ok, _request} =
+               Platform.Tasks.ReviewRequests.create_review_request(%{
+                 validation_id: validation.id,
+                 task_id: task.id,
+                 execution_space_id: execution_space.id,
+                 items: [%{label: "UI review"}]
+               })
 
       {:ok, _event} =
         Platform.Orchestration.record_runtime_event(%{
@@ -297,11 +310,12 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert updated_task.status == "done"
     end
 
-    test "running manual approval stage moves task from in_progress to in_review", %{
-      task: task,
-      assignee: assignee,
-      plan: plan
-    } do
+    test "running manual approval stage without a pending review request stays actively routed",
+         %{
+           task: task,
+           assignee: assignee,
+           plan: plan
+         } do
       {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
       Process.sleep(50)
 
@@ -332,7 +346,7 @@ defmodule Platform.Orchestration.TaskRouterTest do
       assert updated_task.status == "in_review"
 
       status = TaskRouter.current_status(task.id)
-      assert status.status == :waiting_human
+      assert status.status == :running
       assert status.current_stage_id == review_stage.id
     end
 
@@ -395,6 +409,90 @@ defmodule Platform.Orchestration.TaskRouterTest do
 
       status = TaskRouter.current_status(task.id)
       assert status.status == :running
+    end
+
+    test "publishes runtime attention on Platform.PubSub", %{task: task, assignee: assignee} do
+      Phoenix.PubSub.subscribe(Platform.PubSub, "runtime:#{assignee.id}")
+
+      {:ok, _pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: topic,
+                       event: "attention",
+                       payload: payload
+                     },
+                     1_000
+
+      assert topic == "runtime:#{assignee.id}"
+      assert payload.signal.reason == "task_assigned"
+      assert payload.signal.task_id == task.id
+      assert is_binary(payload.message.content)
+      assert payload.message.author == "TaskRouter"
+    end
+
+    test "watchdog abandons a silent active lease and redispatches", %{
+      task: task,
+      assignee: assignee
+    } do
+      Phoenix.PubSub.subscribe(Platform.PubSub, "runtime:#{assignee.id}")
+
+      {:ok, pid} = TaskRouter.start_link(task_id: task.id, assignee: assignee)
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "attention"}, 1_000
+
+      assert {:ok, _event} =
+               Platform.Orchestration.record_runtime_event(%{
+                 "task_id" => task.id,
+                 "phase" => "execution",
+                 "runtime_id" => assignee.id,
+                 "event_type" => "execution.progress",
+                 "payload" => %{"summary" => "started but went quiet"}
+               })
+
+      Process.sleep(50)
+
+      stale_at = DateTime.add(DateTime.utc_now(), -(31 * 60), :second)
+
+      :sys.replace_state(pid, fn state ->
+        %{
+          state
+          | last_runtime_event_at: stale_at,
+            current_stage_id: state.current_stage_id,
+            escalation_count: 1,
+            lease_status: "active",
+            status: :running
+        }
+      end)
+
+      send(pid, :heartbeat)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "attention",
+                       payload: payload
+                     },
+                     1_000
+
+      assert payload.signal.reason == "task_assigned"
+      assert payload.signal.task_id == task.id
+
+      Process.sleep(50)
+
+      refute Platform.Orchestration.RuntimeSupervision.current_lease_for_task(task.id)
+
+      lease_statuses =
+        Repo.all(
+          from(l in ExecutionLease,
+            where: l.task_id == ^task.id,
+            order_by: [desc: l.inserted_at],
+            select: l.status
+          )
+        )
+
+      assert "abandoned" in lease_statuses
+
+      status = TaskRouter.current_status(task.id)
+      assert status.status in [:dispatching, :running]
+      assert status.escalation_count == 0
     end
   end
 

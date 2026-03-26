@@ -507,7 +507,7 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
     # ── send_media ───────────────────────────────────────────────────────
 
-    test "send_media posts a message with file attachment" do
+    test "send_media posts a message with single file attachment" do
       space = create_space()
       participant = create_participant(space.id)
 
@@ -540,9 +540,51 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
         assert is_binary(result.message_id)
         assert result.space_id == space.id
+        assert result.attachment_count == 1
       after
         Application.put_env(:platform, :chat_attachments_root, prev)
         File.rm(tmp_path)
+        File.rm_rf(test_uploads)
+      end
+    end
+
+    test "send_media posts a message with file_paths attachments" do
+      space = create_space()
+      participant = create_participant(space.id)
+
+      test_uploads = Path.join(System.tmp_dir!(), "platform_test_uploads_#{Ecto.UUID.generate()}")
+      prev = Application.get_env(:platform, :chat_attachments_root)
+      Application.put_env(:platform, :chat_attachments_root, test_uploads)
+
+      tmp_path_1 = Path.join(System.tmp_dir!(), "test-upload-#{Ecto.UUID.generate()}.txt")
+      tmp_path_2 = Path.join(System.tmp_dir!(), "test-upload-#{Ecto.UUID.generate()}.md")
+      File.write!(tmp_path_1, "hello world")
+      File.write!(tmp_path_2, "# hello")
+
+      context = %{
+        space_id: space.id,
+        agent_participant_id: participant.id
+      }
+
+      try do
+        {:ok, result} =
+          ToolSurface.execute(
+            "send_media",
+            %{
+              "space_id" => space.id,
+              "file_paths" => [tmp_path_1, tmp_path_2],
+              "content" => "Here are the files"
+            },
+            context
+          )
+
+        assert is_binary(result.message_id)
+        assert result.space_id == space.id
+        assert result.attachment_count == 2
+      after
+        Application.put_env(:platform, :chat_attachments_root, prev)
+        File.rm(tmp_path_1)
+        File.rm(tmp_path_2)
         File.rm_rf(test_uploads)
       end
     end

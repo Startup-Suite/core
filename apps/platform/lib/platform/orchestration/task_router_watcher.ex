@@ -93,6 +93,37 @@ defmodule Platform.Orchestration.TaskRouterWatcher do
   # ── Invariant evaluation ───────────────────────────────────────────────
 
   @doc """
+  Force a router dispatch for the given task if a router is running. If not,
+  re-evaluate the task so an eligible router is started first.
+  """
+  @spec force_dispatch(String.t()) :: :ok | :noop | {:error, :task_not_found}
+  def force_dispatch(task_id) do
+    case Registry.lookup(Platform.Orchestration.Registry, task_id) do
+      [{pid, _}] ->
+        send(pid, :dispatch)
+        :ok
+
+      [] ->
+        case Tasks.get_task_detail(task_id) do
+          nil ->
+            {:error, :task_not_found}
+
+          task ->
+            evaluate_task(task)
+
+            case Registry.lookup(Platform.Orchestration.Registry, task_id) do
+              [{pid, _}] ->
+                send(pid, :dispatch)
+                :ok
+
+              [] ->
+                :noop
+            end
+        end
+    end
+  end
+
+  @doc """
   Returns true if the given task should have a router running.
   """
   @spec should_run?(map()) :: boolean()

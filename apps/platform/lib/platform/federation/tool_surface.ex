@@ -42,13 +42,18 @@ defmodule Platform.Federation.ToolSurface do
     [
       %{
         name: "send_media",
-        description: "Send a message with a file attachment to a Suite space.",
+        description: "Send a message with one or more file attachments to a Suite space.",
         parameters: %{
           space_id: %{type: "string", required: true, description: "UUID of the Suite space"},
+          file_paths: %{
+            type: "array",
+            required: false,
+            description: "Absolute local file paths to attach"
+          },
           file_path: %{
             type: "string",
-            required: true,
-            description: "Absolute local path to the file"
+            required: false,
+            description: "Back-compat single absolute local path to the file"
           },
           content: %{
             type: "string",
@@ -58,13 +63,13 @@ defmodule Platform.Federation.ToolSurface do
           filename: %{
             type: "string",
             required: false,
-            description: "Optional display filename"
+            description: "Optional display filename for single-file uploads"
           }
         },
-        returns: "The message ID and space ID",
+        returns: "The message ID, space ID, and attachment count",
         limitations:
-          "File must exist on the local filesystem. Agent must be a participant in the space.",
-        when_to_use: "When you need to share a file (image, document, etc.) in a space"
+          "Files must exist on the local filesystem. Agent must be a participant in the space.",
+        when_to_use: "When you need to share files (images, documents, etc.) in a space"
       }
     ]
   end
@@ -514,35 +519,93 @@ defmodule Platform.Federation.ToolSurface do
 
   def execute("send_media", args, context) do
     space_id = Map.get(args, "space_id")
-    file_path = Map.get(args, "file_path")
     content = Map.get(args, "content", "")
-    filename = Map.get(args, "filename") || Path.basename(file_path)
 
     participant_id =
       Map.get(context, :agent_participant_id) ||
         get_agent_participant_id_for_space(space_id, context)
 
-    with {:ok, file_meta} <-
-           Chat.AttachmentStorage.persist_upload(file_path, filename),
-         {:ok, message, _attachments} <-
-           Chat.post_message_with_attachments(
+    case normalize_send_media_attachments(args) do
+      {:ok, attachment_specs} ->
+        with {:ok, attachment_attrs} <- persist_send_media_attachments(attachment_specs),
+             {:ok, message, attachments} <-
+               Chat.post_message_with_attachments(
+                 %{
+                   space_id: space_id,
+                   participant_id: participant_id,
+                   content_type: "text",
+                   content: content
+                 },
+                 attachment_attrs
+               ) do
+          {:ok,
+           %{
+             message_id: message.id,
+             space_id: space_id,
+             attachment_count: length(attachments)
+           }}
+        else
+          {:error, reason} ->
+            {:error,
              %{
-               space_id: space_id,
-               participant_id: participant_id,
-               content_type: "text",
-               content: content
-             },
-             [Map.put(file_meta, :message_id, nil)]
-           ) do
-      {:ok, %{message_id: message.id, space_id: space_id}}
-    else
-      {:error, reason} ->
+               error: "Failed to send media: #{inspect(reason)}",
+               recoverable: true,
+               suggestion:
+                 "Check that the files exist and the agent is a participant in the space"
+             }}
+        end
+
+      {:error, message} ->
         {:error,
          %{
-           error: "Failed to send media: #{inspect(reason)}",
+           error: message,
            recoverable: true,
-           suggestion: "Check that the file exists and the agent is a participant in the space"
+           suggestion:
+             "Pass file_paths as a non-empty array, or file_path for a single attachment"
          }}
+    end
+  end
+
+  defp normalize_send_media_attachments(args) do
+    file_paths =
+      case Map.get(args, "file_paths") do
+        paths when is_list(paths) -> Enum.filter(paths, &is_binary/1)
+        _ -> []
+      end
+
+    attachment_specs =
+      cond do
+        file_paths != [] ->
+          Enum.map(file_paths, fn path ->
+            %{path: path, filename: Path.basename(path)}
+          end)
+
+        is_binary(Map.get(args, "file_path")) and Map.get(args, "file_path") != "" ->
+          file_path = Map.get(args, "file_path")
+          filename = Map.get(args, "filename") || Path.basename(file_path)
+          [%{path: file_path, filename: filename}]
+
+        true ->
+          []
+      end
+
+    case attachment_specs do
+      [] -> {:error, "Failed to send media: no file path provided"}
+      specs -> {:ok, specs}
+    end
+  end
+
+  defp persist_send_media_attachments(attachment_specs) do
+    attachment_specs
+    |> Enum.reduce_while({:ok, []}, fn %{path: path, filename: filename}, {:ok, acc} ->
+      case Chat.AttachmentStorage.persist_upload(path, filename) do
+        {:ok, file_meta} -> {:cont, {:ok, [Map.put(file_meta, :message_id, nil) | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, attachment_attrs} -> {:ok, Enum.reverse(attachment_attrs)}
+      {:error, reason} -> {:error, reason}
     end
   end
 

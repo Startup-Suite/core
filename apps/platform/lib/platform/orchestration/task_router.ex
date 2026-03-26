@@ -21,6 +21,7 @@ defmodule Platform.Orchestration.TaskRouter do
   }
 
   alias Platform.Tasks
+  alias Platform.Tasks.ReviewRequests
 
   # ── State ──────────────────────────────────────────────────────────────
 
@@ -113,8 +114,9 @@ defmodule Platform.Orchestration.TaskRouter do
 
     case state.lease_status do
       "active" ->
-        if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
-          maybe_transition_task_to_in_review(state.task_id)
+        state = maybe_mark_review_task_in_review(state)
+
+        if waiting_for_human_review?(state) do
           send(self(), :dispatch)
           {:ok, %{state | status: :waiting_human}}
         else
@@ -181,9 +183,10 @@ defmodule Platform.Orchestration.TaskRouter do
             state
             |> Map.put(:status, :running)
             |> maybe_set_stage(stage)
+            |> maybe_mark_review_task_in_review()
 
           state =
-            if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+            if waiting_for_human_review?(state) do
               state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
             else
               schedule_heartbeat(state)
@@ -204,9 +207,10 @@ defmodule Platform.Orchestration.TaskRouter do
             state
             |> Map.put(:status, :running)
             |> maybe_set_stage(stage)
+            |> maybe_mark_review_task_in_review()
 
           state =
-            if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+            if waiting_for_human_review?(state) do
               state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
             else
               schedule_heartbeat(state)
@@ -227,7 +231,7 @@ defmodule Platform.Orchestration.TaskRouter do
   def handle_info(:heartbeat, state) do
     state = %{state | heartbeat_ref: nil}
 
-    stage_type = current_stage_type(state)
+    stage_type = heartbeat_stage_type(state)
 
     if HeartbeatScheduler.manual_approval?(stage_type) do
       {:noreply, schedule_heartbeat(state)}
@@ -258,7 +262,7 @@ defmodule Platform.Orchestration.TaskRouter do
       |> reset_escalation()
 
     state =
-      if HeartbeatScheduler.manual_approval?(current_stage_type(state)) do
+      if waiting_for_human_review?(state) do
         state |> cancel_heartbeat() |> Map.put(:status, :waiting_human)
       else
         schedule_heartbeat(state)
@@ -308,13 +312,9 @@ defmodule Platform.Orchestration.TaskRouter do
           send(self(), :dispatch)
           state |> Map.put(:status, :running) |> schedule_heartbeat()
         else
-          # Re-evaluate stage type using state (which now has current_stage_id set)
-          # This correctly detects manual_approval gates via validation inspection
-          stage_type = current_stage_type(state)
+          state = maybe_mark_review_task_in_review(state)
 
-          if HeartbeatScheduler.manual_approval?(stage_type) do
-            maybe_transition_task_to_in_review(state.task_id)
-
+          if waiting_for_human_review?(state) do
             if stage.status == "running" do
               send(self(), :dispatch)
             end
@@ -487,7 +487,7 @@ defmodule Platform.Orchestration.TaskRouter do
 
   defp schedule_heartbeat(state) do
     state = cancel_heartbeat(state)
-    stage_type = current_stage_type(state)
+    stage_type = heartbeat_stage_type(state)
 
     case HeartbeatScheduler.interval_ms(stage_type) do
       nil ->
@@ -512,7 +512,7 @@ defmodule Platform.Orchestration.TaskRouter do
   defp handle_possible_stall(%State{status: :waiting_human} = state, _task), do: state
 
   defp handle_possible_stall(state, task) do
-    stage_type = current_stage_type(state)
+    stage_type = heartbeat_stage_type(state)
     max_esc = HeartbeatScheduler.max_escalations(stage_type) || 2
     new_count = state.escalation_count + 1
 
@@ -527,7 +527,7 @@ defmodule Platform.Orchestration.TaskRouter do
     end
 
     if new_count >= max_esc do
-      escalate(state, task)
+      recover_or_escalate(state, task, idle_seconds)
     else
       # Send heartbeat and bump escalation count
       send_heartbeat(state, task)
@@ -535,6 +535,47 @@ defmodule Platform.Orchestration.TaskRouter do
       schedule_heartbeat(state)
     end
   end
+
+  defp recover_or_escalate(%State{} = state, task, idle_seconds) do
+    if silent_active_runtime?(state) do
+      recover_silent_runtime(state, task, idle_seconds)
+    else
+      escalate(state, task)
+    end
+  end
+
+  defp recover_silent_runtime(%State{} = state, task, idle_seconds) do
+    phase = runtime_phase_for_task(task)
+    abandoned = RuntimeSupervision.abandon_current_lease_for_task(state.task_id, phase)
+
+    Logger.warning(
+      "[TaskRouter] task #{state.task_id} detected silent #{phase} runtime after #{idle_seconds}s; abandoned #{abandoned} lease(s) and re-dispatching"
+    )
+
+    if state.execution_space_id do
+      ExecutionSpace.post_log(
+        state.execution_space_id,
+        "Watchdog: runtime went silent for #{idle_seconds}s during #{phase}; abandoning the current attempt and launching a fresh retry"
+      )
+    end
+
+    send(self(), :dispatch)
+
+    state
+    |> cancel_heartbeat()
+    |> Map.put(:status, :dispatching)
+    |> Map.put(:lease_status, "abandoned")
+    |> Map.put(:escalation_count, 0)
+  end
+
+  defp silent_active_runtime?(%State{lease_status: "active", last_runtime_event_at: %DateTime{}}),
+    do: true
+
+  defp silent_active_runtime?(_state), do: false
+
+  defp runtime_phase_for_task(%{status: "planning"}), do: "planning"
+  defp runtime_phase_for_task(%{status: "in_review"}), do: "review"
+  defp runtime_phase_for_task(_task), do: "execution"
 
   defp escalate(state, _task) do
     Logger.warning(
@@ -728,6 +769,32 @@ defmodule Platform.Orchestration.TaskRouter do
   defp first_pending_stage(plan) do
     (plan.stages || [])
     |> Enum.find(&(&1.status == "pending"))
+  end
+
+  defp waiting_for_human_review?(%State{task_id: task_id} = state) do
+    current_stage_type(state) == "manual_approval" and pending_review_request?(task_id)
+  end
+
+  defp heartbeat_stage_type(%State{} = state) do
+    case current_stage_type(state) do
+      "manual_approval" ->
+        if pending_review_request?(state.task_id), do: "manual_approval", else: "review"
+
+      other ->
+        other
+    end
+  end
+
+  defp pending_review_request?(task_id) do
+    ReviewRequests.list_pending_for_task(task_id) != []
+  end
+
+  defp maybe_mark_review_task_in_review(%State{} = state) do
+    if current_stage_type(state) == "manual_approval" do
+      maybe_transition_task_to_in_review(state.task_id)
+    end
+
+    state
   end
 
   defp current_stage_type(%State{current_stage_id: nil}), do: "coding"

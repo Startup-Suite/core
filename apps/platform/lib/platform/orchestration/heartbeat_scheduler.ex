@@ -35,8 +35,9 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
 
   @skills_reference """
   The dispatch context includes attached skills under the `skills` key. \
-  Read and follow any relevant skills — they describe conventions, repo layout, \
-  deploy targets, and how to delegate work.\
+  Treat bundled skill content in that payload as authoritative for this task before trying to rediscover skills from disk. \
+  Read and follow any relevant bundled skills — they describe conventions, repo layout, deploy targets, and how to delegate work. \
+  Only fall back to filesystem skill lookup if the payload clearly references a path without including the needed content.\
   """
 
   @doc "Heartbeat interval in milliseconds for the given stage type."
@@ -278,6 +279,8 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     Use report_blocker if you are stuck.
 
     The attention signal that delivered this message includes a `context` field with the full task hierarchy: project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
+    Start from the concrete stage contract and any attached/bundled skill content in that payload before re-fetching broad task/project context.
+    Avoid redundant task/plan lookup churn on the first turn unless an identifier is genuinely missing or the stage contract is ambiguous.
 
     #{@skills_reference}
     """
@@ -295,38 +298,27 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     Task: #{task.title}
     #{stage_info}\
     Your job is to exercise and validate the feature, not just check static artifacts.
-    Work through the current review stage's validations and push evidence for each:
+    Work through the current review stage's validations and push evidence for each.
 
-    1. **Verify the implementation is exercisable:**
-       - Confirm the task branch exists and is pushed: `git fetch origin && git branch -r | grep task/`
-       - Check CI / GitHub Actions status#{gh_repo_suffix(repo_url)}
-       - Run the local test suite and lint checks
+    First-turn rule (CRITICAL):
+    - If the dispatch already includes `Current task_id`, `Current stage_id`, `validation_id`, and execution-space context, do NOT spend your first substantive turn on broad task/plan rediscovery.
+    - For a `manual_approval` review stage, your first substantive turn should normally do the review work and then create the human gate in the same attempt:
+      1. exercise the implementation,
+      2. publish evidence into the execution space,
+      3. call `suite_review_request_create` for the provided validation with labelled checklist items and links to that evidence.
+    - Only call `suite_task_get`, `suite_plan_get`, or `suite_validation_list` if an identifier is missing, the dispatch context is contradicted by direct evidence, or you need a specific field that is not already present.
+    - Do not stop after status-check churn — reach the evidence + review-request step unless a real blocker prevents it.
+    - Do NOT spend this review attempt inspecting unrelated repository history or workspace state first (for example `git status`, `git log`, broad `git diff`, or listing the whole workspace) unless a specific blocker explicitly requires it.
+    - Prefer direct review actions over repo archaeology: use the local app, execution-space artifacts, screenshots, and Suite review tools before exploring source diffs.
 
-    2. **Exercise the feature in the local/dev environment:**
-       - Start the dev server if needed and manually verify the feature works as described in the task
-       - Take a screenshot or canvas snapshot as evidence if the feature has a visible UI component
-         (use `suite_canvas_create` and post the evidence into the execution space)
-       - Confirm the feature matches the task goal and acceptance criteria
-
-    3. **For each validation in the current stage:**
-       - Call `suite_validation_evaluate` to record a `passed` result with your evidence
-       - If a validation requires human sign-off, call `suite_review_request_create` to gate on
-         a `manual_approval` — do NOT self-approve manual_approval validations
-       - The plan engine will automatically advance to the next stage once all validations on
-         the current stage resolve
-
-    4. **When all review stages pass:**
-       - The plan engine will complete the plan and the task will automatically move to `done`
-       - At that point, open a PR against #{default_branch}#{pr_repo_suffix(repo_url)} if not already open
-         and include the PR link as evidence on the final validation
-
-    5. **If any check fails:**
-       - Record a `failed` result on the relevant validation with specific failure details
-       - The plan engine will mark the stage failed and the task will automatically move back to `in_progress`
-       - Do NOT manually call `task_update` to move statuses — the plan engine drives transitions
-
-    Do not self-approve `manual_approval` validations — they require a human. Post screenshots or canvas
-    evidence so the human can review before approving.
+    Review rules:
+    - Use `suite_validation_evaluate` for deterministic review validations (`passed` / `failed`).
+    - Use `suite_review_request_create` for `manual_approval` validations and include labelled checklist items plus screenshots/canvas/evidence links.
+    - Do NOT self-approve `manual_approval` validations.
+    - Do NOT call `stage_complete` before the required manual-review request and evidence have been created.
+    - Do NOT manually call `task_update` to move statuses — the plan engine drives transitions.
+    - If review fails, record a `failed` result on the relevant validation with specific failure details so the task can return to `in_progress`.
+    - If review passes, let the plan engine advance the task; do not force status changes manually.
 
     The attention signal that delivered this message includes a `context` field with the full task hierarchy:
     project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.

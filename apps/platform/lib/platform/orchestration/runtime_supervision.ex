@@ -98,6 +98,32 @@ defmodule Platform.Orchestration.RuntimeSupervision do
     |> Repo.one()
   end
 
+  @doc """
+  Abandon any currently-active lease for the given task/phase so a fresh runtime
+  dispatch can acquire a new one immediately.
+  """
+  def abandon_current_lease_for_task(task_id, phase \\ "execution") do
+    expire_stale_leases(Repo, task_id: task_id, phase: phase)
+
+    now = DateTime.utc_now()
+
+    {count, _} =
+      from(l in ExecutionLease,
+        where: l.task_id == ^task_id and l.phase == ^phase and l.status in ^@active_statuses,
+        where: l.expires_at > ^now
+      )
+      |> Repo.update_all(
+        set: [
+          status: "abandoned",
+          expires_at: now,
+          block_reason: nil,
+          updated_at: now
+        ]
+      )
+
+    count
+  end
+
   defp fetch_task(task_id) do
     case Tasks.get_task_record(task_id) do
       nil -> {:error, :task_not_found}
