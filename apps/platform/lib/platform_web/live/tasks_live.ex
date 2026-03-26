@@ -538,6 +538,50 @@ defmodule PlatformWeb.TasksLive do
     {:noreply, assign(socket, :execution_log_collapsed, !socket.assigns.execution_log_collapsed)}
   end
 
+  # ── Kanban drag-and-drop ────────────────────────────────────────────────
+
+  @column_target_status %{
+    "backlog" => "backlog",
+    "in_progress" => "in_progress",
+    "in_review" => "in_review",
+    "deploying" => "deploying",
+    "done" => "done"
+  }
+
+  def handle_event("kanban_drop", %{"task_id" => task_id, "column" => column}, socket) do
+    target_status = Map.get(@column_target_status, column)
+
+    if is_nil(target_status) do
+      {:noreply, put_flash(socket, :error, "Unknown column.")}
+    else
+      task = Tasks.get_task_detail(task_id)
+
+      if is_nil(task) do
+        {:noreply, put_flash(socket, :error, "Task not found.")}
+      else
+        case Tasks.transition_task(task, target_status) do
+          {:ok, _updated} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Task moved to #{status_label(target_status)}.")
+             |> refresh_board()
+             |> reload_selected_task()}
+
+          {:error, :invalid_transition} ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               "Cannot move task from #{status_label(task.status)} to #{status_label(target_status)}."
+             )}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Move failed: #{inspect(reason)}")}
+        end
+      end
+    end
+  end
+
   # Upload cancel
   def handle_event("cancel_task_upload", %{"ref" => ref}, socket) do
     {:noreply, cancel_upload(socket, :task_attachments, ref)}
