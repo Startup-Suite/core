@@ -181,6 +181,55 @@ defmodule Platform.Tasks.PlanEngine do
     end)
   end
 
+  @doc """
+  Build deploy stages for a task based on its resolved deploy strategy.
+
+  Looks up the task's project deploy strategy via `Tasks.resolve_deploy_strategy/1`,
+  then calls `DeployStageBuilder.build_stage/2` to produce stage definitions.
+
+  If the task already has an approved plan, the deploy stage position is set to
+  follow the last existing stage. Otherwise, it starts at position 1.
+
+  Returns `{:ok, [stage_def]}` with a list of stage definition maps, or
+  `{:ok, :skip}` if the strategy is `"none"`.
+
+  This provides TaskRouter a clean API to request deploy stage injection
+  without needing to understand strategy resolution or stage construction.
+  """
+  @spec build_deploy_plan(Ecto.UUID.t()) :: {:ok, [map()] | :skip} | {:error, term()}
+  def build_deploy_plan(task_id) do
+    case Repo.get(Task, task_id) do
+      nil ->
+        {:error, :task_not_found}
+
+      task ->
+        task = Repo.preload(task, :project)
+        strategy = Tasks.resolve_deploy_strategy(task)
+
+        # Determine position: after last existing stage if plan exists
+        next_position =
+          case Repo.one(
+                 from(p in Plan,
+                   where: p.task_id == ^task_id and p.status in ~w(approved),
+                   order_by: [desc: p.inserted_at],
+                   limit: 1
+                 )
+               ) do
+            nil ->
+              1
+
+            plan ->
+              stages = ordered_stages(plan.id)
+              max_position(stages) + 1
+          end
+
+        case DeployStageBuilder.build_stage(strategy, next_position) do
+          :skip -> {:ok, :skip}
+          stage_def -> {:ok, [stage_def]}
+        end
+    end
+  end
+
   # ── Private helpers ─────────────────────────────────────────────────────
 
   defp fetch_stage(stage_id) do
