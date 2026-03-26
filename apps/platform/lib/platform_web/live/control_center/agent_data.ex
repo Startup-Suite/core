@@ -474,23 +474,26 @@ defmodule PlatformWeb.ControlCenter.AgentData do
         )
       )
 
+    # Pre-compute DM space IDs before the transaction — the subquery approach
+    # won't work because step 1 sets left_at on participants before step 3 runs.
+    dm_space_ids =
+      Repo.all(
+        from(p in Participant,
+          join: s in Space,
+          on: s.id == p.space_id,
+          where:
+            p.participant_type == "agent" and
+              p.participant_id == ^agent.id and
+              is_nil(p.left_at) and
+              s.kind == "dm" and
+              is_nil(s.archived_at),
+          select: s.id
+        )
+      )
+
     session_ids_query =
       from(s in Session,
         where: s.agent_id == ^agent.id,
-        select: s.id
-      )
-
-    # DM space IDs where this agent is an active participant
-    dm_space_ids_query =
-      from(p in Participant,
-        join: s in Space,
-        on: s.id == p.space_id,
-        where:
-          p.participant_type == "agent" and
-            p.participant_id == ^agent.id and
-            is_nil(p.left_at) and
-            s.kind == "dm" and
-            is_nil(s.archived_at),
         select: s.id
       )
 
@@ -515,7 +518,7 @@ defmodule PlatformWeb.ControlCenter.AgentData do
       # 3. Archive DM spaces where this agent was an active participant
       |> Multi.update_all(
         :archive_dm_spaces,
-        from(s in Space, where: s.id in subquery(dm_space_ids_query)),
+        from(s in Space, where: s.id in ^dm_space_ids),
         set: [archived_at: now]
       )
       # 4. Clean up context shares (existing)
