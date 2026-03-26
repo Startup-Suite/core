@@ -181,7 +181,7 @@ defmodule Platform.Orchestration.HeartbeatSchedulerTest do
       assert prompt =~ "suite_validation_evaluate"
       assert prompt =~ "suite_review_request_create"
       assert prompt =~ "manual_approval"
-      assert prompt =~ "do NOT self-approve manual_approval validations"
+      assert prompt =~ "Do NOT self-approve `manual_approval` validations"
       assert prompt =~ "Current task_id: `task-review-1`"
       assert prompt =~ "Current stage_id: `stage-review-1`"
       assert prompt =~ "validation_id=`val-pass-1`"
