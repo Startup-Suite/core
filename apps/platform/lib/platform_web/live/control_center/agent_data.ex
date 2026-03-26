@@ -25,6 +25,7 @@ defmodule PlatformWeb.ControlCenter.AgentData do
     WorkspaceFile
   }
 
+  alias Platform.Chat.{Participant, Space, SpaceAgent}
   alias Platform.Federation
   alias Platform.Federation.RuntimePresence
   alias Platform.Repo
@@ -449,13 +450,52 @@ defmodule PlatformWeb.ControlCenter.AgentData do
   def delete_agent(%Agent{} = agent) do
     :ok = AgentServer.stop_agent(agent)
 
+    now = DateTime.utc_now()
+
     session_ids_query =
       from(s in Session,
         where: s.agent_id == ^agent.id,
         select: s.id
       )
 
+    # DM space IDs where this agent is an active participant
+    dm_space_ids_query =
+      from(p in Participant,
+        join: s in Space,
+        on: s.id == p.space_id,
+        where:
+          p.participant_type == "agent" and
+            p.participant_id == ^agent.id and
+            is_nil(p.left_at) and
+            s.kind == "dm" and
+            is_nil(s.archived_at),
+        select: s.id
+      )
+
     Multi.new()
+    # 1. Soft-remove all chat_participants for this agent (set left_at)
+    |> Multi.update_all(
+      :soft_remove_participants,
+      from(p in Participant,
+        where:
+          p.participant_type == "agent" and
+            p.participant_id == ^agent.id and
+            is_nil(p.left_at)
+      ),
+      set: [left_at: now]
+    )
+    # 2. Remove all chat_space_agents roster entries
+    |> Multi.delete_all(
+      :remove_roster_entries,
+      from(sa in SpaceAgent, where: sa.agent_id == ^agent.id)
+    )
+    # 3. Archive DM spaces where this agent was an active participant
+    |> Multi.update_all(
+      :archive_dm_spaces,
+      from(s in Space, where: s.id in subquery(dm_space_ids_query)),
+      set: [archived_at: now]
+    )
+    # 4. Clean up context shares (existing)
     |> Multi.delete_all(
       :context_shares,
       from(cs in ContextShare,
@@ -464,7 +504,9 @@ defmodule PlatformWeb.ControlCenter.AgentData do
             cs.to_session_id in subquery(session_ids_query)
       )
     )
+    # 5. Clean up sessions (existing)
     |> Multi.delete_all(:sessions, from(s in Session, where: s.agent_id == ^agent.id))
+    # 6. Delete the agent record
     |> Multi.delete(:agent, agent)
     |> Repo.transaction()
     |> case do
