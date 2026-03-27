@@ -599,6 +599,30 @@ defmodule PlatformWeb.TasksLiveTest do
     })
   end
 
+  test "steering input renders when execution space exists", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Renderable Task", status: "in_progress"})
+    {:ok, _space} = ExecutionSpace.find_or_create(task.id)
+
+    {conn, _user} = authenticated_conn_with_user(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    assert html =~ "steering-compose-form"
+    assert html =~ "Steer the agent..."
+    assert html =~ "hero-paper-airplane"
+  end
+
+  test "steering input does not render when no execution space exists", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "No Space Render Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refute html =~ "steering-compose-form"
+    refute html =~ "Steer the agent..."
+  end
+
   test "steering participant is created as user type in execution space", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Participant Task", status: "in_progress"})

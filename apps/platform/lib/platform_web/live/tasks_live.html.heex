@@ -484,6 +484,38 @@
               <span class="flex-1 whitespace-pre-wrap break-words">{msg.content}</span>
             </div>
           </div>
+
+          <%!-- Steering compose input --%>
+          <.form
+            for={@steering_compose_form}
+            id="steering-compose-form"
+            phx-submit="send_steering_message"
+            phx-change="steering_changed"
+            class="mt-2 border-t border-base-300 pt-2"
+          >
+            <div class="flex items-center gap-2">
+              <textarea
+                name="steering[text]"
+                id={@steering_compose_form[:text].id}
+                placeholder="Steer the agent..."
+                autocomplete="off"
+                rows="1"
+                class="min-w-0 flex-1 rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors"
+                style="line-height:1.5;padding:6px 12px;min-height:33px;max-height:200px;overflow-y:auto;field-sizing:content"
+                phx-hook="ComposeInput"
+                disabled={is_nil(@execution_participant)}
+              >{Phoenix.HTML.Form.normalize_value("text", @steering_compose_form[:text].value)}</textarea>
+
+              <button
+                type="submit"
+                class="flex-shrink-0 w-9 h-9 rounded-full btn btn-primary btn-sm flex items-center justify-center p-0"
+                disabled={is_nil(@execution_participant)}
+                title="Send steering message"
+              >
+                <span class="hero-paper-airplane size-4 -rotate-45"></span>
+              </button>
+            </div>
+          </.form>
         </div>
       </div>
 
