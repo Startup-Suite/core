@@ -653,6 +653,28 @@ defmodule PlatformWeb.TasksLiveTest do
     assert html =~ "steering-compose-form"
   end
 
+  test "user steering messages render with primary color styling", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Color Styling Task", status: "in_progress"})
+    {:ok, space} = ExecutionSpace.find_or_create(task.id)
+
+    {conn, _user} = authenticated_conn_with_user(conn)
+    {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
+
+    # Send a steering message
+    render_submit(view, "send_steering_message", %{
+      "steering" => %{"text" => "Check the error logs"}
+    })
+
+    # Re-render — PubSub will have updated the log
+    html = render(view)
+
+    # User messages should have primary color and border styling
+    assert html =~ "text-primary"
+    assert html =~ "border-primary"
+    assert html =~ "Check the error logs"
+  end
+
   test "steering participant is created as user type in execution space", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Participant Task", status: "in_progress"})

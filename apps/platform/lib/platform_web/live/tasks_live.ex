@@ -1267,6 +1267,7 @@ defmodule PlatformWeb.TasksLive do
 
   defp log_sender_color("agent", "system"), do: "text-warning"
   defp log_sender_color("agent", _content_type), do: "text-info"
+  defp log_sender_color("user", _content_type), do: "text-primary"
   defp log_sender_color(_sender_type, _content_type), do: "text-base-content/60"
 
   defp stage_status_icon("passed"), do: "hero-check-circle text-success"
