@@ -217,39 +217,45 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     if task_status == "planning" && plan do
       planning_heartbeat_prompt(task, plan)
     else
-      elapsed_str = format_elapsed(elapsed_seconds)
-      stage_name = if stage, do: stage.name, else: "unknown"
-      stage_status = if stage, do: stage.status, else: "unknown"
+      # When stage is nil, emit an actionable prompt rather than "unknown — unknown".
+      # This happens when current_stage_id is stale/nil and no running stage was found.
+      if is_nil(stage) do
+        nil_stage_heartbeat_prompt(task, plan)
+      else
+        elapsed_str = format_elapsed(elapsed_seconds)
+        stage_name = stage.name
+        stage_status = stage.status
 
-      pending_str =
-        case pending_validations do
-          [] -> "none"
-          validations -> Enum.map_join(validations, ", ", & &1.kind)
-        end
+        pending_str =
+          case pending_validations do
+            [] -> "none"
+            validations -> Enum.map_join(validations, ", ", & &1.kind)
+          end
 
-      plan_status = if plan, do: plan.status, else: "none"
-      plan_exists = if plan, do: "true", else: "false"
+        plan_status = if plan, do: plan.status, else: "none"
+        plan_exists = if plan, do: "true", else: "false"
 
-      assigns = %{
-        task_title: task.title,
-        stage_name: stage_name,
-        stage_status: stage_status,
-        elapsed: elapsed_str,
-        pending_validations: pending_str,
-        plan_status: plan_status,
-        plan_exists: plan_exists
-      }
+        assigns = %{
+          task_title: task.title,
+          stage_name: stage_name,
+          stage_status: stage_status,
+          elapsed: elapsed_str,
+          pending_validations: pending_str,
+          plan_status: plan_status,
+          plan_exists: plan_exists
+        }
 
-      prompt =
-        case PromptTemplates.render_template("heartbeat", assigns) do
-          {:ok, rendered} ->
-            rendered
+        prompt =
+          case PromptTemplates.render_template("heartbeat", assigns) do
+            {:ok, rendered} ->
+              rendered
 
-          {:error, :not_found} ->
-            hardcoded_heartbeat(task, stage_name, stage_status, elapsed_str, pending_str)
-        end
+            {:error, :not_found} ->
+              hardcoded_heartbeat(task, stage_name, stage_status, elapsed_str, pending_str)
+          end
 
-      enrich_heartbeat_prompt(prompt, task, stage, pending_validations)
+        enrich_heartbeat_prompt(prompt, task, stage, pending_validations)
+      end
     end
   end
 
@@ -286,6 +292,60 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
         Plan status: #{plan.status} (v#{plan.version})
 
         Review the plan status and take appropriate action. If the plan needs work, continue with it. If it's ready, submit it for review.
+        """
+    end
+  end
+
+  # ── Nil-stage heartbeat prompt (no running stage found) ──────────────
+
+  # Emits an actionable prompt when stage is nil — either because all stages
+  # are complete, or because the plan has pending stages that haven't started yet.
+  # This replaces the confusing "stage: unknown — unknown" fallback.
+  defp nil_stage_heartbeat_prompt(task, plan) do
+    stages = if plan, do: plan.stages || [], else: []
+    pending_stages = Enum.filter(stages, &(&1.status == "pending"))
+
+    all_complete? =
+      stages != [] && Enum.all?(stages, &(&1.status in ["passed", "failed", "skipped"]))
+
+    cond do
+      all_complete? ->
+        """
+        Task "#{task.title}" — all plan stages are complete.
+
+        If the task is not yet marked done, review the completed stages and confirm the work is finished. Use suite_task_complete if everything is in order, or post a summary to the execution space.
+        """
+
+      pending_stages != [] ->
+        first = hd(pending_stages)
+
+        stage_list =
+          pending_stages
+          |> Enum.map_join("\n", fn s -> "  - #{s.name} (#{s.id})" end)
+
+        """
+        Task "#{task.title}" — no stage is currently running.
+
+        The next pending stage is: #{first.name} (#{first.id})
+
+        Start this stage now using suite_stage_start with stage_id=#{first.id}, then proceed with the implementation described in the stage.
+
+        All pending stages:
+        #{stage_list}
+        """
+
+      plan == nil ->
+        """
+        Task "#{task.title}" — no approved plan found.
+
+        Create a plan using plan_create before beginning work.
+        """
+
+      true ->
+        """
+        Task "#{task.title}" — no active stage found.
+
+        Review the plan stages and resume work. If a stage is stuck, use suite_stage_start on the appropriate stage.
         """
     end
   end
