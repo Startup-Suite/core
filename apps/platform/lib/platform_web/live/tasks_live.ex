@@ -101,6 +101,12 @@ defmodule PlatformWeb.TasksLive do
        auto_upload: true,
        max_entries: @max_upload_entries,
        max_file_size: @max_upload_size
+     )
+     |> allow_upload(:steering_attachments,
+       accept: :any,
+       auto_upload: true,
+       max_entries: @max_upload_entries,
+       max_file_size: @max_upload_size
      )}
   end
 
@@ -623,8 +629,9 @@ defmodule PlatformWeb.TasksLive do
 
   def handle_event("send_steering_message", %{"steering" => %{"text" => content}}, socket) do
     content = String.trim(content || "")
+    has_uploads = has_completed_steering_uploads?(socket)
 
-    with true <- content != "",
+    with true <- content != "" or has_uploads,
          space_id when not is_nil(space_id) <- socket.assigns.execution_space_id do
       # Ensure we have a participant (lazy resolve on first send)
       participant =
@@ -640,12 +647,37 @@ defmodule PlatformWeb.TasksLive do
           log_only: false
         }
 
-        case Chat.post_message(attrs) do
+        result =
+          if has_uploads do
+            case persist_steering_attachments(socket) do
+              {:ok, pending_attachments} ->
+                Chat.post_message_with_attachments(attrs, pending_attachments)
+
+              {:error, :storage_failed} ->
+                {:error, :storage_failed}
+            end
+          else
+            case Chat.post_message(attrs) do
+              {:ok, msg} -> {:ok, msg, []}
+              error -> error
+            end
+          end
+
+        case result do
+          {:ok, _msg, _attachments} ->
+            {:noreply,
+             socket
+             |> assign(:execution_participant, participant)
+             |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))}
+
           {:ok, _msg} ->
             {:noreply,
              socket
              |> assign(:execution_participant, participant)
              |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))}
+
+          {:error, :storage_failed} ->
+            {:noreply, put_flash(socket, :error, "Failed to store attachment.")}
 
           {:error, _reason} ->
             {:noreply, put_flash(socket, :error, "Failed to send steering message.")}
@@ -660,6 +692,10 @@ defmodule PlatformWeb.TasksLive do
 
   def handle_event("steering_changed", %{"steering" => params}, socket) do
     {:noreply, assign(socket, :steering_compose_form, to_form(params, as: :steering))}
+  end
+
+  def handle_event("cancel_steering_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :steering_attachments, ref)}
   end
 
   # Upload cancel
@@ -843,6 +879,38 @@ defmodule PlatformWeb.TasksLive do
   end
 
   defp resolve_execution_participant(_space_id, _user_id), do: nil
+
+  # ── Private — Steering upload helpers ────────────────────────────────────
+
+  defp has_completed_steering_uploads?(socket) do
+    case uploaded_entries(socket, :steering_attachments) do
+      {[_ | _], _in_progress} -> true
+      _ -> false
+    end
+  end
+
+  defp persist_steering_attachments(socket) do
+    results =
+      consume_uploaded_entries(socket, :steering_attachments, fn %{path: path}, entry ->
+        result =
+          case AttachmentStorage.persist_upload(path, entry.client_name, entry.client_type) do
+            {:ok, attrs} -> {:ok, attrs}
+            {:error, _reason} -> {:error, :storage_failed}
+          end
+
+        {:ok, result}
+      end)
+
+    {ok_results, error_results} = Enum.split_with(results, &match?({:ok, _}, &1))
+    attachments = Enum.map(ok_results, fn {:ok, attrs} -> attrs end)
+
+    if error_results == [] do
+      {:ok, attachments}
+    else
+      AttachmentStorage.delete_many(attachments)
+      {:error, :storage_failed}
+    end
+  end
 
   # ── Private — Execution log helpers ──────────────────────────────────────
 
@@ -1206,4 +1274,9 @@ defmodule PlatformWeb.TasksLive do
   defp stage_status_icon("running"), do: "hero-arrow-path text-info animate-spin"
   defp stage_status_icon("skipped"), do: "hero-minus-circle text-base-content/40"
   defp stage_status_icon(_), do: "hero-clock text-base-content/40"
+
+  defp upload_error_to_string(:too_large), do: "File is too large"
+  defp upload_error_to_string(:too_many_files), do: "Too many files selected"
+  defp upload_error_to_string(:not_accepted), do: "File type is not accepted"
+  defp upload_error_to_string(error), do: inspect(error)
 end
