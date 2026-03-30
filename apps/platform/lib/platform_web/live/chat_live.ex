@@ -97,6 +97,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:unread_counts, if(user_id, do: Chat.unread_counts_for_user(user_id), else: %{}))
       |> assign(:upload_dialog_open, false)
       |> assign(:upload_caption, "")
+      |> assign(:drafts, %{})
       |> assign_compose("")
       |> assign_thread_compose("")
       |> assign_search_form("")
@@ -128,14 +129,21 @@ defmodule PlatformWeb.ChatLive do
 
   @impl true
   def handle_params(%{"space_slug" => slug_or_id}, _url, socket) do
-    if prev = socket.assigns.active_space do
-      ChatPubSub.unsubscribe(prev.id)
-      Phoenix.PubSub.unsubscribe(Platform.PubSub, "active_agent:#{prev.id}")
+    # Save current compose draft before switching spaces
+    socket =
+      if prev = socket.assigns.active_space do
+        ChatPubSub.unsubscribe(prev.id)
+        Phoenix.PubSub.unsubscribe(Platform.PubSub, "active_agent:#{prev.id}")
 
-      if connected?(socket) do
-        ChatPresence.untrack_in_space(self(), prev.id, socket.assigns.user_id)
+        if connected?(socket) do
+          ChatPresence.untrack_in_space(self(), prev.id, socket.assigns.user_id)
+        end
+
+        current_draft = socket.assigns.compose_form[:text].value || ""
+        update(socket, :drafts, &Map.put(&1, prev.id, current_draft))
+      else
+        socket
       end
-    end
 
     # Try slug first, then ID fallback (for DM/group spaces without slugs)
     space =
@@ -240,7 +248,8 @@ defmodule PlatformWeb.ChatLive do
        |> assign_new_canvas_form()
        |> stream(:messages, messages, reset: true)
        |> schedule_agent_presence_refresh()
-       |> clear_unread(space.id)}
+       |> clear_unread(space.id)
+       |> restore_draft(space.id)}
     end
   end
 
@@ -340,7 +349,8 @@ defmodule PlatformWeb.ChatLive do
            socket
            |> stream_insert(:messages, msg)
            |> put_attachment_map_entry(msg.id, attachments)
-           |> assign_compose("")}
+           |> assign_compose("")
+           |> update(:drafts, &Map.delete(&1, socket.assigns.active_space.id))}
 
         {:noop, socket} ->
           {:noreply, socket}
@@ -2752,6 +2762,11 @@ defmodule PlatformWeb.ChatLive do
 
   defp assign_compose(socket, text) do
     assign(socket, :compose_form, to_form(%{"text" => text}, as: :compose))
+  end
+
+  defp restore_draft(socket, space_id) do
+    draft = Map.get(socket.assigns.drafts, space_id, "")
+    assign_compose(socket, draft)
   end
 
   defp assign_thread_compose(socket, text) do

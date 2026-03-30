@@ -647,4 +647,66 @@ defmodule PlatformWeb.ChatLiveTest do
       assert archived.archived_at != nil
     end
   end
+
+  # ── Draft persistence ────────────────────────────────────────────────────────
+
+  describe "draft persistence" do
+    test "unsent draft is preserved when navigating away and back", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      {:ok, _other} =
+        Chat.create_channel(%{name: "other-draft", slug: "other-draft", description: ""})
+
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Type a draft in general
+      render_change(view, "compose_changed", %{"compose" => %{"text" => "my unsent draft"}})
+
+      # Navigate to another channel (saves outbound draft)
+      render_patch(view, ~p"/chat/other-draft")
+
+      # Navigate back to general (restores draft)
+      render_patch(view, ~p"/chat/general")
+
+      html = render(view)
+
+      assert html =~ "my unsent draft"
+    end
+
+    test "sending a message clears the draft for that channel", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "message to clear draft"})
+      |> render_submit()
+
+      html = render(view)
+
+      # The compose textarea should be empty after sending
+      refute html =~ ~s(value="message to clear draft")
+      # The message itself should appear in the feed
+      assert html =~ "message to clear draft"
+    end
+
+    test "draft in channel A does not bleed into channel B", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      {:ok, _channel_b} =
+        Chat.create_channel(%{name: "channel-b-draft", slug: "channel-b-draft", description: ""})
+
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Type a draft in general (channel A)
+      render_change(view, "compose_changed", %{"compose" => %{"text" => "draft for general only"}})
+
+      # Navigate to channel B
+      render_patch(view, ~p"/chat/channel-b-draft")
+
+      html = render(view)
+
+      # Channel B compose should not contain channel A's draft
+      refute html =~ "draft for general only"
+    end
+  end
 end
