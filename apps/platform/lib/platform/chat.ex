@@ -824,6 +824,56 @@ defmodule Platform.Chat do
     Repo.get_by(Thread, parent_message_id: parent_message_id)
   end
 
+  @doc """
+  Returns a map of parent_message_id => %{thread_id, reply_count, participant_ids, last_reply_at}
+  for all messages in the given list that have threads.
+  """
+  @spec thread_summaries_for_messages(binary(), [binary()]) :: map()
+  def thread_summaries_for_messages(space_id, message_ids)
+      when is_list(message_ids) and message_ids != [] do
+    threads =
+      from(t in Thread,
+        where: t.space_id == ^space_id and t.parent_message_id in ^message_ids,
+        select: {t.parent_message_id, t.id}
+      )
+      |> Repo.all()
+
+    thread_ids = Enum.map(threads, fn {_, tid} -> tid end)
+
+    counts_and_recents =
+      from(m in Message,
+        where: m.thread_id in ^thread_ids and is_nil(m.deleted_at),
+        group_by: m.thread_id,
+        select: {m.thread_id, count(m.id), max(m.inserted_at)}
+      )
+      |> Repo.all()
+      |> Map.new(fn {tid, count, last_at} -> {tid, {count, last_at}} end)
+
+    participant_ids_by_thread =
+      from(m in Message,
+        where: m.thread_id in ^thread_ids and is_nil(m.deleted_at),
+        group_by: [m.thread_id, m.participant_id],
+        select: {m.thread_id, m.participant_id}
+      )
+      |> Repo.all()
+      |> Enum.group_by(fn {tid, _} -> tid end, fn {_, pid} -> pid end)
+
+    Map.new(threads, fn {parent_msg_id, thread_id} ->
+      {count, last_at} = Map.get(counts_and_recents, thread_id, {0, nil})
+      participant_ids = Map.get(participant_ids_by_thread, thread_id, [])
+
+      {parent_msg_id,
+       %{
+         thread_id: thread_id,
+         reply_count: count,
+         participant_ids: participant_ids,
+         last_reply_at: last_at
+       }}
+    end)
+  end
+
+  def thread_summaries_for_messages(_space_id, _), do: %{}
+
   @doc "List threads in a space, oldest first."
   @spec list_threads(binary()) :: [Thread.t()]
   def list_threads(space_id) do

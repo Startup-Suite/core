@@ -90,6 +90,9 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:new_channel_form, to_form(%{"name" => "", "description" => ""}))
       |> assign(:quick_emojis, @quick_emojis)
       |> assign(:canvas_types, @canvas_types)
+      |> assign(:thread_summaries_map, %{})
+      |> assign(:expanded_threads, MapSet.new())
+      |> assign(:inline_thread_messages, %{})
       |> assign(:agent_typing_pids, MapSet.new())
       |> assign(:streaming_replies, %{})
       |> assign(:mention_suggestions, [])
@@ -182,6 +185,8 @@ defmodule PlatformWeb.ChatLive do
         if connected?(socket), do: ChatPresence.online_count(space.id), else: 0
 
       reactions_map = build_reactions_map(messages, participant)
+      message_ids = Enum.map(messages, & &1.id)
+      thread_summaries_map = Chat.thread_summaries_for_messages(space.id, message_ids)
       attachments_map = build_attachments_map(messages)
       pins = Chat.list_pins(space.id)
       pinned_message_ids = MapSet.new(pins, & &1.message_id)
@@ -221,6 +226,9 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:current_participant, participant)
        |> assign(:reactions_map, reactions_map)
        |> assign(:attachments_map, attachments_map)
+       |> assign(:thread_summaries_map, thread_summaries_map)
+       |> assign(:expanded_threads, MapSet.new())
+       |> assign(:inline_thread_messages, %{})
        |> assign(:active_thread, nil)
        |> assign(:thread_messages, [])
        |> assign(:thread_attachments_map, %{})
@@ -491,12 +499,22 @@ defmodule PlatformWeb.ChatLive do
           thread_messages = load_thread_messages(space.id, thread.id)
           thread_attachments_map = build_attachments_map(thread_messages)
 
+          # Add to thread summaries map so inline toggle appears
+          thread_summaries_map =
+            Map.put(socket.assigns.thread_summaries_map, message_id, %{
+              thread_id: thread.id,
+              reply_count: length(thread_messages),
+              participant_ids: thread_messages |> Enum.map(& &1.participant_id) |> Enum.uniq(),
+              last_reply_at: List.last(thread_messages) && List.last(thread_messages).inserted_at
+            })
+
           {:noreply,
            socket
            |> assign(:active_thread, thread)
            |> assign(:active_canvas, nil)
            |> assign(:thread_messages, thread_messages)
            |> assign(:thread_attachments_map, thread_attachments_map)
+           |> assign(:thread_summaries_map, thread_summaries_map)
            |> assign(:highlighted_message_id, nil)
            |> assign(:highlighted_thread_message_id, nil)
            |> assign_thread_compose("")}
@@ -513,6 +531,32 @@ defmodule PlatformWeb.ChatLive do
      |> assign(:thread_messages, [])
      |> assign(:thread_attachments_map, %{})
      |> assign(:highlighted_thread_message_id, nil)}
+  end
+
+  def handle_event("toggle_inline_thread", %{"message-id" => parent_message_id}, socket) do
+    expanded = socket.assigns.expanded_threads
+
+    if MapSet.member?(expanded, parent_message_id) do
+      # Collapse
+      {:noreply,
+       socket
+       |> assign(:expanded_threads, MapSet.delete(expanded, parent_message_id))
+       |> update(:inline_thread_messages, &Map.delete(&1, parent_message_id))}
+    else
+      # Expand: load thread messages
+      case Map.get(socket.assigns.thread_summaries_map, parent_message_id) do
+        %{thread_id: thread_id} ->
+          thread_messages = load_thread_messages(socket.assigns.active_space.id, thread_id)
+
+          {:noreply,
+           socket
+           |> assign(:expanded_threads, MapSet.put(expanded, parent_message_id))
+           |> update(:inline_thread_messages, &Map.put(&1, parent_message_id, thread_messages))}
+
+        nil ->
+          {:noreply, socket}
+      end
+    end
   end
 
   def handle_event("send_thread_message", %{"thread_compose" => %{"text" => content}}, socket) do
@@ -1034,15 +1078,44 @@ defmodule PlatformWeb.ChatLive do
          |> put_attachment_map_entry(msg.id, attachments)
          |> maybe_refresh_search()}
       else
-        if socket.assigns.active_thread && socket.assigns.active_thread.id == msg.thread_id do
-          {:noreply,
-           socket
-           |> update(:thread_messages, &(&1 ++ [msg]))
-           |> put_thread_attachment_map_entry(msg.id, attachments)
-           |> maybe_refresh_search()}
-        else
-          {:noreply, socket}
-        end
+        # Update side-panel thread if open
+        socket =
+          if socket.assigns.active_thread && socket.assigns.active_thread.id == msg.thread_id do
+            socket
+            |> update(:thread_messages, &(&1 ++ [msg]))
+            |> put_thread_attachment_map_entry(msg.id, attachments)
+          else
+            socket
+          end
+
+        # Update inline thread if expanded
+        parent_msg_id =
+          Enum.find_value(socket.assigns.thread_summaries_map, fn {pmid, %{thread_id: tid}} ->
+            if tid == msg.thread_id, do: pmid
+          end)
+
+        socket =
+          if parent_msg_id && MapSet.member?(socket.assigns.expanded_threads, parent_msg_id) do
+            update(socket, :inline_thread_messages, fn map ->
+              Map.update(map, parent_msg_id, [msg], &(&1 ++ [msg]))
+            end)
+          else
+            socket
+          end
+
+        # Update summary count
+        socket =
+          if parent_msg_id do
+            update(socket, :thread_summaries_map, fn tsm ->
+              Map.update(tsm, parent_msg_id, nil, fn summary ->
+                %{summary | reply_count: summary.reply_count + 1, last_reply_at: msg.inserted_at}
+              end)
+            end)
+          else
+            socket
+          end
+
+        {:noreply, maybe_refresh_search(socket)}
       end
     end
   end
@@ -1991,6 +2064,95 @@ defmodule PlatformWeb.ChatLive do
                   >
                     <span class="hero-plus size-4"></span>
                   </button>
+                </div>
+
+                <%!-- Inline thread summary / expandable replies --%>
+                <div
+                  :if={Map.has_key?(@thread_summaries_map, msg.id)}
+                  class="mt-2"
+                >
+                  <% summary = Map.get(@thread_summaries_map, msg.id) %>
+                  <% is_expanded = MapSet.member?(@expanded_threads, msg.id) %>
+
+                  <button
+                    phx-click="toggle_inline_thread"
+                    phx-value-message-id={msg.id}
+                    class={[
+                      "flex items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors",
+                      "border border-base-300 hover:border-primary/40 hover:bg-base-200/60",
+                      is_expanded && "bg-base-200/60 border-primary/30"
+                    ]}
+                  >
+                    <span class="flex -space-x-1">
+                      <span
+                        :for={pid <- Enum.take(summary.participant_ids, 3)}
+                        class="flex size-4 items-center justify-center rounded-full bg-primary/20 text-[9px] font-semibold text-primary ring-1 ring-base-100"
+                      >
+                        {avatar_initial(@participants_map, pid)}
+                      </span>
+                    </span>
+                    <span class="font-medium text-primary">
+                      {summary.reply_count} {if summary.reply_count == 1, do: "reply", else: "replies"}
+                    </span>
+                    <span :if={summary.last_reply_at} class="text-base-content/40">
+                      <.local_time
+                        id={"thread-last-reply-#{msg.id}"}
+                        timestamp={summary.last_reply_at}
+                        class="text-[10px]"
+                      />
+                    </span>
+                    <span class="ml-auto text-base-content/40">
+                      <span :if={is_expanded} class="hero-chevron-up size-3"></span>
+                      <span :if={!is_expanded} class="hero-chevron-down size-3"></span>
+                    </span>
+                  </button>
+
+                  <%!-- Expanded inline thread messages --%>
+                  <div
+                    :if={is_expanded}
+                    class="mt-1 ml-2 border-l-2 border-base-300 pl-3 space-y-2"
+                  >
+                    <div
+                      :for={tmsg <- Map.get(@inline_thread_messages, msg.id, [])}
+                      id={"inline-thread-msg-#{tmsg.id}"}
+                      class="flex items-start gap-2"
+                    >
+                      <div class={[
+                        "flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-medium",
+                        if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                          do: "bg-primary/20 text-primary",
+                          else: "bg-base-300 text-base-content/60"
+                        )
+                      ]}>
+                        {avatar_initial(@participants_map, tmsg.participant_id)}
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-baseline gap-1.5">
+                          <span class={[
+                            "text-xs font-semibold",
+                            if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                              do: "msg-agent-name",
+                              else: "text-base-content"
+                            )
+                          ]}>
+                            {sender_name(@participants_map, tmsg.participant_id)}
+                          </span>
+                          <.local_time
+                            id={"inline-thread-time-#{tmsg.id}"}
+                            timestamp={tmsg.inserted_at}
+                            class="text-[9px] text-base-content/40"
+                          />
+                        </div>
+                        <div class="prose prose-sm max-w-none text-xs text-base-content/80 break-words chat-markdown">
+                          {Platform.Chat.ContentRenderer.render_message(tmsg.content)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div :if={Map.get(@inline_thread_messages, msg.id, []) == []} class="text-xs text-base-content/40 py-1">
+                      Loading…
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
