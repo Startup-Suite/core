@@ -3180,6 +3180,36 @@ defmodule PlatformWeb.ChatLive do
     |> Enum.reverse()
   end
 
+  # Updates the inline thread view and preview counts when a new thread reply arrives via PubSub.
+  defp maybe_update_inline_thread(socket, %{thread_id: thread_id} = msg)
+       when is_binary(thread_id) do
+    # Find the parent message ID mapped to this thread
+    msg_id =
+      Enum.find_value(socket.assigns.thread_previews, fn {pmid, %{thread_id: tid}} ->
+        if tid == thread_id, do: pmid
+      end)
+
+    if is_nil(msg_id) do
+      socket
+    else
+      socket
+      |> update(:inline_thread_messages, fn itm ->
+        if MapSet.member?(socket.assigns.expanded_threads, msg_id) do
+          Map.update(itm, msg_id, [msg], &(&1 ++ [msg]))
+        else
+          itm
+        end
+      end)
+      |> update(:thread_previews, fn tp ->
+        Map.update(tp, msg_id, nil, fn preview ->
+          %{preview | reply_count: preview.reply_count + 1, last_reply_at: msg.inserted_at}
+        end)
+      end)
+    end
+  end
+
+  defp maybe_update_inline_thread(socket, _msg), do: socket
+
   attr(:id, :string, required: true)
   attr(:timestamp, :any, default: nil)
   attr(:class, :string, default: nil)
