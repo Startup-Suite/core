@@ -579,11 +579,14 @@ defmodule PlatformWeb.ChatLive do
            socket
            |> update(:expanded_threads, &MapSet.put(&1, msg_id))
            |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
-           |> update(:thread_previews, &Map.put(&1, msg_id, %{
-             thread_id: thread.id,
-             reply_count: length(thread_msgs),
-             last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
-           }))}
+           |> update(
+             :thread_previews,
+             &Map.put(&1, msg_id, %{
+               thread_id: thread.id,
+               reply_count: length(thread_msgs),
+               last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
+             })
+           )}
       end
     end
   end
@@ -616,8 +619,14 @@ defmodule PlatformWeb.ChatLive do
              Map.update(itm, msg_id, [msg], &(&1 ++ [msg]))
            end)
            |> update(:thread_previews, fn tp ->
-             preview = Map.get(tp, msg_id, %{thread_id: thread.id, reply_count: 0, last_reply_at: nil})
-             Map.put(tp, msg_id, %{preview | reply_count: preview.reply_count + 1, last_reply_at: msg.inserted_at})
+             preview =
+               Map.get(tp, msg_id, %{thread_id: thread.id, reply_count: 0, last_reply_at: nil})
+
+             Map.put(tp, msg_id, %{
+               preview
+               | reply_count: preview.reply_count + 1,
+                 last_reply_at: msg.inserted_at
+             })
            end)}
 
         {:error, _reason} ->

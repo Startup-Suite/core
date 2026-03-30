@@ -932,7 +932,9 @@ defmodule Platform.Chat do
       on: m.thread_id == t.id and is_nil(m.deleted_at),
       group_by: [t.id, t.parent_message_id],
       having: count(m.id) > 0,
-      select: {t.parent_message_id, %{thread_id: t.id, reply_count: count(m.id), last_reply_at: max(m.inserted_at)}}
+      select:
+        {t.parent_message_id,
+         %{thread_id: t.id, reply_count: count(m.id), last_reply_at: max(m.inserted_at)}}
     )
     |> Repo.all()
     |> Map.new()
