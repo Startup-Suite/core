@@ -26,9 +26,17 @@ defmodule Platform.Accounts do
     Repo.all(base)
   end
 
-  def find_or_create_from_oidc(%{sub: sub, email: email, name: name})
+  def find_or_create_from_oidc(%{sub: sub, email: email, name: name} = oidc_attrs)
       when is_binary(sub) and is_binary(email) and is_binary(name) do
-    attrs = %{oidc_sub: sub, email: email, name: name}
+    avatar_url = normalize_avatar_url(Map.get(oidc_attrs, :avatar_url))
+    attrs = %{oidc_sub: sub, email: email, name: name, avatar_url: avatar_url}
+
+    upsert_fields = [
+      email: email,
+      name: name,
+      avatar_url: avatar_url,
+      updated_at: DateTime.utc_now(:second)
+    ]
 
     case Repo.get_by(User, oidc_sub: sub) do
       %User{} = user ->
@@ -40,7 +48,7 @@ defmodule Platform.Accounts do
         %User{}
         |> User.changeset(attrs)
         |> Repo.insert(
-          on_conflict: [set: [email: email, name: name, updated_at: DateTime.utc_now(:second)]],
+          on_conflict: [set: upsert_fields],
           conflict_target: [:oidc_sub],
           returning: true
         )
@@ -48,4 +56,16 @@ defmodule Platform.Accounts do
   end
 
   def find_or_create_from_oidc(_attrs), do: {:error, :invalid_oidc_user}
+
+  defp normalize_avatar_url(value) when is_binary(value) do
+    value = String.trim(value)
+
+    if value == "" do
+      nil
+    else
+      value
+    end
+  end
+
+  defp normalize_avatar_url(_value), do: nil
 end

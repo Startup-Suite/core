@@ -195,9 +195,22 @@ defmodule PlatformWeb.AuthController do
         user["preferred_username"] ||
         user["email"]
 
+    avatar_url =
+      ["picture", "photo", "avatar_url", "avatar"]
+      |> Enum.find_value(fn key ->
+        case user[key] do
+          value when is_binary(value) ->
+            value = String.trim(value)
+            if value == "", do: nil, else: value
+
+          _ ->
+            nil
+        end
+      end)
+
     case {user["sub"], user["email"], name} do
       {sub, email, n} when is_binary(sub) and is_binary(email) and is_binary(n) ->
-        {:ok, %{sub: sub, email: email, name: n}}
+        {:ok, %{sub: sub, email: email, name: n, avatar_url: avatar_url}}
 
       _ ->
         {:error, :invalid_oidc_user}

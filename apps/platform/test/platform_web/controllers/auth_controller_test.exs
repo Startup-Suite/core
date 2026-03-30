@@ -17,6 +17,19 @@ defmodule PlatformWeb.AuthControllerTest do
   end
 
   test "GET /auth/oidc/callback creates a user and signs them in", %{conn: conn} do
+    Application.put_env(:platform, :oidc_mock_response, {
+      :ok,
+      %{
+        user: %{
+          "sub" => "test-subject",
+          "email" => "user@example.com",
+          "name" => "Test User",
+          "picture" => "https://cdn.example.com/avatars/test-user.png"
+        },
+        token: %{"id_token" => "test-id-token"}
+      }
+    })
+
     conn =
       init_test_session(conn, oidc_session_params: %{state: "expected-state", nonce: "n"})
 
@@ -31,7 +44,43 @@ defmodule PlatformWeb.AuthControllerTest do
     assert user.email == "user@example.com"
     assert user.name == "Test User"
     assert user.oidc_sub == "test-subject"
+    assert user.avatar_url == "https://cdn.example.com/avatars/test-user.png"
     assert get_session(conn, :oidc_id_token) == "test-id-token"
+  end
+
+  test "GET /auth/oidc/callback updates avatar metadata for an existing user", %{conn: conn} do
+    {:ok, user} =
+      Repo.insert(%User{
+        email: "user@example.com",
+        name: "Test User",
+        oidc_sub: "test-subject",
+        avatar_url: "https://cdn.example.com/avatars/old.png"
+      })
+
+    Application.put_env(:platform, :oidc_mock_response, {
+      :ok,
+      %{
+        user: %{
+          "sub" => "test-subject",
+          "email" => "user@example.com",
+          "name" => "Renamed User",
+          "avatar_url" => "https://cdn.example.com/avatars/new.png"
+        },
+        token: %{"id_token" => "test-id-token"}
+      }
+    })
+
+    conn =
+      init_test_session(conn, oidc_session_params: %{state: "expected-state", nonce: "n"})
+
+    conn = get(conn, ~p"/auth/oidc/callback?code=test-code&state=expected-state")
+
+    assert redirected_to(conn, 302) == ~p"/"
+    assert get_session(conn, :current_user_id) == user.id
+
+    user = Repo.get!(User, user.id)
+    assert user.name == "Renamed User"
+    assert user.avatar_url == "https://cdn.example.com/avatars/new.png"
   end
 
   test "GET /auth/oidc/callback rejects an invalid state", %{conn: conn} do
