@@ -318,11 +318,11 @@ defmodule Platform.ChatTest do
       other = create_participant(space.id)
 
       # Post a message from the other user, then mark it as read
-      msg1 = create_message(space.id, other.participant_id)
+      msg1 = create_message(space.id, other.id)
       Chat.mark_space_read(user.id, msg1.id)
 
       # Post another message from the other user (unread)
-      _msg2 = create_message(space.id, other.participant_id)
+      _msg2 = create_message(space.id, other.id)
 
       counts = Chat.unread_counts_for_user(user.participant_id)
       assert Map.get(counts, space.id, 0) == 1
@@ -334,11 +334,11 @@ defmodule Platform.ChatTest do
       other = create_participant(space.id)
 
       # Post a message from the other user, mark as read
-      msg1 = create_message(space.id, other.participant_id)
+      msg1 = create_message(space.id, other.id)
       Chat.mark_space_read(user.id, msg1.id)
 
       # Now user posts their own message — should NOT be counted as unread
-      _own_msg = create_message(space.id, user.participant_id)
+      _own_msg = create_message(space.id, user.id)
 
       counts = Chat.unread_counts_for_user(user.participant_id)
       assert Map.get(counts, space.id, 0) == 0
@@ -350,13 +350,13 @@ defmodule Platform.ChatTest do
       other = create_participant(space.id)
 
       # Mark a starting point
-      seed = create_message(space.id, other.participant_id)
+      seed = create_message(space.id, other.id)
       Chat.mark_space_read(user.id, seed.id)
 
       # User sends 2 own messages, other user sends 1
-      _own1 = create_message(space.id, user.participant_id)
-      _own2 = create_message(space.id, user.participant_id)
-      _theirs = create_message(space.id, other.participant_id)
+      _own1 = create_message(space.id, user.id)
+      _own2 = create_message(space.id, user.id)
+      _theirs = create_message(space.id, other.id)
 
       counts = Chat.unread_counts_for_user(user.participant_id)
       assert Map.get(counts, space.id, 0) == 1
