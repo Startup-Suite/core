@@ -199,6 +199,26 @@ defmodule Platform.ChatTest do
 
   # ── Search ────────────────────────────────────────────────────────────────────
 
+  describe "unread_counts_for_user/1" do
+    test "excludes messages sent by the same user from unread counts" do
+      user_id = Ecto.UUID.generate()
+      space = create_space()
+      own_participant = create_participant(space.id, %{participant_id: user_id})
+      other_participant = create_participant(space.id)
+
+      seen_message = create_message(space.id, other_participant.id, %{content: "seen"})
+      :ok = Chat.mark_space_read(own_participant.id, seen_message.id)
+
+      _own_message = create_message(space.id, own_participant.id, %{content: "my follow-up"})
+
+      assert Chat.unread_counts_for_user(user_id) == %{}
+
+      _other_message = create_message(space.id, other_participant.id, %{content: "their reply"})
+
+      assert Chat.unread_counts_for_user(user_id) == %{space.id => 1}
+    end
+  end
+
   describe "search_messages/3" do
     test "returns ranked matches with highlighted excerpts" do
       space = create_space()

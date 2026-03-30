@@ -44,6 +44,13 @@ defmodule PlatformWeb.ChatLiveTest do
     |> Kernel.-(1)
   end
 
+  defp assigns_for(view) do
+    view.pid
+    |> :sys.get_state()
+    |> Map.fetch!(:socket)
+    |> Map.fetch!(:assigns)
+  end
+
   test "GET /chat redirects unauthenticated users to login", %{conn: conn} do
     conn = get(conn, ~p"/chat")
     assert redirected_to(conn) == "/auth/login"
@@ -83,6 +90,43 @@ defmodule PlatformWeb.ChatLiveTest do
     # Text may appear once in the message stream and once in the textarea
     # (LiveView textarea content patching quirk). At most 2 occurrences.
     assert count_occurrences(html, "hello from test") in [1, 2]
+  end
+
+  test "own messages in background spaces do not increment unread counts", %{conn: conn} do
+    conn = authenticated_conn(conn)
+    user_id = get_session(conn, :current_user_id)
+
+    {:ok, background_space} =
+      Chat.create_space(%{
+        name: "Alpha",
+        slug: "alpha-#{System.unique_integer([:positive])}",
+        kind: "channel"
+      })
+
+    {:ok, background_participant} =
+      Chat.add_participant(background_space.id, %{
+        participant_type: "user",
+        participant_id: user_id,
+        display_name: "Chat Test User",
+        joined_at: DateTime.utc_now()
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+    assert Map.get(assigns_for(view).unread_counts, background_space.id, 0) == 0
+
+    {:ok, own_message} =
+      Chat.post_message(%{
+        space_id: background_space.id,
+        participant_id: background_participant.id,
+        content_type: "text",
+        content: "my own message"
+      })
+
+    send(view.pid, {:new_message, own_message})
+    _ = render(view)
+
+    assert Map.get(assigns_for(view).unread_counts, background_space.id, 0) == 0
   end
 
   test "shows the shell agent indicator without a duplicate chat header presence badge", %{

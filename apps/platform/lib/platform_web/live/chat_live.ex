@@ -60,6 +60,10 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:highlighted_thread_message_id, nil)
       |> assign(:participants_map, %{})
       |> assign(:agent_participant_ids, MapSet.new())
+      |> assign(
+        :user_participant_ids,
+        if(user_id, do: Chat.user_participant_ids(user_id), else: MapSet.new())
+      )
       |> assign(:online_count, 0)
       |> assign(:agent_presence, default_agent_presence())
       |> assign(:has_agent_participant, false)
@@ -211,6 +215,7 @@ defmodule PlatformWeb.ChatLive do
        |> assign_search_form("")
        |> assign(:participants_map, participants_map)
        |> assign(:agent_participant_ids, agent_participant_ids)
+       |> assign(:user_participant_ids, Chat.user_participant_ids(socket.assigns.user_id))
        |> assign(:online_count, online_count)
        |> assign(:agent_presence, agent_presence)
        |> assign(:has_agent_participant, has_agent_participant)
@@ -986,7 +991,6 @@ defmodule PlatformWeb.ChatLive do
   @impl true
   def handle_info({:new_message, msg}, socket) do
     active_space = socket.assigns.active_space
-    current_participant = socket.assigns.current_participant
 
     # If this message is from a background DM space (not the active one), count it as unread.
     # Don't count messages sent by the current user.
@@ -994,7 +998,7 @@ defmodule PlatformWeb.ChatLive do
       is_nil(active_space) or msg.space_id != active_space.id
 
     is_own_message =
-      current_participant && msg.participant_id == current_participant.id
+      MapSet.member?(socket.assigns.user_participant_ids, msg.participant_id)
 
     socket =
       if is_background_dm and not is_own_message do

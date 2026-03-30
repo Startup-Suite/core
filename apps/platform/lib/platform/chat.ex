@@ -466,6 +466,17 @@ defmodule Platform.Chat do
   @spec get_participant(binary()) :: Participant.t() | nil
   def get_participant(id), do: Repo.get(Participant, id)
 
+  @doc "Return the active participant row IDs for a given user across all spaces."
+  @spec user_participant_ids(binary()) :: MapSet.t(binary())
+  def user_participant_ids(user_id) do
+    from(p in Participant,
+      where: p.participant_type == "user" and p.participant_id == ^user_id and is_nil(p.left_at),
+      select: p.id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
   @doc """
   List participants in a space.
 
@@ -1621,26 +1632,33 @@ defmodule Platform.Chat do
     )
     |> Repo.all()
     |> Enum.map(fn {space_id, last_read_id} ->
-      {space_id, count_unread(space_id, last_read_id)}
+      {space_id, count_unread(space_id, last_read_id, user_id)}
     end)
     |> Enum.filter(fn {_, count} -> count > 0 end)
     |> Map.new()
   end
 
-  defp count_unread(space_id, nil) do
+  defp count_unread(space_id, nil, user_id) do
     from(m in Message,
-      where: m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at),
+      join: sender in Participant,
+      on: sender.id == m.participant_id,
+      where:
+        m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at) and
+          not (sender.participant_type == "user" and sender.participant_id == ^user_id),
       select: count(m.id)
     )
     |> Repo.one()
     |> min(10)
   end
 
-  defp count_unread(space_id, last_read_id) do
+  defp count_unread(space_id, last_read_id, user_id) do
     from(m in Message,
+      join: sender in Participant,
+      on: sender.id == m.participant_id,
       where:
         m.space_id == ^space_id and m.id > ^last_read_id and is_nil(m.thread_id) and
-          is_nil(m.deleted_at),
+          is_nil(m.deleted_at) and
+          not (sender.participant_type == "user" and sender.participant_id == ^user_id),
       select: count(m.id)
     )
     |> Repo.one()
