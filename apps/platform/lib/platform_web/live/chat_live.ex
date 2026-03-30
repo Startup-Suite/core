@@ -2598,7 +2598,6 @@ defmodule PlatformWeb.ChatLive do
     <%= if @show_new_channel_modal do %>
       <div
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-        phx-click="close_new_channel_modal"
       >
         <div
           class="bg-base-100 rounded-xl shadow-xl w-full max-w-md p-6"
