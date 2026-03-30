@@ -1596,26 +1596,28 @@ defmodule Platform.Chat do
     )
     |> Repo.all()
     |> Enum.map(fn {space_id, last_read_id} ->
-      {space_id, count_unread(space_id, last_read_id)}
+      {space_id, count_unread(space_id, last_read_id, user_id)}
     end)
     |> Enum.filter(fn {_, count} -> count > 0 end)
     |> Map.new()
   end
 
-  defp count_unread(space_id, nil) do
+  defp count_unread(space_id, nil, user_id) do
     from(m in Message,
-      where: m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at),
+      where:
+        m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at) and
+          m.participant_id != ^user_id,
       select: count(m.id)
     )
     |> Repo.one()
     |> min(10)
   end
 
-  defp count_unread(space_id, last_read_id) do
+  defp count_unread(space_id, last_read_id, user_id) do
     from(m in Message,
       where:
         m.space_id == ^space_id and m.id > ^last_read_id and is_nil(m.thread_id) and
-          is_nil(m.deleted_at),
+          is_nil(m.deleted_at) and m.participant_id != ^user_id,
       select: count(m.id)
     )
     |> Repo.one()
