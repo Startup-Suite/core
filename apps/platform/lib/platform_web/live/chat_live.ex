@@ -579,10 +579,14 @@ defmodule PlatformWeb.ChatLive do
 
   def handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket) do
     if MapSet.member?(socket.assigns.expanded_threads, msg_id) do
-      {:noreply,
-       socket
-       |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
-       |> update(:inline_thread_messages, &Map.delete(&1, msg_id))}
+      # Collapse: remove from expanded set and re-insert message to force re-render
+      socket =
+        socket
+        |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
+        |> update(:inline_thread_messages, &Map.delete(&1, msg_id))
+
+      socket = reinsert_stream_message(socket, msg_id)
+      {:noreply, socket}
     else
       space = socket.assigns.active_space
 
@@ -600,19 +604,22 @@ defmodule PlatformWeb.ChatLive do
         thread ->
           thread_msgs = load_thread_messages(space.id, thread.id)
 
-          {:noreply,
-           socket
-           |> update(:expanded_threads, &MapSet.put(&1, msg_id))
-           |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
-           |> update(
-             :thread_previews,
-             &Map.put(&1, msg_id, %{
-               thread_id: thread.id,
-               reply_count: length(thread_msgs),
-               last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
-             })
-           )
-           |> push_event("focus_inline_thread_compose", %{message_id: msg_id})}
+          socket =
+            socket
+            |> update(:expanded_threads, &MapSet.put(&1, msg_id))
+            |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
+            |> update(
+              :thread_previews,
+              &Map.put(&1, msg_id, %{
+                thread_id: thread.id,
+                reply_count: length(thread_msgs),
+                last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
+              })
+            )
+            |> push_event("focus_inline_thread_compose", %{message_id: msg_id})
+
+          socket = reinsert_stream_message(socket, msg_id)
+          {:noreply, socket}
       end
     end
   end
@@ -3351,6 +3358,16 @@ defmodule PlatformWeb.ChatLive do
     space_id
     |> Chat.list_messages(limit: @message_limit, top_level_only: true)
     |> Enum.reverse()
+  end
+
+  # Re-insert a message into the stream to force LiveView to re-render the
+  # stream item after assign changes (e.g. expanded_threads, thread_previews).
+  # Stream items only re-render on explicit stream_insert, not on assign changes.
+  defp reinsert_stream_message(socket, msg_id) do
+    case Chat.get_message(msg_id) do
+      nil -> socket
+      msg -> stream_insert(socket, :messages, msg)
+    end
   end
 
   defp load_thread_messages(space_id, thread_id) do
