@@ -10,17 +10,20 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
   ## Supported node types
 
-  - `stack`    — vertical flex container with optional `gap` prop
-  - `row`      — horizontal flex container with optional `gap` prop
-  - `card`     — bordered card with optional `title` prop
-  - `text`     — plain text with optional `size`/`weight` props
-  - `markdown` — renders `content` prop as pre-formatted text
-  - `mermaid`  — renders `source` prop as an interactive Mermaid diagram via client-side JS
-  - `table`    — renders `columns` + `rows` props as an HTML table
-  - `code`     — renders `source` prop inside `<pre><code>`
-  - `badge`    — small rounded label from `value` prop
-  - `heading`  — h1–h4 heading from `value` + `level` props
-  - `image`    — renders `src` prop as an `<img>` tag with optional `alt`, `caption`, `border`, `rounded` props
+  - `stack`          — vertical flex container with optional `gap` prop
+  - `row`            — horizontal flex container with optional `gap` prop
+  - `card`           — bordered card with optional `title` prop
+  - `text`           — plain text with optional `size`/`weight` props
+  - `markdown`       — renders `content` prop as pre-formatted text
+  - `mermaid`        — renders `source` prop as an interactive Mermaid diagram via client-side JS
+  - `table`          — renders `columns` + `rows` props as an HTML table
+  - `code`           — renders `source` prop inside `<pre><code>`
+  - `badge`          — small rounded label from `value` prop
+  - `heading`        — h1–h4 heading from `value` + `level` props
+  - `image`          — renders `src` prop as an `<img>` tag with optional `alt`, `caption`, `border`, `rounded` props
+  - `checklist`      — ordered list of checklist items with optional `title` prop; children must be `checklist_item` nodes
+  - `checklist_item` — single checklist row with `label` prop and optional `checked` (boolean) and `note` props
+  - `action_row`     — horizontal strip of labelled action buttons; each child button has `label`, `event`, and optional `payload` + `variant` props
   """
 
   use PlatformWeb, :html
@@ -400,6 +403,77 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     """
   end
 
+  def render_node(%{node: %{"type" => "checklist"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div class="flex flex-col gap-1">
+      <p
+        :if={@node["props"]["title"]}
+        class="text-xs font-semibold uppercase tracking-widest text-base-content/50 mb-1"
+      >
+        {@node["props"]["title"]}
+      </p>
+      <.render_node :for={child <- @node["children"] || []} node={child} />
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "checklist_item"} = node} = assigns) do
+    checked = get_in(node, ["props", "checked"]) == true
+    assigns = assigns |> assign(:node, node) |> assign(:checked, checked)
+
+    ~H"""
+    <div class="flex items-start gap-2 py-0.5">
+      <span class={[
+        "mt-0.5 size-4 shrink-0 rounded",
+        if(@checked,
+          do: "hero-check-circle text-success",
+          else: "hero-stop-circle text-base-content/25"
+        )
+      ]}>
+      </span>
+      <div class="min-w-0">
+        <p class={[
+          "text-sm leading-5",
+          @checked && "line-through text-base-content/40",
+          !@checked && "text-base-content"
+        ]}>
+          {@node["props"]["label"] || ""}
+        </p>
+        <p
+          :if={@node["props"]["note"]}
+          class="text-xs text-base-content/50 leading-4 mt-0.5"
+        >
+          {@node["props"]["note"]}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "action_row"} = node} = assigns) do
+    buttons = node["props"]["buttons"] || []
+    assigns = assigns |> assign(:node, node) |> assign(:buttons, buttons)
+
+    ~H"""
+    <div class="flex flex-row flex-wrap gap-2 mt-1">
+      <button
+        :for={btn <- @buttons}
+        class={[
+          "btn btn-sm",
+          action_button_class(btn["variant"])
+        ]}
+        phx-click="canvas_action"
+        phx-value-event={btn["event"] || ""}
+        phx-value-payload={Jason.encode!(btn["payload"] || %{})}
+      >
+        {btn["label"] || "Action"}
+      </button>
+    </div>
+    """
+  end
+
   # Fallback for unknown / nil node types
   def render_node(%{node: node} = assigns) when is_map(node) do
     assigns = assign(assigns, :node, node)
@@ -549,4 +623,10 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   end
 
   defp cell_value(_row, _col), do: "—"
+
+  defp action_button_class("primary"), do: "btn-primary"
+  defp action_button_class("danger"), do: "btn-error"
+  defp action_button_class("ghost"), do: "btn-ghost"
+  defp action_button_class("outline"), do: "btn-outline"
+  defp action_button_class(_), do: "btn-outline"
 end
