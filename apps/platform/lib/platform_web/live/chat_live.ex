@@ -1810,7 +1810,13 @@ defmodule PlatformWeb.ChatLive do
               ]}
               style={
                 if MapSet.member?(@agent_participant_ids, msg.participant_id) do
-                  accent = Map.get(@agent_colors_map, msg.participant_id, Platform.Agents.ColorPalette.default_accent())
+                  accent =
+                    Map.get(
+                      @agent_colors_map,
+                      msg.participant_id,
+                      Platform.Agents.ColorPalette.default_accent()
+                    )
+
                   "--agent-accent: #{accent};"
                 end
               }
@@ -2024,8 +2030,14 @@ defmodule PlatformWeb.ChatLive do
                 <div class="text-xs font-medium mb-0.5 msg-agent-name">
                   {sender_name(@participants_map, entry.participant_id)}
                 </div>
-                <div class="prose prose-sm max-w-none text-sm text-base-content/80 border-l-2 pl-3" style="border-color: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 30%, transparent);">
-                  {entry.text}<span class="inline-block w-1.5 h-4 animate-pulse ml-0.5 align-middle rounded-sm" style="background: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 50%, transparent);"></span>
+                <div
+                  class="prose prose-sm max-w-none text-sm text-base-content/80 border-l-2 pl-3"
+                  style="border-color: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 30%, transparent);"
+                >
+                  {entry.text}<span
+                    class="inline-block w-1.5 h-4 animate-pulse ml-0.5 align-middle rounded-sm"
+                    style="background: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 50%, transparent);"
+                  ></span>
                 </div>
               </div>
             </div>

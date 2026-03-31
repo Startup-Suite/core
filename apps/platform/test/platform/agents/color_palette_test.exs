@@ -15,7 +15,9 @@ defmodule Platform.Agents.ColorPaletteTest do
         assert is_binary(color.id), "expected id to be a string for #{inspect(color)}"
         assert is_binary(color.label), "expected label to be a string for #{inspect(color)}"
         assert is_binary(color.accent), "expected accent to be a string for #{inspect(color)}"
-        assert String.starts_with?(color.accent, "oklch("), "expected OKLCH accent for #{color.id}"
+
+        assert String.starts_with?(color.accent, "oklch("),
+               "expected OKLCH accent for #{color.id}"
       end
     end
   end
