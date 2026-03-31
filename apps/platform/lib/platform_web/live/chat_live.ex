@@ -2161,7 +2161,7 @@ defmodule PlatformWeb.ChatLive do
 
               <%!-- Inline thread: preview bar + expanded thread --%>
               <div
-                :if={Map.has_key?(@thread_previews, msg.id)}
+                :if={Map.has_key?(@thread_previews, msg.id) or MapSet.member?(@expanded_threads, msg.id)}
                 class="ml-9 mt-1"
               >
                 <%!-- Thread preview / collapse bar --%>
