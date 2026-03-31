@@ -1572,6 +1572,31 @@ defmodule Platform.Chat do
     end
   end
 
+  @doc """
+  Ensure an agent exists in a space's roster.
+
+  This is idempotent:
+  - `role: "principal"` promotes the agent to principal via `set_principal_agent/2`
+  - `role: "member"` inserts a member row if missing, otherwise returns the
+    existing roster entry without demoting a principal
+  """
+  @spec ensure_space_agent(binary(), binary(), keyword()) ::
+          {:ok, SpaceAgent.t()} | {:error, term()}
+  def ensure_space_agent(space_id, agent_id, opts \\ []) do
+    role = Keyword.get(opts, :role, "member")
+
+    case role do
+      "principal" ->
+        set_principal_agent(space_id, agent_id)
+
+      _ ->
+        case Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
+          %SpaceAgent{} = existing -> {:ok, existing}
+          nil -> add_space_agent(space_id, agent_id, role: "member")
+        end
+    end
+  end
+
   # ADR 0027: dismiss_space_agent/3 and reinvite_space_agent/2 removed.
   # The 'dismissed' role no longer exists — use remove_space_agent/2 instead.
 
@@ -1636,30 +1661,34 @@ defmodule Platform.Chat do
       where:
         p.participant_id == ^user_id and is_nil(p.left_at) and
           p.participant_type == "user",
-      select: {p.space_id, p.last_read_message_id}
+      select: {p.space_id, p.last_read_message_id, p.id}
     )
     |> Repo.all()
-    |> Enum.map(fn {space_id, last_read_id} ->
-      {space_id, count_unread(space_id, last_read_id)}
+    |> Enum.map(fn {space_id, last_read_id, participant_pk} ->
+      {space_id, count_unread(space_id, last_read_id, participant_pk)}
     end)
     |> Enum.filter(fn {_, count} -> count > 0 end)
     |> Map.new()
   end
 
-  defp count_unread(space_id, nil) do
+  # participant_pk is the internal chat_participants.id (PK), which is what
+  # chat_messages.participant_id references via foreign key.
+  defp count_unread(space_id, nil, participant_pk) do
     from(m in Message,
-      where: m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at),
+      where:
+        m.space_id == ^space_id and is_nil(m.thread_id) and is_nil(m.deleted_at) and
+          m.participant_id != ^participant_pk,
       select: count(m.id)
     )
     |> Repo.one()
     |> min(10)
   end
 
-  defp count_unread(space_id, last_read_id) do
+  defp count_unread(space_id, last_read_id, participant_pk) do
     from(m in Message,
       where:
         m.space_id == ^space_id and m.id > ^last_read_id and is_nil(m.thread_id) and
-          is_nil(m.deleted_at),
+          is_nil(m.deleted_at) and m.participant_id != ^participant_pk,
       select: count(m.id)
     )
     |> Repo.one()
