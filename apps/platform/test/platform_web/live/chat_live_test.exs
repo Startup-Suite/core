@@ -671,6 +671,9 @@ defmodule PlatformWeb.ChatLiveTest do
       space = Chat.get_space_by_slug("general")
       [msg | _] = Chat.list_messages(space.id)
 
+      # Pre-create a thread so the handler finds it on toggle
+      {:ok, _thread} = Chat.create_thread(space.id, %{parent_message_id: msg.id})
+
       # Click the Reply button (now toggle_inline_thread)
       render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
 
