@@ -672,7 +672,10 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       # Click the Reply button (now toggle_inline_thread)
-      html = render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
+      render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
+
+      # Re-render to capture updated assigns (streams + expanded_threads)
+      html = render(view)
 
       # Assert the inline thread section appears
       assert html =~ "inline-thread-#{msg.id}"
