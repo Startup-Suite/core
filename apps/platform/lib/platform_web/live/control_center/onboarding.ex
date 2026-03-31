@@ -492,10 +492,11 @@ defmodule PlatformWeb.ControlCenter.Onboarding do
                 class="sr-only peer"
                 checked={(@create_agent_form[:color].value || "") == color.id}
               />
-              <span class={[
-                "flex flex-col items-center gap-1 px-2 py-1.5 rounded-lg border-2 transition-all",
-                "peer-checked:border-current border-transparent hover:border-base-300"
-              ]}
+              <span
+                class={[
+                  "flex flex-col items-center gap-1 px-2 py-1.5 rounded-lg border-2 transition-all",
+                  "peer-checked:border-current border-transparent hover:border-base-300"
+                ]}
                 style={"color: #{color.accent};"}
               >
                 <span class="w-5 h-5 rounded-full" style={"background: #{color.accent};"}></span>
