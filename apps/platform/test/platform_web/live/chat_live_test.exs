@@ -657,4 +657,26 @@ defmodule PlatformWeb.ChatLiveTest do
       assert archived.archived_at != nil
     end
   end
+
+  describe "inline thread" do
+    test "reply button opens inline thread section", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Post a message
+      view
+      |> form("#compose-form", compose: %{text: "Parent message for inline thread"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      # Click the Reply button (now toggle_inline_thread)
+      html = render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
+
+      # Assert the inline thread section appears
+      assert html =~ "inline-thread-#{msg.id}"
+      assert html =~ "inline-thread-compose-#{msg.id}"
+    end
+  end
 end
