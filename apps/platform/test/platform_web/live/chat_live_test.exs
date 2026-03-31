@@ -674,12 +674,10 @@ defmodule PlatformWeb.ChatLiveTest do
       # Click the Reply button (now toggle_inline_thread)
       render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
 
-      # Re-render to capture updated assigns (streams + expanded_threads)
-      html = render(view)
-
-      # Assert the inline thread section appears
-      assert html =~ "inline-thread-#{msg.id}"
-      assert html =~ "inline-thread-compose-#{msg.id}"
+      # Assert the inline thread section appears using element checks
+      # (more reliable with LiveView streams than full HTML matching)
+      assert has_element?(view, "#inline-thread-#{msg.id}")
+      assert has_element?(view, "#inline-thread-compose-#{msg.id}")
     end
   end
 end
