@@ -203,11 +203,11 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
   end
 
   # ---------------------------------------------------------------------------
-  # render_node/1 — checklist (new)
+  # render_node/1 — checklist (new, stage 1)
   # ---------------------------------------------------------------------------
 
   describe "render_node/1 — checklist" do
-    test "renders checklist container" do
+    test "renders card-checklist container" do
       node = %{
         "type" => "checklist",
         "props" => %{},
@@ -215,39 +215,50 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
       }
 
       html = render_node(node)
-      assert html =~ "flex-col"
+      assert html =~ "card-checklist"
     end
 
     test "renders optional title" do
       node = %{
         "type" => "checklist",
-        "props" => %{"title" => "Tasks"},
+        "props" => %{"title" => "Release Tasks"},
         "children" => []
       }
 
       html = render_node(node)
-      assert html =~ "Tasks"
+      assert html =~ "Release Tasks"
     end
 
-    test "omits title element when title prop is absent" do
+    test "renders progress counter when children present" do
       node = %{
         "type" => "checklist",
-        "props" => %{},
-        "children" => []
+        "props" => %{"title" => "Work"},
+        "children" => [
+          %{
+            "type" => "checklist_item",
+            "props" => %{"label" => "Item 1", "state" => "complete"},
+            "children" => []
+          },
+          %{
+            "type" => "checklist_item",
+            "props" => %{"label" => "Item 2", "state" => "pending"},
+            "children" => []
+          }
+        ]
       }
 
       html = render_node(node)
-      refute html =~ "uppercase tracking-widest"
+      assert html =~ "1 / 2 tasks"
     end
 
     test "renders checklist_item children" do
       node = %{
         "type" => "checklist",
-        "props" => %{"title" => "My list"},
+        "props" => %{},
         "children" => [
           %{
             "type" => "checklist_item",
-            "props" => %{"label" => "Do the thing", "checked" => false},
+            "props" => %{"label" => "Do the thing", "state" => "pending"},
             "children" => []
           }
         ]
@@ -259,14 +270,14 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
   end
 
   # ---------------------------------------------------------------------------
-  # render_node/1 — checklist_item (new)
+  # render_node/1 — checklist_item (new, stage 1)
   # ---------------------------------------------------------------------------
 
   describe "render_node/1 — checklist_item" do
     test "renders label" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "Write tests", "checked" => false},
+        "props" => %{"label" => "Write tests", "state" => "pending"},
         "children" => []
       }
 
@@ -274,44 +285,57 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
       assert html =~ "Write tests"
     end
 
-    test "renders checked state with success icon" do
+    test "emits data-state attribute" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "Done item", "checked" => true},
+        "props" => %{"label" => "Active item", "state" => "active"},
         "children" => []
       }
 
       html = render_node(node)
-      assert html =~ "text-success"
+      assert html =~ ~s[data-state="active"]
+    end
+
+    test "emits data-state=complete for complete items" do
+      node = %{
+        "type" => "checklist_item",
+        "props" => %{"label" => "Done", "state" => "complete"},
+        "children" => []
+      }
+
+      html = render_node(node)
+      assert html =~ ~s[data-state="complete"]
       assert html =~ "line-through"
+      assert html =~ "text-success"
     end
 
-    test "renders unchecked state without strikethrough" do
+    test "emits data-state=pending for pending items" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "Pending item", "checked" => false},
+        "props" => %{"label" => "Pending", "state" => "pending"},
         "children" => []
       }
 
       html = render_node(node)
+      assert html =~ ~s[data-state="pending"]
       refute html =~ "line-through"
     end
 
-    test "treats missing checked prop as unchecked" do
+    test "defaults to pending state when state prop absent" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "No checked prop"},
+        "props" => %{"label" => "No state prop"},
         "children" => []
       }
 
       html = render_node(node)
-      refute html =~ "line-through"
+      assert html =~ ~s[data-state="pending"]
     end
 
     test "renders optional note" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "Item", "checked" => false, "note" => "Due tomorrow"},
+        "props" => %{"label" => "Item", "state" => "pending", "note" => "Due tomorrow"},
         "children" => []
       }
 
@@ -319,90 +343,117 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
       assert html =~ "Due tomorrow"
     end
 
-    test "omits note element when note prop is absent" do
+    test "omits note when note prop absent" do
       node = %{
         "type" => "checklist_item",
-        "props" => %{"label" => "Item", "checked" => false},
+        "props" => %{"label" => "Item", "state" => "pending"},
         "children" => []
       }
 
       html = render_node(node)
-      # Should not contain text-base-content/50 class from the note paragraph
-      # (that class is unique to the note element in this component)
       refute html =~ "Due"
     end
   end
 
   # ---------------------------------------------------------------------------
-  # render_node/1 — action_row (new)
+  # render_node/1 — action_row (new, stage 2)
   # ---------------------------------------------------------------------------
 
   describe "render_node/1 — action_row" do
-    test "renders a button for each entry in buttons prop" do
+    test "renders flex container" do
       node = %{
         "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{"label" => "Approve", "event" => "design_approved", "variant" => "primary"},
-            %{
-              "label" => "Request Changes",
-              "event" => "design_changes_requested",
-              "variant" => "outline"
-            }
-          ]
-        },
+        "props" => %{},
+        "children" => []
+      }
+
+      html = render_node(node)
+      assert html =~ "flex"
+    end
+
+    test "renders optional label" do
+      node = %{
+        "type" => "action_row",
+        "props" => %{"label" => "Actions"},
+        "children" => []
+      }
+
+      html = render_node(node)
+      assert html =~ "Actions"
+    end
+
+    test "renders action_button children" do
+      node = %{
+        "type" => "action_row",
+        "props" => %{},
+        "children" => [
+          %{
+            "type" => "action_button",
+            "props" => %{"label" => "Approve", "event" => "design_approved", "value" => "ok"},
+            "children" => []
+          }
+        ]
+      }
+
+      html = render_node(node)
+      assert html =~ "Approve"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # render_node/1 — action_button (new, stage 2)
+  # ---------------------------------------------------------------------------
+
+  describe "render_node/1 — action_button" do
+    test "renders button label" do
+      node = %{
+        "type" => "action_button",
+        "props" => %{"label" => "Approve", "value" => "approved"},
         "children" => []
       }
 
       html = render_node(node)
       assert html =~ "Approve"
-      assert html =~ "Request Changes"
       assert html =~ "btn"
     end
 
-    test "sets phx-click canvas_action" do
+    test "sets phx-click=canvas_action" do
       node = %{
-        "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{"label" => "Go", "event" => "go_event"}
-          ]
-        },
+        "type" => "action_button",
+        "props" => %{"label" => "Go", "value" => "go"},
         "children" => []
       }
 
       html = render_node(node)
       assert html =~ ~s[phx-click="canvas_action"]
-      assert html =~ ~s[phx-value-event="go_event"]
     end
 
-    test "encodes payload as JSON in phx-value-payload" do
+    test "sets phx-value-value from value prop" do
       node = %{
-        "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{
-              "label" => "Act",
-              "event" => "do_it",
-              "payload" => %{"design_id" => "abc-123"}
-            }
-          ]
-        },
+        "type" => "action_button",
+        "props" => %{"label" => "Act", "value" => "my_action"},
         "children" => []
       }
 
       html = render_node(node)
-      assert html =~ "abc-123"
+      assert html =~ ~s[phx-value-value="my_action"]
+    end
+
+    test "sets phx-value-canvas-id from canvas_id prop" do
+      node = %{
+        "type" => "action_button",
+        "props" => %{"label" => "Act", "value" => "x", "canvas_id" => "canvas-abc-123"},
+        "children" => []
+      }
+
+      html = render_node(node)
+      assert html =~ ~s[phx-value-canvas-id="canvas-abc-123"]
     end
 
     test "applies primary variant class" do
       node = %{
-        "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{"label" => "OK", "event" => "ok", "variant" => "primary"}
-          ]
-        },
+        "type" => "action_button",
+        "props" => %{"label" => "OK", "value" => "ok", "variant" => "primary"},
         "children" => []
       }
 
@@ -412,12 +463,8 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
 
     test "applies danger variant class" do
       node = %{
-        "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{"label" => "Delete", "event" => "delete", "variant" => "danger"}
-          ]
-        },
+        "type" => "action_button",
+        "props" => %{"label" => "Delete", "value" => "delete", "variant" => "danger"},
         "children" => []
       }
 
@@ -425,14 +472,21 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
       assert html =~ "btn-error"
     end
 
-    test "defaults to outline class for unknown variant" do
+    test "applies ghost variant class" do
       node = %{
-        "type" => "action_row",
-        "props" => %{
-          "buttons" => [
-            %{"label" => "X", "event" => "x"}
-          ]
-        },
+        "type" => "action_button",
+        "props" => %{"label" => "Cancel", "value" => "cancel", "variant" => "ghost"},
+        "children" => []
+      }
+
+      html = render_node(node)
+      assert html =~ "btn-ghost"
+    end
+
+    test "defaults to outline for unknown or missing variant" do
+      node = %{
+        "type" => "action_button",
+        "props" => %{"label" => "X", "value" => "x"},
         "children" => []
       }
 
@@ -440,15 +494,15 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
       assert html =~ "btn-outline"
     end
 
-    test "renders empty action_row gracefully with no buttons" do
+    test "renders default label when label prop absent" do
       node = %{
-        "type" => "action_row",
-        "props" => %{},
+        "type" => "action_button",
+        "props" => %{"value" => "x"},
         "children" => []
       }
 
       html = render_node(node)
-      assert html =~ "flex"
+      assert html =~ "Action"
     end
   end
 end

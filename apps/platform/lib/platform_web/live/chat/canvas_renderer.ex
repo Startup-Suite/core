@@ -404,40 +404,56 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   end
 
   def render_node(%{node: %{"type" => "checklist"} = node} = assigns) do
-    assigns = assign(assigns, :node, node)
+    children = node["children"] || []
+    total = length(children)
+    complete = Enum.count(children, fn c -> get_in(c, ["props", "state"]) == "complete" end)
+
+    assigns =
+      assigns
+      |> assign(:node, node)
+      |> assign(:total, total)
+      |> assign(:complete, complete)
 
     ~H"""
-    <div class="flex flex-col gap-1">
-      <p
-        :if={@node["props"]["title"]}
-        class="text-xs font-semibold uppercase tracking-widest text-base-content/50 mb-1"
-      >
-        {@node["props"]["title"]}
-      </p>
+    <div class="card-checklist flex flex-col gap-1 rounded-xl border border-base-300 bg-base-200 p-3">
+      <div class="flex items-center justify-between mb-1">
+        <p
+          :if={@node["props"]["title"]}
+          class="text-xs font-semibold uppercase tracking-widest text-base-content/50"
+        >
+          {@node["props"]["title"]}
+        </p>
+        <span :if={@total > 0} class="text-xs text-base-content/40">
+          {@complete} / {@total} tasks
+        </span>
+      </div>
       <.render_node :for={child <- @node["children"] || []} node={child} />
     </div>
     """
   end
 
   def render_node(%{node: %{"type" => "checklist_item"} = node} = assigns) do
-    checked = get_in(node, ["props", "checked"]) == true
-    assigns = assigns |> assign(:node, node) |> assign(:checked, checked)
+    state = get_in(node, ["props", "state"]) || "pending"
+
+    assigns =
+      assigns
+      |> assign(:node, node)
+      |> assign(:state, state)
 
     ~H"""
-    <div class="flex items-start gap-2 py-0.5">
+    <div class="flex items-start gap-2 py-0.5" data-state={@state}>
       <span class={[
-        "mt-0.5 size-4 shrink-0 rounded",
-        if(@checked,
-          do: "hero-check-circle text-success",
-          else: "hero-stop-circle text-base-content/25"
-        )
+        "mt-0.5 size-4 shrink-0",
+        @state == "complete" && "hero-check-circle text-success",
+        @state == "active" && "hero-bolt text-primary",
+        @state not in ["complete", "active"] && "hero-stop-circle text-base-content/25"
       ]}>
       </span>
       <div class="min-w-0">
         <p class={[
           "text-sm leading-5",
-          @checked && "line-through text-base-content/40",
-          !@checked && "text-base-content"
+          @state == "complete" && "line-through text-base-content/40",
+          @state != "complete" && "text-base-content"
         ]}>
           {@node["props"]["label"] || ""}
         </p>
@@ -453,24 +469,36 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   end
 
   def render_node(%{node: %{"type" => "action_row"} = node} = assigns) do
-    buttons = node["props"]["buttons"] || []
-    assigns = assigns |> assign(:node, node) |> assign(:buttons, buttons)
+    assigns = assign(assigns, :node, node)
 
     ~H"""
     <div class="flex flex-row flex-wrap gap-2 mt-1">
-      <button
-        :for={btn <- @buttons}
-        class={[
-          "btn btn-sm",
-          action_button_class(btn["variant"])
-        ]}
-        phx-click="canvas_action"
-        phx-value-event={btn["event"] || ""}
-        phx-value-payload={Jason.encode!(btn["payload"] || %{})}
+      <p
+        :if={@node["props"]["label"]}
+        class="w-full text-xs font-semibold uppercase tracking-widest text-base-content/50 mb-0.5"
       >
-        {btn["label"] || "Action"}
-      </button>
+        {@node["props"]["label"]}
+      </p>
+      <.render_node :for={child <- @node["children"] || []} node={child} />
     </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "action_button"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <button
+      class={[
+        "btn btn-sm",
+        action_button_class(@node["props"]["variant"])
+      ]}
+      phx-click="canvas_action"
+      phx-value-value={@node["props"]["value"] || ""}
+      phx-value-canvas-id={@node["props"]["canvas_id"] || ""}
+    >
+      {@node["props"]["label"] || "Action"}
+    </button>
     """
   end
 
