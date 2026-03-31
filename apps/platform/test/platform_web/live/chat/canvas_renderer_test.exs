@@ -95,6 +95,7 @@ defmodule PlatformWeb.Chat.CanvasRendererTest do
 
   # Render a single render_node call and return the HTML string
   defp render_node(node) do
+    assigns = %{}
     rendered_to_string(~H|<CanvasRenderer.render_node node={node} />|)
   end
 
