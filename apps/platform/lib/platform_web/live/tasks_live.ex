@@ -73,6 +73,7 @@ defmodule PlatformWeb.TasksLive do
      |> assign(:execution_participant, nil)
      |> assign(:steering_feedback, nil)
      |> assign(:steering_upload_previews, [])
+     |> assign(:steering_attachment_intended, false)
      # Bottom sheet state
      |> assign(:show_task_sheet, false)
      |> assign(:default_task_agent_id, default_task_agent_id)
@@ -162,6 +163,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
            |> assign(:steering_feedback, nil)
            |> assign(:steering_upload_previews, [])
+           |> assign(:steering_attachment_intended, false)
            |> assign(:pending_reviews, pending_reviews)
            |> assign(:review_canvases, review_canvases)
            |> assign(:review_output_ids, review_output_ids)
@@ -181,6 +183,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
            |> assign(:steering_feedback, nil)
            |> assign(:steering_upload_previews, [])
+           |> assign(:steering_attachment_intended, false)
            |> assign(:pending_reviews, [])
            |> assign(:review_canvases, %{})
            |> assign(:review_output_ids, MapSet.new())
@@ -200,6 +203,7 @@ defmodule PlatformWeb.TasksLive do
          |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
          |> assign(:steering_feedback, nil)
          |> assign(:steering_upload_previews, [])
+         |> assign(:steering_attachment_intended, false)
          |> assign(:pending_reviews, [])
          |> assign(:review_canvases, %{})
          |> assign(:review_output_ids, MapSet.new())
@@ -286,6 +290,7 @@ defmodule PlatformWeb.TasksLive do
      |> assign(:execution_participant, nil)
      |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
      |> assign(:steering_upload_previews, [])
+     |> assign(:steering_attachment_intended, false)
      |> assign(:pending_reviews, [])
      |> assign(:review_canvases, %{})
      |> assign(:review_output_ids, MapSet.new())
@@ -641,10 +646,10 @@ defmodule PlatformWeb.TasksLive do
 
   def handle_event("send_steering_message", %{"steering" => %{"text" => content}}, socket) do
     content = String.trim(content || "")
-    has_uploads = has_steering_upload_entries?(socket)
+    attachment_intended? = steering_attachment_intended?(socket)
 
     cond do
-      content == "" and not has_uploads ->
+      content == "" and not attachment_intended? ->
         {:noreply,
          put_steering_feedback(socket, :error, "Enter a message or attach a file before sending.")}
 
@@ -667,7 +672,7 @@ defmodule PlatformWeb.TasksLive do
           attrs = steering_message_attrs(space_id, participant.id, content)
 
           result =
-            if has_uploads do
+            if attachment_intended? do
               case persist_steering_attachments(socket) do
                 {:ok, pending_attachments} ->
                   Chat.post_message_with_attachments(attrs, pending_attachments)
@@ -689,6 +694,7 @@ defmodule PlatformWeb.TasksLive do
                |> assign(:execution_participant, participant)
                |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
                |> assign(:steering_upload_previews, [])
+               |> assign(:steering_attachment_intended, false)
                |> put_steering_feedback(:success, "Steering sent to the execution log.")
                |> push_event("compose_reset", %{})}
 
@@ -698,6 +704,7 @@ defmodule PlatformWeb.TasksLive do
                |> assign(:execution_participant, participant)
                |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
                |> assign(:steering_upload_previews, [])
+               |> assign(:steering_attachment_intended, false)
                |> put_steering_feedback(:success, "Steering sent to the execution log.")
                |> push_event("compose_reset", %{})}
 
@@ -711,8 +718,10 @@ defmodule PlatformWeb.TasksLive do
 
             {:error, :storage_failed} ->
               {:noreply,
-               put_steering_feedback(
-                 socket,
+               socket
+               |> assign(:steering_upload_previews, [])
+               |> assign(:steering_attachment_intended, false)
+               |> put_steering_feedback(
                  :error,
                  "The attachment upload could not be stored in the execution log. Please try again."
                )}
@@ -757,6 +766,7 @@ defmodule PlatformWeb.TasksLive do
        :steering_upload_previews,
        Enum.reject(socket.assigns.steering_upload_previews, fn preview -> preview.ref == ref end)
      )
+     |> sync_steering_attachment_intent()
      |> assign(:steering_feedback, nil)}
   end
 
@@ -975,11 +985,16 @@ defmodule PlatformWeb.TasksLive do
        socket,
        :steering_upload_previews,
        [preview | Enum.reject(socket.assigns.steering_upload_previews, &(&1.ref == preview.ref))]
-     )}
+     )
+     |> assign(:steering_attachment_intended, true)}
   end
 
   defp has_steering_upload_entries?(socket) do
     active_steering_upload_entries(socket) != [] or socket.assigns.steering_upload_previews != []
+  end
+
+  defp steering_attachment_intended?(socket) do
+    socket.assigns.steering_attachment_intended or has_steering_upload_entries?(socket)
   end
 
   defp active_steering_upload_entries(socket) do
@@ -995,7 +1010,7 @@ defmodule PlatformWeb.TasksLive do
         {:error, :uploads_in_progress}
 
       {[], []} ->
-        if socket.assigns.steering_upload_previews != [] do
+        if steering_attachment_intended?(socket) do
           {:error, :storage_failed}
         else
           {:ok, []}
@@ -1023,6 +1038,10 @@ defmodule PlatformWeb.TasksLive do
           {:error, :storage_failed}
         end
     end
+  end
+
+  defp sync_steering_attachment_intent(socket) do
+    assign(socket, :steering_attachment_intended, has_steering_upload_entries?(socket))
   end
 
   defp steering_message_attrs(space_id, participant_id, content) do

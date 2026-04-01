@@ -11,6 +11,26 @@ defmodule PlatformWeb.TasksLiveTest do
   alias Platform.{Repo, Tasks}
   alias Platform.Tasks.{Epic, Plan, ReviewRequests}
 
+  setup do
+    previous_root = Application.get_env(:platform, :chat_attachments_root)
+
+    upload_root =
+      Path.join(
+        System.tmp_dir!(),
+        "platform_tasks_live_test_uploads_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(upload_root)
+    Application.put_env(:platform, :chat_attachments_root, upload_root)
+
+    on_exit(fn ->
+      Application.put_env(:platform, :chat_attachments_root, previous_root)
+      File.rm_rf(upload_root)
+    end)
+
+    :ok
+  end
+
   defp authenticated_conn(conn) do
     {conn, _user} = authenticated_conn_with_user(conn)
     conn
@@ -812,6 +832,17 @@ defmodule PlatformWeb.TasksLiveTest do
     task = create_task(project, %{title: "Attachment Steering Task", status: "in_progress"})
     {:ok, space} = ExecutionSpace.find_or_create(task.id)
 
+    broken_root =
+      Path.join(
+        System.tmp_dir!(),
+        "platform_tasks_live_test_broken_root_#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(broken_root, "not a directory")
+    Application.put_env(:platform, :chat_attachments_root, broken_root)
+
+    on_exit(fn -> File.rm_rf(broken_root) end)
+
     {conn, _user} = authenticated_conn_with_user(conn)
     {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
 
@@ -830,8 +861,6 @@ defmodule PlatformWeb.TasksLiveTest do
       view
       |> form("#steering-compose-form", steering: %{text: "See attached"})
       |> render_submit()
-
-    Process.sleep(50)
 
     assert Chat.list_messages(space.id) == []
     assert html =~ "notes.txt"
