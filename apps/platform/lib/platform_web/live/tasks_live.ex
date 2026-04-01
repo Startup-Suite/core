@@ -68,6 +68,7 @@ defmodule PlatformWeb.TasksLive do
      # Steering input state
      |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
      |> assign(:execution_participant, nil)
+     |> assign(:steering_feedback, nil)
      # Bottom sheet state
      |> assign(:show_task_sheet, false)
      |> assign(:default_task_agent_id, default_task_agent_id)
@@ -148,6 +149,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:execution_log, log)
            |> assign(:execution_participant, execution_participant)
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+           |> assign(:steering_feedback, nil)
            |> assign(:pending_reviews, pending_reviews)
            |> assign(:review_canvases, review_canvases)
            |> assign(:review_output_ids, review_output_ids)
@@ -165,6 +167,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:execution_log, [])
            |> assign(:execution_participant, nil)
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+           |> assign(:steering_feedback, nil)
            |> assign(:pending_reviews, [])
            |> assign(:review_canvases, %{})
            |> assign(:review_output_ids, MapSet.new())
@@ -182,6 +185,7 @@ defmodule PlatformWeb.TasksLive do
          |> assign(:execution_log, [])
          |> assign(:execution_participant, nil)
          |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+         |> assign(:steering_feedback, nil)
          |> assign(:pending_reviews, [])
          |> assign(:review_canvases, %{})
          |> assign(:review_output_ids, MapSet.new())
@@ -618,84 +622,107 @@ defmodule PlatformWeb.TasksLive do
     end
   end
 
-  defp column_to_status("backlog"), do: "backlog"
-  defp column_to_status("in_progress"), do: "in_progress"
-  defp column_to_status("in_review"), do: "in_review"
-  defp column_to_status("deploying"), do: "deploying"
-  defp column_to_status("done"), do: "done"
-  defp column_to_status(_), do: "unknown"
-
   # ── Steering input events ──────────────────────────────────────────────
 
   def handle_event("send_steering_message", %{"steering" => %{"text" => content}}, socket) do
     content = String.trim(content || "")
     has_uploads = has_completed_steering_uploads?(socket)
 
-    with true <- content != "" or has_uploads,
-         space_id when not is_nil(space_id) <- socket.assigns.execution_space_id do
-      # Ensure we have a participant (lazy resolve on first send)
-      participant =
-        socket.assigns.execution_participant ||
-          resolve_execution_participant(space_id, socket.assigns.current_user_id)
+    cond do
+      content == "" and not has_uploads ->
+        {:noreply,
+         put_steering_feedback(socket, :error, "Enter a message or attach a file before sending.")}
 
-      if participant do
-        attrs = %{
-          space_id: space_id,
-          participant_id: participant.id,
-          content_type: "text",
-          content: content,
-          log_only: false
-        }
+      is_nil(socket.assigns.execution_space_id) ->
+        {:noreply,
+         put_steering_feedback(
+           socket,
+           :error,
+           "This task does not have an execution log yet, so there is nowhere to send steering."
+         )}
 
-        result =
-          if has_uploads do
-            case persist_steering_attachments(socket) do
-              {:ok, pending_attachments} ->
-                Chat.post_message_with_attachments(attrs, pending_attachments)
+      true ->
+        space_id = socket.assigns.execution_space_id
 
-              {:error, :storage_failed} ->
-                {:error, :storage_failed}
+        participant =
+          socket.assigns.execution_participant ||
+            resolve_execution_participant(space_id, socket.assigns.current_user_id)
+
+        if participant do
+          attrs = steering_message_attrs(space_id, participant.id, content)
+
+          result =
+            if has_uploads do
+              case persist_steering_attachments(socket) do
+                {:ok, pending_attachments} ->
+                  Chat.post_message_with_attachments(attrs, pending_attachments)
+
+                {:error, :storage_failed} ->
+                  {:error, :storage_failed}
+              end
+            else
+              case Chat.post_message(attrs) do
+                {:ok, msg} -> {:ok, msg, []}
+                error -> error
+              end
             end
-          else
-            case Chat.post_message(attrs) do
-              {:ok, msg} -> {:ok, msg, []}
-              error -> error
-            end
+
+          case result do
+            {:ok, _msg, _attachments} ->
+              {:noreply,
+               socket
+               |> assign(:execution_participant, participant)
+               |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+               |> put_steering_feedback(:success, "Steering sent to the execution log.")
+               |> push_event("compose_reset", %{})}
+
+            {:ok, _msg} ->
+              {:noreply,
+               socket
+               |> assign(:execution_participant, participant)
+               |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+               |> put_steering_feedback(:success, "Steering sent to the execution log.")
+               |> push_event("compose_reset", %{})}
+
+            {:error, :storage_failed} ->
+              {:noreply,
+               put_steering_feedback(
+                 socket,
+                 :error,
+                 "The attachment upload could not be stored in the execution log. Please try again."
+               )}
+
+            {:error, _reason} ->
+              {:noreply,
+               put_steering_feedback(
+                 socket,
+                 :error,
+                 "The steering message was not posted to the execution log. Please try again."
+               )}
           end
-
-        case result do
-          {:ok, _msg, _attachments} ->
-            {:noreply,
-             socket
-             |> assign(:execution_participant, participant)
-             |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))}
-
-          {:ok, _msg} ->
-            {:noreply,
-             socket
-             |> assign(:execution_participant, participant)
-             |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))}
-
-          {:error, :storage_failed} ->
-            {:noreply, put_flash(socket, :error, "Failed to store attachment.")}
-
-          {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "Failed to send steering message.")}
+        else
+          {:noreply,
+           put_steering_feedback(
+             socket,
+             :error,
+             "Could not join the execution log as the current user. Refresh and try again."
+           )}
         end
-      else
-        {:noreply, put_flash(socket, :error, "Could not join execution space.")}
-      end
-    else
-      _ -> {:noreply, socket}
     end
   end
 
   def handle_event("steering_changed", %{"steering" => params}, socket) do
-    {:noreply, assign(socket, :steering_compose_form, to_form(params, as: :steering))}
+    {:noreply,
+     socket
+     |> assign(:steering_compose_form, to_form(params, as: :steering))
+     |> assign(:steering_feedback, nil)}
   end
 
   def handle_event("cancel_steering_upload", %{"ref" => ref}, socket) do
-    {:noreply, cancel_upload(socket, :steering_attachments, ref)}
+    {:noreply,
+     socket
+     |> cancel_upload(:steering_attachments, ref)
+     |> assign(:steering_feedback, nil)}
   end
 
   # Upload cancel
@@ -712,6 +739,13 @@ defmodule PlatformWeb.TasksLive do
   def handle_event("cancel_task_upload", %{"ref" => ref}, socket) do
     {:noreply, cancel_upload(socket, :task_attachments, ref)}
   end
+
+  defp column_to_status("backlog"), do: "backlog"
+  defp column_to_status("in_progress"), do: "in_progress"
+  defp column_to_status("in_review"), do: "in_review"
+  defp column_to_status("deploying"), do: "deploying"
+  defp column_to_status("done"), do: "done"
+  defp column_to_status(_), do: "unknown"
 
   # ── PubSub handlers ────────────────────────────────────────────────────
 
@@ -920,6 +954,25 @@ defmodule PlatformWeb.TasksLive do
       AttachmentStorage.delete_many(attachments)
       {:error, :storage_failed}
     end
+  end
+
+  defp steering_message_attrs(space_id, participant_id, content) do
+    %{
+      space_id: space_id,
+      participant_id: participant_id,
+      content_type: "text",
+      content: content,
+      log_only: false,
+      metadata: %{
+        "kind" => "steering",
+        "source" => "tasks_live",
+        "delivery" => "engagement"
+      }
+    }
+  end
+
+  defp put_steering_feedback(socket, kind, message) do
+    assign(socket, :steering_feedback, %{kind: kind, message: message})
   end
 
   # ── Private — Execution log helpers ──────────────────────────────────────
