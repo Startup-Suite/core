@@ -709,8 +709,8 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
   defp execution_contract(_task, nil), do: ""
 
   defp execution_contract(task, stage) do
-    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
-    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    stage_id = contract_id(stage, :id)
+    task_id = contract_id(task, :id)
     validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
 
     validation_lines =
@@ -730,18 +730,17 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     """
 
     ## Stage Execution Contract
-    Current task_id: `#{task_id}`
-    Current stage_id: `#{stage_id}`
+    #{contract_target_lines(task_id, stage_id)}
     #{validation_lines}
-    - If you get blocked, call `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}`.
+    #{report_blocker_instruction(task_id, stage_id)}
     """
   end
 
   defp review_contract(_task, nil), do: ""
 
   defp review_contract(task, stage) do
-    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
-    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    stage_id = contract_id(stage, :id)
+    task_id = contract_id(task, :id)
     validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
 
     validation_lines =
@@ -767,8 +766,7 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     """
 
     ## Review Validation Contract
-    Current task_id: `#{task_id}`
-    Current stage_id: `#{stage_id}`
+    #{contract_target_lines(task_id, stage_id)}
     #{validation_lines}
     - Do NOT call `task_update` for lifecycle status changes. Review outcomes flow through validations and review requests.
     - If review evidence shows the feature is not good enough, fail the relevant validation so the task can return to `in_progress`.
@@ -778,8 +776,8 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
   defp deploy_contract(_task, nil), do: ""
 
   defp deploy_contract(task, stage) do
-    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
-    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    stage_id = contract_id(stage, :id)
+    task_id = contract_id(task, :id)
     validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
 
     validation_lines =
@@ -805,18 +803,18 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     """
 
     ## Deploy Stage Contract
-    Current task_id: `#{task_id}`
-    Current stage_id: `#{stage_id}`
+    #{contract_target_lines(task_id, stage_id)}
     #{validation_lines}
-    - If CI fails or the deploy breaks, call `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}` — do NOT attempt code fixes.
+    #{report_blocker_instruction(task_id, stage_id, "If CI fails or the deploy breaks")}
+    - do NOT attempt code fixes during deploy.
     """
   end
 
   defp heartbeat_contract(_task, nil, _pending_validations), do: ""
 
   defp heartbeat_contract(task, stage, pending_validations) do
-    stage_id = Map.get(stage, :id) || Map.get(stage, "id") || "<unknown-stage>"
-    task_id = Map.get(task, :id) || Map.get(task, "id") || "<unknown-task>"
+    stage_id = contract_id(stage, :id)
+    task_id = contract_id(task, :id)
 
     pending_lines =
       case pending_validations do
@@ -834,11 +832,47 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     """
 
     ## Completion Reminder
-    Current task_id: `#{task_id}`
-    Current stage_id: `#{stage_id}`
+    #{contract_target_lines(task_id, stage_id)}
     #{pending_lines}
-    - Use `report_blocker` with `task_id=#{task_id}` and `stage_id=#{stage_id}` if you cannot make forward progress.
+    #{report_blocker_instruction(task_id, stage_id, "Use `report_blocker`")}
     """
+  end
+
+  defp contract_id(entity, key) when is_map(entity) do
+    entity
+    |> Map.get(key)
+    |> Kernel.||(Map.get(entity, to_string(key)))
+    |> case do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
+  defp contract_id(_entity, _key), do: nil
+
+  defp contract_target_lines(task_id, stage_id) do
+    [
+      contract_target_line("task_id", task_id),
+      contract_target_line("stage_id", stage_id)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp contract_target_line(_label, nil), do: nil
+  defp contract_target_line(label, value), do: "Current #{label}: `#{value}`"
+
+  defp report_blocker_instruction(task_id, stage_id, prefix \\ "Use `report_blocker`") do
+    case {task_id, stage_id} do
+      {task_id, stage_id} when is_binary(task_id) and is_binary(stage_id) ->
+        "- #{prefix} with `task_id=#{task_id}` and `stage_id=#{stage_id}` if you cannot make forward progress."
+
+      {nil, stage_id} when is_binary(stage_id) ->
+        "- #{prefix} with the task_id from the attention context and `stage_id=#{stage_id}` if you cannot make forward progress."
+
+      _ ->
+        "- #{prefix} with the current task and stage IDs from the attention context if you cannot make forward progress."
+    end
   end
 
   defp git_workflow_section(task) do
