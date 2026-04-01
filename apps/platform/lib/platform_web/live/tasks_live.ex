@@ -635,7 +635,7 @@ defmodule PlatformWeb.TasksLive do
 
   def handle_event("send_steering_message", %{"steering" => %{"text" => content}}, socket) do
     content = String.trim(content || "")
-    has_uploads = has_completed_steering_uploads?(socket)
+    has_uploads = has_steering_upload_entries?(socket)
 
     cond do
       content == "" and not has_uploads ->
@@ -692,6 +692,14 @@ defmodule PlatformWeb.TasksLive do
                |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
                |> put_steering_feedback(:success, "Steering sent to the execution log.")
                |> push_event("compose_reset", %{})}
+
+            {:error, :uploads_in_progress} ->
+              {:noreply,
+               put_steering_feedback(
+                 socket,
+                 :error,
+                 "Wait for attachments to finish uploading before sending steering."
+               )}
 
             {:error, :storage_failed} ->
               {:noreply,
@@ -936,33 +944,53 @@ defmodule PlatformWeb.TasksLive do
 
   # ── Private — Steering upload helpers ────────────────────────────────────
 
-  defp has_completed_steering_uploads?(socket) do
-    case uploaded_entries(socket, :steering_attachments) do
-      {[_ | _], _in_progress} -> true
+  defp has_steering_upload_entries?(socket) do
+    case steering_upload_entries(socket) do
+      [_ | _] -> true
       _ -> false
     end
   end
 
+  defp steering_upload_entries(socket) do
+    case get_in(socket.assigns, [:uploads, :steering_attachments]) do
+      %{entries: entries} when is_list(entries) -> entries
+      _ -> []
+    end
+  end
+
   defp persist_steering_attachments(socket) do
-    results =
-      consume_uploaded_entries(socket, :steering_attachments, fn %{path: path}, entry ->
-        result =
-          case AttachmentStorage.persist_upload(path, entry.client_name, entry.client_type) do
-            {:ok, attrs} -> {:ok, attrs}
-            {:error, _reason} -> {:error, :storage_failed}
-          end
+    case uploaded_entries(socket, :steering_attachments) do
+      {[], [_ | _]} ->
+        {:error, :uploads_in_progress}
 
-        {:ok, result}
-      end)
+      {[], []} ->
+        if has_steering_upload_entries?(socket) do
+          {:error, :storage_failed}
+        else
+          {:ok, []}
+        end
 
-    {ok_results, error_results} = Enum.split_with(results, &match?({:ok, _}, &1))
-    attachments = Enum.map(ok_results, fn {:ok, attrs} -> attrs end)
+      _ ->
+        results =
+          consume_uploaded_entries(socket, :steering_attachments, fn %{path: path}, entry ->
+            result =
+              case AttachmentStorage.persist_upload(path, entry.client_name, entry.client_type) do
+                {:ok, attrs} -> {:ok, attrs}
+                {:error, _reason} -> {:error, :storage_failed}
+              end
 
-    if error_results == [] do
-      {:ok, attachments}
-    else
-      AttachmentStorage.delete_many(attachments)
-      {:error, :storage_failed}
+            {:ok, result}
+          end)
+
+        {ok_results, error_results} = Enum.split_with(results, &match?({:ok, _}, &1))
+        attachments = Enum.map(ok_results, fn {:ok, attrs} -> attrs end)
+
+        if error_results == [] do
+          {:ok, attachments}
+        else
+          AttachmentStorage.delete_many(attachments)
+          {:error, :storage_failed}
+        end
     end
   end
 
