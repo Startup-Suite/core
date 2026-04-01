@@ -72,6 +72,7 @@ defmodule PlatformWeb.TasksLive do
      |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
      |> assign(:execution_participant, nil)
      |> assign(:steering_feedback, nil)
+     |> assign(:steering_upload_previews, [])
      # Bottom sheet state
      |> assign(:show_task_sheet, false)
      |> assign(:default_task_agent_id, default_task_agent_id)
@@ -116,7 +117,8 @@ defmodule PlatformWeb.TasksLive do
        accept: :any,
        auto_upload: true,
        max_entries: @max_upload_entries,
-       max_file_size: @max_upload_size
+       max_file_size: @max_upload_size,
+       progress: &handle_steering_attachment_progress/3
      )}
   end
 
@@ -159,6 +161,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:execution_participant, execution_participant)
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
            |> assign(:steering_feedback, nil)
+           |> assign(:steering_upload_previews, [])
            |> assign(:pending_reviews, pending_reviews)
            |> assign(:review_canvases, review_canvases)
            |> assign(:review_output_ids, review_output_ids)
@@ -177,6 +180,7 @@ defmodule PlatformWeb.TasksLive do
            |> assign(:execution_participant, nil)
            |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
            |> assign(:steering_feedback, nil)
+           |> assign(:steering_upload_previews, [])
            |> assign(:pending_reviews, [])
            |> assign(:review_canvases, %{})
            |> assign(:review_output_ids, MapSet.new())
@@ -195,6 +199,7 @@ defmodule PlatformWeb.TasksLive do
          |> assign(:execution_participant, nil)
          |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
          |> assign(:steering_feedback, nil)
+         |> assign(:steering_upload_previews, [])
          |> assign(:pending_reviews, [])
          |> assign(:review_canvases, %{})
          |> assign(:review_output_ids, MapSet.new())
@@ -280,6 +285,7 @@ defmodule PlatformWeb.TasksLive do
      |> assign(:execution_log, [])
      |> assign(:execution_participant, nil)
      |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+     |> assign(:steering_upload_previews, [])
      |> assign(:pending_reviews, [])
      |> assign(:review_canvases, %{})
      |> assign(:review_output_ids, MapSet.new())
@@ -682,6 +688,7 @@ defmodule PlatformWeb.TasksLive do
                socket
                |> assign(:execution_participant, participant)
                |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+               |> assign(:steering_upload_previews, [])
                |> put_steering_feedback(:success, "Steering sent to the execution log.")
                |> push_event("compose_reset", %{})}
 
@@ -690,6 +697,7 @@ defmodule PlatformWeb.TasksLive do
                socket
                |> assign(:execution_participant, participant)
                |> assign(:steering_compose_form, to_form(%{"text" => ""}, as: :steering))
+               |> assign(:steering_upload_previews, [])
                |> put_steering_feedback(:success, "Steering sent to the execution log.")
                |> push_event("compose_reset", %{})}
 
@@ -736,9 +744,19 @@ defmodule PlatformWeb.TasksLive do
   end
 
   def handle_event("cancel_steering_upload", %{"ref" => ref}, socket) do
+    socket =
+      if Enum.any?(active_steering_upload_entries(socket), &(&1.ref == ref)) do
+        cancel_upload(socket, :steering_attachments, ref)
+      else
+        socket
+      end
+
     {:noreply,
      socket
-     |> cancel_upload(:steering_attachments, ref)
+     |> assign(
+       :steering_upload_previews,
+       Enum.reject(socket.assigns.steering_upload_previews, fn preview -> preview.ref == ref end)
+     )
      |> assign(:steering_feedback, nil)}
   end
 
@@ -944,14 +962,27 @@ defmodule PlatformWeb.TasksLive do
 
   # ── Private — Steering upload helpers ────────────────────────────────────
 
-  defp has_steering_upload_entries?(socket) do
-    case steering_upload_entries(socket) do
-      [_ | _] -> true
-      _ -> false
-    end
+  defp handle_steering_attachment_progress(:steering_attachments, entry, socket) do
+    preview = %{
+      ref: entry.ref,
+      client_name: entry.client_name,
+      client_type: entry.client_type,
+      progress: entry.progress
+    }
+
+    {:noreply,
+     assign(
+       socket,
+       :steering_upload_previews,
+       [preview | Enum.reject(socket.assigns.steering_upload_previews, &(&1.ref == preview.ref))]
+     )}
   end
 
-  defp steering_upload_entries(socket) do
+  defp has_steering_upload_entries?(socket) do
+    active_steering_upload_entries(socket) != [] or socket.assigns.steering_upload_previews != []
+  end
+
+  defp active_steering_upload_entries(socket) do
     case get_in(socket.assigns, [:uploads, :steering_attachments]) do
       %{entries: entries} when is_list(entries) -> entries
       _ -> []
@@ -964,7 +995,7 @@ defmodule PlatformWeb.TasksLive do
         {:error, :uploads_in_progress}
 
       {[], []} ->
-        if has_steering_upload_entries?(socket) do
+        if socket.assigns.steering_upload_previews != [] do
           {:error, :storage_failed}
         else
           {:ok, []}
