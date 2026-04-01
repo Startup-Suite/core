@@ -69,6 +69,22 @@ const DragDropUpload = {
     this.el.addEventListener("dragover", this._onDragOver);
     this.el.addEventListener("dragleave", this._onDragLeave);
     this.el.addEventListener("drop", this._onDrop);
+
+    // Clipboard paste support for images
+    this._onPaste = (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItems = items.filter(item => item.type.startsWith('image/'));
+      if (imageItems.length === 0) return;
+
+      e.preventDefault();
+      const files = imageItems.map(item => item.getAsFile()).filter(Boolean);
+      if (files.length === 0) return;
+
+      this.uploadTo(this.el, "attachments", files);
+      this.pushEvent("paste_image_upload", {});
+    };
+
+    document.addEventListener("paste", this._onPaste);
   },
 
   destroyed() {
@@ -76,6 +92,7 @@ const DragDropUpload = {
     this.el.removeEventListener("dragover", this._onDragOver);
     this.el.removeEventListener("dragleave", this._onDragLeave);
     this.el.removeEventListener("drop", this._onDrop);
+    document.removeEventListener("paste", this._onPaste);
     if (this._overlay && this._overlay.parentNode) {
       this._overlay.parentNode.removeChild(this._overlay);
     }

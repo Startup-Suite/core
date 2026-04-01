@@ -33,8 +33,8 @@ defmodule PlatformWeb.ChatLive do
 
   @message_limit 50
   @quick_emojis ["👍", "❤️", "😂", "🎉"]
-  @max_upload_entries 5
-  @max_upload_size 15_000_000
+  @max_upload_entries 10
+  @max_upload_size 10_000_000
   @canvas_types ~w(table form code diagram dashboard custom)
   @agent_presence_refresh_ms 30_000
 
@@ -101,6 +101,9 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:unread_counts, if(user_id, do: Chat.unread_counts_for_user(user_id), else: %{}))
       |> assign(:upload_dialog_open, false)
       |> assign(:upload_caption, "")
+      |> assign(:image_panel_open, false)
+      |> assign(:paste_toast_visible, false)
+      |> assign(:selected_agent_tags, MapSet.new())
       |> assign(:drafts, %{})
       |> assign_compose("")
       |> assign_thread_compose("")
@@ -431,6 +434,115 @@ defmodule PlatformWeb.ChatLive do
   end
 
   # ── End upload staging dialog events ──────────────────────────────────
+
+  # ── Image share panel events ──────────────────────────────────────────
+
+  def handle_event("open_image_panel", _params, socket) do
+    {:noreply, assign(socket, :image_panel_open, true)}
+  end
+
+  def handle_event("close_image_panel", _params, socket) do
+    socket =
+      Enum.reduce(socket.assigns.uploads.attachments.entries, socket, fn entry, acc ->
+        cancel_upload(acc, :attachments, entry.ref)
+      end)
+
+    {:noreply,
+     socket
+     |> assign(:image_panel_open, false)
+     |> assign(:upload_caption, "")
+     |> assign(:selected_agent_tags, MapSet.new())}
+  end
+
+  def handle_event("toggle_agent_tag", %{"participant-id" => pid}, socket) do
+    tags = socket.assigns.selected_agent_tags
+
+    updated =
+      if MapSet.member?(tags, pid),
+        do: MapSet.delete(tags, pid),
+        else: MapSet.put(tags, pid)
+
+    {:noreply, assign(socket, :selected_agent_tags, updated)}
+  end
+
+  def handle_event("send_images", _params, socket) do
+    with space when not is_nil(space) <- socket.assigns.active_space,
+         participant when not is_nil(participant) <- socket.assigns.current_participant do
+      # Build @mentions from selected agent tags
+      tagged_agents = socket.assigns.selected_agent_tags
+
+      agent_mentions =
+        socket.assigns.space_participants
+        |> Enum.filter(fn p ->
+          p.participant_type == "agent" and MapSet.member?(tagged_agents, p.id)
+        end)
+        |> Enum.map(fn p -> "@#{p.display_name}" end)
+        |> Enum.join(" ")
+
+      caption = String.trim(socket.assigns.upload_caption || "")
+
+      content =
+        case {caption, agent_mentions} do
+          {"", ""} -> ""
+          {cap, ""} -> cap
+          {"", mentions} -> mentions
+          {cap, mentions} -> "#{cap} #{mentions}"
+        end
+
+      # Store agent tag info in metadata
+      tagged_agent_names =
+        socket.assigns.space_participants
+        |> Enum.filter(fn p ->
+          p.participant_type == "agent" and MapSet.member?(tagged_agents, p.id)
+        end)
+        |> Enum.map(fn p -> %{"participant_id" => p.id, "name" => p.display_name} end)
+
+      attrs = %{
+        space_id: space.id,
+        participant_id: participant.id,
+        content_type: "text",
+        content: content,
+        metadata: %{"image_share" => true, "tagged_agents" => tagged_agent_names}
+      }
+
+      case post_message_from_upload(socket, :attachments, attrs) do
+        {:ok, socket, msg, attachments} ->
+          # Auto-create thread for image messages
+          if length(attachments) > 0 do
+            Chat.create_thread_for_message(space.id, msg.id, %{title: "Image discussion"})
+          end
+
+          {:noreply,
+           socket
+           |> stream_insert(:messages, msg)
+           |> put_attachment_map_entry(msg.id, attachments)
+           |> assign(:image_panel_open, false)
+           |> assign(:upload_caption, "")
+           |> assign(:selected_agent_tags, MapSet.new())}
+
+        {:noop, _socket} ->
+          {:noreply, put_flash(socket, :info, "No images selected")}
+
+        {:error, socket, reason} ->
+          {:noreply, put_flash(socket, :error, reason)}
+      end
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("paste_image_upload", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:image_panel_open, true)
+     |> assign(:paste_toast_visible, true)}
+  end
+
+  def handle_event("dismiss_paste_toast", _params, socket) do
+    {:noreply, assign(socket, :paste_toast_visible, false)}
+  end
+
+  # ── End image share panel events ──────────────────────────────────────
 
   def handle_event("compose_changed", %{"compose" => %{"text" => text}}, socket) do
     socket = assign_compose(socket, text)
@@ -2107,32 +2219,72 @@ defmodule PlatformWeb.ChatLive do
                   {Platform.Chat.ContentRenderer.render_message(msg.content)}
                 </div>
 
+                <%
+                  all_attachments = Map.get(@attachments_map, msg.id, [])
+                  image_attachments = Enum.filter(all_attachments, &image_attachment?/1)
+                  non_image_attachments = Enum.reject(all_attachments, &image_attachment?/1)
+                  image_count = length(image_attachments)
+                  tagged_agents = get_in(msg.metadata, ["tagged_agents"]) || []
+                %>
                 <div
-                  :if={Map.get(@attachments_map, msg.id, []) != []}
-                  class="mt-1 flex flex-col gap-2"
+                  :if={image_count > 0}
+                  class={[
+                    "mt-1 gap-1.5 rounded-lg overflow-hidden",
+                    image_count == 1 && "grid grid-cols-1 max-w-[420px]",
+                    image_count == 2 && "grid grid-cols-2 max-w-[520px]",
+                    image_count >= 3 && "grid grid-cols-2 max-w-[520px]"
+                  ]}
                 >
                   <a
-                    :for={
-                      attachment <-
-                        Enum.filter(Map.get(@attachments_map, msg.id, []), &image_attachment?/1)
-                    }
+                    :for={{attachment, idx} <- Enum.with_index(image_attachments)}
                     href={attachment_url(attachment)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="block max-w-sm"
+                    class={[
+                      "block relative group",
+                      image_count >= 3 && idx == 0 && "col-span-2"
+                    ]}
                   >
                     <img
                       src={attachment_url(attachment)}
                       alt={attachment.filename}
                       loading="lazy"
-                      class="rounded-lg max-h-64 object-contain bg-base-200"
+                      class={[
+                        "w-full object-cover bg-base-200 rounded-lg",
+                        (image_count == 1 && "max-h-80") || "max-h-48"
+                      ]}
                     />
+                    <%!-- Agent tag badges --%>
+                    <div
+                      :for={agent <- tagged_agents}
+                      :if={idx == 0}
+                      class="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide backdrop-blur-md border"
+                      style={"background: color-mix(in oklch, #{Map.get(@agent_colors_map, agent["participant_id"], "oklch(82% 0.12 207)")} 20%, transparent); border-color: color-mix(in oklch, #{Map.get(@agent_colors_map, agent["participant_id"], "oklch(82% 0.12 207)")} 30%, transparent); color: #{Map.get(@agent_colors_map, agent["participant_id"], "oklch(82% 0.12 207)")}"}
+                    >
+                      <span
+                        class="w-1.5 h-1.5 rounded-full"
+                        style={"background: #{Map.get(@agent_colors_map, agent["participant_id"], "oklch(82% 0.12 207)")}"}
+                      />
+                      {agent["name"]}
+                    </div>
+                    <%!-- Hover overlay --%>
+                    <div class="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                      <span class="hero-magnifying-glass-plus size-6 text-white"></span>
+                    </div>
+                    <%!-- Filename overlay --%>
+                    <div class="absolute bottom-0 left-0 right-0 px-2 py-1 bg-gradient-to-t from-black/60 to-transparent rounded-b-lg">
+                      <span class="text-[11px] text-white/90 font-medium">
+                        {attachment.filename}
+                      </span>
+                    </div>
                   </a>
+                </div>
+                <div
+                  :if={non_image_attachments != []}
+                  class="mt-1 flex flex-col gap-2"
+                >
                   <a
-                    :for={
-                      attachment <-
-                        Enum.reject(Map.get(@attachments_map, msg.id, []), &image_attachment?/1)
-                    }
+                    :for={attachment <- non_image_attachments}
                     href={attachment_url(attachment)}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -2379,8 +2531,16 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               </div>
 
-              <%!-- Compose row: [+] [input stretches] [send] --%>
+              <%!-- Compose row: [image] [+] [input stretches] [send] --%>
               <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  phx-click="open_image_panel"
+                  class="flex-shrink-0 cursor-pointer rounded-full w-9 h-9 flex items-center justify-center text-base-content/50 hover:bg-base-300 transition-colors"
+                  title="Share images"
+                >
+                  <span class="hero-photo size-5"></span>
+                </button>
                 <button
                   type="button"
                   phx-click="show_upload_dialog"
@@ -2581,6 +2741,224 @@ defmodule PlatformWeb.ChatLive do
               </div>
             </div>
           <% end %>
+
+          <%!-- Image Share Panel --%>
+          <%= if @image_panel_open do %>
+            <div
+              class="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+              phx-click="close_image_panel"
+            >
+              <div
+                class="image-panel-enter mx-4 w-full max-w-lg rounded-2xl bg-base-100 shadow-2xl border border-base-300 flex flex-col max-h-[85vh]"
+                phx-click-away="close_image_panel"
+                onclick="event.stopPropagation()"
+              >
+                <%!-- Header --%>
+                <div class="flex items-center justify-between border-b border-base-300 px-5 py-3">
+                  <div>
+                    <h3 class="text-base font-semibold flex items-center gap-2">
+                      <span class="hero-photo size-5 text-primary"></span>
+                      Share Images
+                    </h3>
+                    <p class="text-xs text-base-content/50 mt-0.5">
+                      Upload images to #{(@active_space && @active_space.name) || "channel"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    phx-click="close_image_panel"
+                    class="btn btn-ghost btn-xs btn-circle"
+                    title="Close"
+                  >
+                    <span class="hero-x-mark size-4"></span>
+                  </button>
+                </div>
+
+                <%!-- Image area --%>
+                <div class="px-5 py-4 overflow-y-auto flex-1">
+                  <%= if @uploads.attachments.entries == [] do %>
+                    <%!-- Empty state: drop zone --%>
+                    <div
+                      class="border-2 border-dashed border-base-300 rounded-xl py-12 flex flex-col items-center gap-3 text-base-content/40 hover:border-primary/50 transition-colors cursor-pointer"
+                      onclick="document.getElementById('chat-drop-zone').querySelector('input[type=file]').click()"
+                    >
+                      <span class="hero-cloud-arrow-up size-12"></span>
+                      <p class="text-sm font-medium">Drag & drop images here</p>
+                      <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        onclick="event.stopPropagation(); document.getElementById('chat-drop-zone').querySelector('input[type=file]').click()"
+                      >
+                        Browse files
+                      </button>
+                      <p class="text-xs text-base-content/30 mt-1">
+                        or paste from clipboard (⌘V)
+                      </p>
+                    </div>
+                  <% else %>
+                    <%!-- Image grid --%>
+                    <div class="grid gap-3 mb-4" style="grid-template-columns: repeat(auto-fill, minmax(140px, 1fr))">
+                      <div
+                        :for={entry <- @uploads.attachments.entries}
+                        class="relative group"
+                      >
+                        <%= if String.starts_with?(entry.client_type, "image/") do %>
+                          <.live_img_preview
+                            entry={entry}
+                            class="w-full h-32 object-cover rounded-lg border border-base-300"
+                          />
+                        <% else %>
+                          <div class="w-full h-32 rounded-lg border border-base-300 bg-base-200 flex flex-col items-center justify-center gap-1 px-2">
+                            <span class="hero-document size-8 text-base-content/40"></span>
+                            <span class="text-[10px] text-base-content/60 truncate w-full text-center">
+                              {entry.client_name}
+                            </span>
+                          </div>
+                        <% end %>
+
+                        <%!-- Remove button --%>
+                        <button
+                          type="button"
+                          phx-click="cancel_upload"
+                          phx-value-ref={entry.ref}
+                          class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-error text-error-content flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                          title="Remove"
+                        >
+                          <span class="hero-x-mark size-3"></span>
+                        </button>
+
+                        <%!-- Progress bar --%>
+                        <div
+                          :if={entry.progress > 0 and entry.progress < 100}
+                          class="absolute bottom-1 left-1 right-1"
+                        >
+                          <div class="h-1 rounded-full bg-base-300 overflow-hidden">
+                            <div
+                              class="h-full bg-primary transition-all duration-300"
+                              style={"width: #{entry.progress}%"}
+                            >
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <%!-- Add more tile --%>
+                      <div
+                        class="w-full h-32 rounded-lg border-2 border-dashed border-base-300 flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-primary/50 transition-colors text-base-content/40 hover:text-primary/70"
+                        onclick="document.getElementById('chat-drop-zone').querySelector('input[type=file]').click()"
+                      >
+                        <span class="hero-plus size-6"></span>
+                        <span class="text-xs font-medium">Add more</span>
+                      </div>
+                    </div>
+                  <% end %>
+
+                  <%!-- Upload errors --%>
+                  <p
+                    :for={error <- upload_errors(@uploads.attachments)}
+                    class="text-xs text-error mb-2"
+                  >
+                    {upload_error_to_string(error)}
+                  </p>
+                  <div :for={entry <- @uploads.attachments.entries}>
+                    <p
+                      :for={error <- upload_errors(@uploads.attachments, entry)}
+                      class="text-xs text-error mb-1"
+                    >
+                      {entry.client_name}: {upload_error_to_string(error)}
+                    </p>
+                  </div>
+
+                  <%!-- Agent tags --%>
+                  <%
+                    agent_participants =
+                      Enum.filter(@space_participants, fn p -> p.participant_type == "agent" end)
+                  %>
+                  <div :if={agent_participants != []} class="mt-3">
+                    <p class="text-xs font-semibold text-base-content/50 uppercase tracking-wider mb-2">
+                      Tag agents
+                    </p>
+                    <div class="flex flex-wrap gap-2">
+                      <button
+                        :for={agent <- agent_participants}
+                        type="button"
+                        phx-click="toggle_agent_tag"
+                        phx-value-participant-id={agent.id}
+                        class={[
+                          "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all cursor-pointer",
+                          if(MapSet.member?(@selected_agent_tags, agent.id),
+                            do: "border-primary bg-primary/10 text-primary",
+                            else: "border-base-300 bg-base-200 text-base-content/60 hover:border-primary/50"
+                          )
+                        ]}
+                      >
+                        <span
+                          class="w-2 h-2 rounded-full"
+                          style={"background: #{Map.get(@agent_colors_map, agent.id, "oklch(82% 0.12 207)")}"}
+                        />
+                        {agent.display_name}
+                        <span
+                          :if={MapSet.member?(@selected_agent_tags, agent.id)}
+                          class="hero-check size-3"
+                        >
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <%!-- Comment --%>
+                  <div class="mt-3">
+                    <form phx-change="upload_caption_changed" phx-submit="send_images">
+                      <textarea
+                        name="caption"
+                        placeholder="Add a comment (optional)..."
+                        rows="2"
+                        phx-debounce="200"
+                        class="w-full rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors px-3 py-2"
+                      >{@upload_caption}</textarea>
+                    </form>
+                  </div>
+                </div>
+
+                <%!-- Footer --%>
+                <div class="flex items-center justify-between border-t border-base-300 px-5 py-3">
+                  <span class="text-xs text-base-content/40">
+                    {length(@uploads.attachments.entries)} image(s)
+                  </span>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      phx-click="close_image_panel"
+                      class="btn btn-ghost btn-sm"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      phx-click="send_images"
+                      class="btn btn-primary btn-sm"
+                      disabled={@uploads.attachments.entries == []}
+                    >
+                      Send to #{(@active_space && @active_space.name) || "channel"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% end %>
+
+          <%!-- Paste toast notification --%>
+          <div
+            :if={@paste_toast_visible}
+            class="absolute bottom-20 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 bg-base-200 border border-primary rounded-lg px-4 py-2.5 shadow-lg paste-toast-enter"
+            phx-click="dismiss_paste_toast"
+          >
+            <span class="hero-clipboard-document size-5 text-primary"></span>
+            <span class="text-sm">
+              <strong class="text-primary">Image pasted</strong>
+              — opening upload panel
+            </span>
+          </div>
         </div>
 
         <%!-- Desktop: side panel --%>
