@@ -285,23 +285,63 @@
 
 /* ── Makeup Syntax Highlighting ──────────────────────────────────── */
 
-pre .makeup .n  { color: #c9d1d9; }        /* name */
-pre .makeup .s  { color: #a5d6ff; }        /* string */
-pre .makeup .k  { color: #ff7b72; }        /* keyword */
-pre .makeup .kd { color: #ff7b72; }        /* keyword declaration */
-pre .makeup .na { color: #d2a8ff; }        /* name attribute */
-pre .makeup .nf { color: #d2a8ff; }        /* name function */
-pre .makeup .nc { color: #ffa657; }        /* name class */
-pre .makeup .no { color: #79c0ff; }        /* name constant */
-pre .makeup .c  { color: #8b949e; font-style: italic; }  /* comment */
-pre .makeup .c1 { color: #8b949e; font-style: italic; }  /* comment single */
-pre .makeup .p  { color: #c9d1d9; }        /* punctuation */
-pre .makeup .o  { color: #ff7b72; }        /* operator */
-pre .makeup .m  { color: #79c0ff; }        /* number */
-pre .makeup .mi { color: #79c0ff; }        /* number integer */
-pre .makeup .mf { color: #79c0ff; }        /* number float */
-pre .makeup .ss { color: #a5d6ff; }        /* string symbol */
-pre .makeup .sa { color: #79c0ff; }        /* string affix */
+/* Light mode (GitHub Light–inspired) */
+pre .makeup .n  { color: #24292f; }        /* name */
+pre .makeup .s  { color: #0a3069; }        /* string */
+pre .makeup .k  { color: #cf222e; }        /* keyword */
+pre .makeup .kd { color: #cf222e; }        /* keyword declaration */
+pre .makeup .na { color: #8250df; }        /* name attribute */
+pre .makeup .nf { color: #8250df; }        /* name function */
+pre .makeup .nc { color: #953800; }        /* name class */
+pre .makeup .no { color: #0550ae; }        /* name constant */
+pre .makeup .c  { color: #6e7781; font-style: italic; }  /* comment */
+pre .makeup .c1 { color: #6e7781; font-style: italic; }  /* comment single */
+pre .makeup .p  { color: #24292f; }        /* punctuation */
+pre .makeup .o  { color: #cf222e; }        /* operator */
+pre .makeup .m  { color: #0550ae; }        /* number */
+pre .makeup .mi { color: #0550ae; }        /* number integer */
+pre .makeup .mf { color: #0550ae; }        /* number float */
+pre .makeup .ss { color: #0a3069; }        /* string symbol */
+pre .makeup .sa { color: #0550ae; }        /* string affix */
+
+/* Dark mode (GitHub Dark–inspired) */
+[data-theme="dark"] pre .makeup .n  { color: #c9d1d9; }
+[data-theme="dark"] pre .makeup .s  { color: #a5d6ff; }
+[data-theme="dark"] pre .makeup .k  { color: #ff7b72; }
+[data-theme="dark"] pre .makeup .kd { color: #ff7b72; }
+[data-theme="dark"] pre .makeup .na { color: #d2a8ff; }
+[data-theme="dark"] pre .makeup .nf { color: #d2a8ff; }
+[data-theme="dark"] pre .makeup .nc { color: #ffa657; }
+[data-theme="dark"] pre .makeup .no { color: #79c0ff; }
+[data-theme="dark"] pre .makeup .c  { color: #8b949e; font-style: italic; }
+[data-theme="dark"] pre .makeup .c1 { color: #8b949e; font-style: italic; }
+[data-theme="dark"] pre .makeup .p  { color: #c9d1d9; }
+[data-theme="dark"] pre .makeup .o  { color: #ff7b72; }
+[data-theme="dark"] pre .makeup .m  { color: #79c0ff; }
+[data-theme="dark"] pre .makeup .mi { color: #79c0ff; }
+[data-theme="dark"] pre .makeup .mf { color: #79c0ff; }
+[data-theme="dark"] pre .makeup .ss { color: #a5d6ff; }
+[data-theme="dark"] pre .makeup .sa { color: #79c0ff; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) pre .makeup .n  { color: #c9d1d9; }
+  :root:not([data-theme="light"]) pre .makeup .s  { color: #a5d6ff; }
+  :root:not([data-theme="light"]) pre .makeup .k  { color: #ff7b72; }
+  :root:not([data-theme="light"]) pre .makeup .kd { color: #ff7b72; }
+  :root:not([data-theme="light"]) pre .makeup .na { color: #d2a8ff; }
+  :root:not([data-theme="light"]) pre .makeup .nf { color: #d2a8ff; }
+  :root:not([data-theme="light"]) pre .makeup .nc { color: #ffa657; }
+  :root:not([data-theme="light"]) pre .makeup .no { color: #79c0ff; }
+  :root:not([data-theme="light"]) pre .makeup .c  { color: #8b949e; font-style: italic; }
+  :root:not([data-theme="light"]) pre .makeup .c1 { color: #8b949e; font-style: italic; }
+  :root:not([data-theme="light"]) pre .makeup .p  { color: #c9d1d9; }
+  :root:not([data-theme="light"]) pre .makeup .o  { color: #ff7b72; }
+  :root:not([data-theme="light"]) pre .makeup .m  { color: #79c0ff; }
+  :root:not([data-theme="light"]) pre .makeup .mi { color: #79c0ff; }
+  :root:not([data-theme="light"]) pre .makeup .mf { color: #79c0ff; }
+  :root:not([data-theme="light"]) pre .makeup .ss { color: #a5d6ff; }
+  :root:not([data-theme="light"]) pre .makeup .sa { color: #79c0ff; }
+}
 
 /* ── Kanban drag-and-drop feedback ─────────────────────────────────── */
 
@@ -410,15 +450,15 @@ body, .font-kobo, * {
 
 /* ── Decision / question cards ───────────────────────────────────── */
 .decision-card {
-  border: 1px solid oklch(82% 0.12 207);
-  background: oklch(74% 0.177 207 / 0.05);
+  border: 1px solid var(--color-primary);
+  background: color-mix(in oklch, var(--color-primary) 5%, transparent);
   border-radius: 0.75rem;
   padding: 1rem;
 }
 
 @keyframes decision-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 oklch(74% 0.177 207 / 0.4); }
-  50% { box-shadow: 0 0 0 8px oklch(74% 0.177 207 / 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-primary) 40%, transparent); }
+  50% { box-shadow: 0 0 0 8px color-mix(in oklch, var(--color-primary) 0%, transparent); }
 }
 
 .decision-card-waiting {
@@ -427,13 +467,13 @@ body, .font-kobo, * {
 
 /* ── Sidebar nav active state ────────────────────────────────────── */
 .nav-item-active {
-  border-left: 3px solid oklch(82% 0.12 207);
-  background: oklch(74% 0.177 207 / 0.08);
+  border-left: 3px solid var(--color-primary);
+  background: color-mix(in oklch, var(--color-primary) 8%, transparent);
 }
 
 /* ── Kobo progress bar ───────────────────────────────────────────── */
-.progress-kobo::-webkit-progress-value { background: oklch(82% 0.12 207); }
-.progress-kobo::-moz-progress-bar { background: oklch(82% 0.12 207); }
+.progress-kobo::-webkit-progress-value { background: var(--color-primary); }
+.progress-kobo::-moz-progress-bar { background: var(--color-primary); }
 
 /* ── Checklist inline card ───────────────────────────────────────── */
 
@@ -444,15 +484,14 @@ body, .font-kobo, * {
   gap: 0.25rem;
 }
 
-/* Active glow: pulsing cyan box-shadow matching the --cyan-glow design token.
-   rgba(6, 213, 237, 0.15) ≈ oklch(82% 0.12 207 / 0.15) — the primary cyan. */
+/* Active glow: pulsing primary-color box-shadow for the active checklist item. */
 @keyframes checklist-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(6, 213, 237, 0.15); }
-  50%       { box-shadow: 0 0 0 6px rgba(6, 213, 237, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-primary) 15%, transparent); }
+  50%       { box-shadow: 0 0 0 6px color-mix(in oklch, var(--color-primary) 0%, transparent); }
 }
 
 .card-checklist [data-state="active"] {
   animation: checklist-glow 2s ease-in-out infinite;
   border-radius: 0.375rem;
-  background: rgba(6, 213, 237, 0.05);
+  background: color-mix(in oklch, var(--color-primary) 5%, transparent);
 }

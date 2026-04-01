@@ -71,7 +71,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
             <span class="hero-arrow-top-right-on-square size-4 text-base-content/40 flex-shrink-0"></span>
           </header>
           <div class={[
-            "w-full bg-white relative",
+            "w-full bg-base-100 relative",
             if(@inline, do: "h-48 sm:h-56", else: "h-[60vh] min-h-[300px]")
           ]}>
             <iframe
@@ -370,7 +370,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     assigns = assign(assigns, :node, node)
 
     ~H"""
-    <div class="rounded-xl border border-base-300 bg-base-900 overflow-x-auto">
+    <div class="rounded-xl border border-base-300 bg-base-200 overflow-x-auto">
       <div class="flex items-center justify-between border-b border-base-300 bg-base-200 px-3 py-1">
         <span class="text-[11px] uppercase tracking-widest text-base-content/50">
           {@node["props"]["language"] || "code"}
