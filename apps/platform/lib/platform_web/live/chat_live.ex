@@ -311,6 +311,7 @@ defmodule PlatformWeb.ChatLive do
             |> update(:expanded_threads, &MapSet.put(&1, parent_msg_id))
             |> update(:inline_thread_messages, &Map.put(&1, parent_msg_id, thread_msgs))
             |> assign(:highlighted_message_id, parent_msg_id)
+            |> reinsert_stream_message(parent_msg_id)
           else
             socket
             |> assign(:highlighted_message_id, message.id)
@@ -491,6 +492,32 @@ defmodule PlatformWeb.ChatLive do
   end
 
   def handle_event("react", %{"message_id" => msg_id, "emoji" => emoji}, socket) do
+    react_to_message(socket, msg_id, emoji)
+  end
+
+  def handle_event("react", %{"message-id" => msg_id, "emoji" => emoji}, socket) do
+    react_to_message(socket, msg_id, emoji)
+  end
+
+  # Redirect open_thread to inline expansion (side panel removed)
+  def handle_event("open_thread", %{"message-id" => message_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => message_id}, socket)
+  end
+
+  def handle_event("open_thread", %{"message_id" => message_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => message_id}, socket)
+  end
+
+  def handle_event("close_thread", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_thread, nil)
+     |> assign(:thread_messages, [])
+     |> assign(:thread_attachments_map, %{})
+     |> assign(:highlighted_thread_message_id, nil)}
+  end
+
+  defp react_to_message(socket, msg_id, emoji) do
     with participant when not is_nil(participant) <- socket.assigns.current_participant do
       groups = Map.get(socket.assigns.reactions_map, msg_id, [])
       already_reacted = Enum.any?(groups, &(&1.emoji == emoji && &1.reacted_by_me))
@@ -512,20 +539,6 @@ defmodule PlatformWeb.ChatLive do
       require Logger
       Logger.error("Reaction handler crashed: #{Exception.message(e)}")
       {:noreply, socket}
-  end
-
-  # Redirect open_thread to inline expansion (side panel removed)
-  def handle_event("open_thread", %{"message-id" => message_id}, socket) do
-    handle_event("toggle_inline_thread", %{"message-id" => message_id}, socket)
-  end
-
-  def handle_event("close_thread", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:active_thread, nil)
-     |> assign(:thread_messages, [])
-     |> assign(:thread_attachments_map, %{})
-     |> assign(:highlighted_thread_message_id, nil)}
   end
 
   def handle_event("send_thread_message", %{"thread_compose" => %{"text" => content}}, socket) do
@@ -556,6 +569,10 @@ defmodule PlatformWeb.ChatLive do
     else
       _ -> {:noreply, socket}
     end
+  end
+
+  def handle_event("toggle_inline_thread", %{"message_id" => msg_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket)
   end
 
   def handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket) do
@@ -641,7 +658,8 @@ defmodule PlatformWeb.ChatLive do
                | reply_count: preview.reply_count + 1,
                  last_reply_at: msg.inserted_at
              })
-           end)}
+           end)
+           |> reinsert_stream_message(msg_id)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "Failed to send reply.")}
@@ -649,6 +667,10 @@ defmodule PlatformWeb.ChatLive do
     else
       _ -> {:noreply, socket}
     end
+  end
+
+  def handle_event("toggle_pin", %{"message_id" => msg_id, "space_id" => space_id}, socket) do
+    handle_event("toggle_pin", %{"message-id" => msg_id, "space-id" => space_id}, socket)
   end
 
   def handle_event("toggle_pin", %{"message-id" => msg_id, "space-id" => space_id}, socket) do
