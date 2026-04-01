@@ -183,7 +183,14 @@ defmodule PlatformWeb.ChatLive do
       end
 
       participants = Chat.list_participants(space.id)
-      participants_map = Map.new(participants, fn p -> {p.id, p.display_name || "User"} end)
+
+      users_by_id =
+        participants
+        |> Enum.filter(&(&1.participant_type == "user"))
+        |> Enum.map(& &1.participant_id)
+        |> Accounts.get_users_map()
+
+      participants_map = build_participant_identity_map(participants, users_by_id)
 
       agent_participant_ids =
         participants |> Enum.filter(&(&1.participant_type == "agent")) |> MapSet.new(& &1.id)
@@ -458,13 +465,21 @@ defmodule PlatformWeb.ChatLive do
           []
 
         space ->
-          space.id
-          |> Chat.list_participants()
+          participants = Chat.list_participants(space.id)
+
+          users_by_id =
+            participants
+            |> Enum.filter(&(&1.participant_type == "user"))
+            |> Enum.map(& &1.participant_id)
+            |> Accounts.get_users_map()
+
+          participants
           |> Enum.filter(fn p ->
             name = (p.display_name || "") |> String.downcase()
             String.starts_with?(name, String.downcase(query))
           end)
           |> Enum.take(8)
+          |> Enum.map(&participant_identity(&1, Map.get(users_by_id, &1.participant_id)))
       end
 
     {:noreply, assign(socket, :mention_suggestions, suggestions)}
@@ -579,10 +594,14 @@ defmodule PlatformWeb.ChatLive do
 
   def handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket) do
     if MapSet.member?(socket.assigns.expanded_threads, msg_id) do
-      {:noreply,
-       socket
-       |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
-       |> update(:inline_thread_messages, &Map.delete(&1, msg_id))}
+      # Collapse: remove from expanded set and re-insert message to force re-render
+      socket =
+        socket
+        |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
+        |> update(:inline_thread_messages, &Map.delete(&1, msg_id))
+
+      socket = reinsert_stream_message(socket, msg_id)
+      {:noreply, socket}
     else
       space = socket.assigns.active_space
 
@@ -600,18 +619,22 @@ defmodule PlatformWeb.ChatLive do
         thread ->
           thread_msgs = load_thread_messages(space.id, thread.id)
 
-          {:noreply,
-           socket
-           |> update(:expanded_threads, &MapSet.put(&1, msg_id))
-           |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
-           |> update(
-             :thread_previews,
-             &Map.put(&1, msg_id, %{
-               thread_id: thread.id,
-               reply_count: length(thread_msgs),
-               last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
-             })
-           )}
+          socket =
+            socket
+            |> update(:expanded_threads, &MapSet.put(&1, msg_id))
+            |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
+            |> update(
+              :thread_previews,
+              &Map.put(&1, msg_id, %{
+                thread_id: thread.id,
+                reply_count: length(thread_msgs),
+                last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
+              })
+            )
+            |> push_event("focus_inline_thread_compose", %{message_id: msg_id})
+
+          socket = reinsert_stream_message(socket, msg_id)
+          {:noreply, socket}
       end
     end
   end
@@ -760,6 +783,7 @@ defmodule PlatformWeb.ChatLive do
         )
 
         ChatPubSub.broadcast(canvas.space_id, {:canvas_action, canvas, value})
+        dispatch_canvas_action_to_agent(canvas, value)
         {:noreply, socket}
     end
   end
@@ -1261,6 +1285,12 @@ defmodule PlatformWeb.ChatLive do
      |> assign(:pinned_message_ids, pinned_message_ids)}
   end
 
+  def handle_info({:canvas_action, _canvas, _value}, socket) do
+    # Canvas action events are handled at the source (handle_event);
+    # other LiveView clients just ignore the PubSub broadcast.
+    {:noreply, socket}
+  end
+
   def handle_info({:canvas_created, canvas}, socket) do
     {:noreply, put_canvas(socket, canvas)}
   end
@@ -1270,9 +1300,16 @@ defmodule PlatformWeb.ChatLive do
   end
 
   def handle_info({:participant_joined, participant}, socket) do
+    user =
+      if participant.participant_type == "user" do
+        Accounts.get_user(participant.participant_id)
+      else
+        nil
+      end
+
     {:noreply,
      update(socket, :participants_map, fn map ->
-       Map.put(map, participant.id, participant.display_name || "User")
+       Map.put(map, participant.id, participant_identity(participant, user))
      end)}
   end
 
@@ -1932,6 +1969,7 @@ defmodule PlatformWeb.ChatLive do
             </div>
           </div>
 
+          <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>
           <div
             id="message-list"
             class="flex-1 overflow-y-auto overflow-x-hidden bg-base-100 px-5 py-4 flex flex-col space-y-1"
@@ -1966,15 +2004,18 @@ defmodule PlatformWeb.ChatLive do
             >
               <%!-- Avatar circle (hidden when grouped with previous message via JS) --%>
               <div class="flex-shrink-0 mt-0.5 message-avatar">
-                <div class={[
-                  "w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold select-none",
-                  if(MapSet.member?(@agent_participant_ids, msg.participant_id),
-                    do: "bg-base-300 text-primary msg-agent-avatar",
-                    else: "bg-primary text-primary-content"
-                  )
-                ]}>
-                  {avatar_initial(@participants_map, msg.participant_id)}
-                </div>
+                <%= if MapSet.member?(@agent_participant_ids, msg.participant_id) do %>
+                  <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold select-none bg-base-300 text-primary msg-agent-avatar">
+                    {avatar_initial(@participants_map, msg.participant_id)}
+                  </div>
+                <% else %>
+                  <.human_avatar
+                    name={sender_name(@participants_map, msg.participant_id)}
+                    avatar_url={sender_avatar_url(@participants_map, msg.participant_id)}
+                    seed={sender_avatar_seed(@participants_map, msg.participant_id)}
+                    size="md"
+                  />
+                <% end %>
               </div>
 
               <%!-- Message body --%>
@@ -2025,12 +2066,21 @@ defmodule PlatformWeb.ChatLive do
                     </button>
 
                     <button
-                      phx-click="open_thread"
+                      phx-click="toggle_inline_thread"
                       phx-value-message-id={msg.id}
-                      title="Reply in thread"
+                      title="Reply"
                       class="rounded px-1.5 py-0.5 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors"
                     >
                       <span class="hero-chat-bubble-left-right size-4"></span>
+                    </button>
+
+                    <button
+                      phx-click="open_thread"
+                      phx-value-message-id={msg.id}
+                      title="View thread detail"
+                      class="rounded px-1.5 py-0.5 text-xs text-base-content/40 hover:text-base-content/60 hover:bg-base-300 transition-colors"
+                    >
+                      <span class="hero-arrow-top-right-on-square size-4"></span>
                     </button>
 
                     <button
@@ -2057,7 +2107,11 @@ defmodule PlatformWeb.ChatLive do
                   class="mt-1"
                 >
                   <div :if={Map.get(@canvases_by_message_id, msg.id)} class="min-w-0 overflow-hidden">
-                    <.canvas_document canvas={Map.get(@canvases_by_message_id, msg.id)} inline={true} />
+                    <.canvas_document
+                      canvas={Map.get(@canvases_by_message_id, msg.id)}
+                      inline={true}
+                      dom_id_base="chat-message-inline"
+                    />
                   </div>
 
                   <div
@@ -2150,6 +2204,102 @@ defmodule PlatformWeb.ChatLive do
                   </button>
                 </div>
               </div>
+
+              <%!-- Inline thread: preview bar + expanded thread --%>
+              <div
+                :if={
+                  Map.has_key?(@thread_previews, msg.id) or MapSet.member?(@expanded_threads, msg.id)
+                }
+                class="ml-9 mt-1"
+              >
+                <%!-- Thread preview / collapse bar --%>
+                <button
+                  phx-click="toggle_inline_thread"
+                  phx-value-message-id={msg.id}
+                  class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/70 transition-colors"
+                >
+                  <span class="hero-chat-bubble-left size-3.5"></span>
+                  <span>
+                    {Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0)}
+                    {if Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0) == 1,
+                      do: "reply",
+                      else: "replies"}
+                  </span>
+                  <span
+                    class="hero-chevron-down size-3 transition-transform"
+                    style={
+                      if MapSet.member?(@expanded_threads, msg.id), do: "transform: rotate(180deg)"
+                    }
+                  >
+                  </span>
+                </button>
+
+                <%!-- Expanded inline thread messages --%>
+                <div
+                  :if={MapSet.member?(@expanded_threads, msg.id)}
+                  class="mt-2 space-y-2 border-l-2 border-base-300 pl-3"
+                  id={"inline-thread-#{msg.id}"}
+                >
+                  <div
+                    :for={tmsg <- Map.get(@inline_thread_messages, msg.id, [])}
+                    class="flex items-start gap-2"
+                  >
+                    <div class={[
+                      "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium",
+                      if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                        do: "bg-primary/10 text-primary",
+                        else: "bg-base-200 text-base-content/60"
+                      )
+                    ]}>
+                      {avatar_initial(@participants_map, tmsg.participant_id)}
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-baseline gap-2">
+                        <span class="text-xs font-medium text-base-content/70">
+                          {sender_name(@participants_map, tmsg.participant_id)}
+                        </span>
+                        <.local_time
+                          id={"inline-thread-ts-#{tmsg.id}"}
+                          timestamp={tmsg.inserted_at}
+                          class="text-[10px] text-base-content/40"
+                        />
+                      </div>
+                      <div class="prose prose-sm max-w-none text-sm text-base-content break-words">
+                        {Platform.Chat.ContentRenderer.render_message(tmsg.content)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <%!-- Inline thread composer --%>
+                  <.form
+                    for={%{}}
+                    id={"inline-thread-compose-form-#{msg.id}"}
+                    phx-submit="send_inline_thread_message"
+                    class="flex items-end gap-2 pt-1"
+                  >
+                    <input type="hidden" name="inline_thread_compose[message_id]" value={msg.id} />
+                    <div class="flex-1 relative">
+                      <textarea
+                        name="inline_thread_compose[text]"
+                        id={"inline-thread-compose-#{msg.id}"}
+                        rows="1"
+                        placeholder="Reply…"
+                        autocomplete="off"
+                        class="textarea textarea-bordered w-full resize-none rounded-xl pr-10 text-sm leading-relaxed"
+                        phx-hook="ComposeInput"
+                      ></textarea>
+                      <button
+                        type="submit"
+                        class="absolute right-2 bottom-2 w-7 h-7 rounded-full btn btn-primary btn-xs flex items-center justify-center p-0"
+                        disabled={is_nil(@current_participant)}
+                        title="Reply"
+                      >
+                        <span class="hero-paper-airplane size-4 -rotate-45"></span>
+                      </button>
+                    </div>
+                  </.form>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -2237,14 +2387,24 @@ defmodule PlatformWeb.ChatLive do
                       }
                       class="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-base-200 text-left transition-colors"
                     >
-                      <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
-                        {(suggestion.display_name || "U")
-                        |> String.trim()
-                        |> String.first()
-                        |> String.upcase()}
-                      </div>
+                      <%= if suggestion.participant_type == "agent" do %>
+                        <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
+                          {(suggestion.display_name || "U")
+                          |> String.trim()
+                          |> String.first()
+                          |> String.upcase()}
+                        </div>
+                      <% else %>
+                        <.human_avatar
+                          name={participant_name(suggestion)}
+                          avatar_url={participant_avatar_url(suggestion)}
+                          seed={participant_avatar_seed(suggestion)}
+                          size="sm"
+                          class="flex-shrink-0"
+                        />
+                      <% end %>
                       <span class="flex-1 truncate font-medium">
-                        {suggestion.display_name || "User"}
+                        {participant_name(suggestion)}
                       </span>
                       <span class={[
                         "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
@@ -2481,7 +2641,7 @@ defmodule PlatformWeb.ChatLive do
           </div>
 
           <div class="flex-1 overflow-y-auto px-4 py-4">
-            <.canvas_document canvas={@active_canvas} />
+            <.canvas_document canvas={@active_canvas} dom_id_base="chat-live-canvas-panel" />
           </div>
         </div>
 
@@ -2502,7 +2662,7 @@ defmodule PlatformWeb.ChatLive do
             </header>
 
             <div class="flex-1 overflow-y-auto px-4 py-4">
-              <.canvas_document canvas={@active_canvas} />
+              <.canvas_document canvas={@active_canvas} dom_id_base="chat-live-canvas-overlay" />
             </div>
           </div>
         <% end %>
@@ -2857,9 +3017,13 @@ defmodule PlatformWeb.ChatLive do
                   if(is_selected, do: "bg-primary/10 text-primary", else: "hover:bg-base-200")
                 ]}
               >
-                <span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs font-bold">
-                  {String.first(user.name || "U") |> String.upcase()}
-                </span>
+                <.human_avatar
+                  name={user.name || user.email || "User"}
+                  avatar_url={user.avatar_url}
+                  seed={user.oidc_sub || user.email || user.id}
+                  size="sm"
+                  class="flex-shrink-0"
+                />
                 <span class="truncate">{user.name || user.email}</span>
                 <span :if={is_selected} class="ml-auto text-xs">selected</span>
               </button>
@@ -3007,6 +3171,50 @@ defmodule PlatformWeb.ChatLive do
 
   defp find_canvas(socket, canvas_id) do
     Chat.get_canvas(canvas_id) || Enum.find(socket.assigns.canvases, &(&1.id == canvas_id))
+  end
+
+  defp dispatch_canvas_action_to_agent(canvas, value) do
+    require Logger
+
+    with %{participant_type: "agent", participant_id: agent_id} <-
+           Chat.get_participant(canvas.created_by),
+         %Platform.Agents.Agent{} = agent <- Platform.Agents.get_agent(agent_id),
+         runtime_id when is_binary(runtime_id) <- agent.runtime_id,
+         topic = "runtime:#{runtime_id}",
+         bundle = Platform.Chat.ContextPlane.build_context_bundle(canvas.space_id),
+         tools = PlatformWeb.Channels.ToolSurface.tool_definitions() do
+      payload = %{
+        signal: %{
+          reason: :canvas_action,
+          space_id: canvas.space_id,
+          canvas_id: canvas.id,
+          canvas_title: canvas.title,
+          action_value: value
+        },
+        message: %{
+          content: "Action button pressed on canvas \"#{canvas.title || canvas.id}\": #{value}",
+          author: "system"
+        },
+        history: [],
+        context: bundle,
+        tools: tools
+      }
+
+      case PlatformWeb.Endpoint.broadcast(topic, "attention", payload) do
+        :ok ->
+          Logger.info(
+            "canvas_action dispatched to agent #{agent_id} (runtime: #{runtime_id}) value=#{value}"
+          )
+
+        {:error, reason} ->
+          Logger.warning("canvas_action dispatch failed: #{inspect(reason)}")
+      end
+    else
+      _ ->
+        Logger.debug(
+          "canvas_action: creator is not an agent or runtime not found, skipping dispatch"
+        )
+    end
   end
 
   defp default_canvas_state("table") do
@@ -3247,6 +3455,16 @@ defmodule PlatformWeb.ChatLive do
     space_id
     |> Chat.list_messages(limit: @message_limit, top_level_only: true)
     |> Enum.reverse()
+  end
+
+  # Re-insert a message into the stream to force LiveView to re-render the
+  # stream item after assign changes (e.g. expanded_threads, thread_previews).
+  # Stream items only re-render on explicit stream_insert, not on assign changes.
+  defp reinsert_stream_message(socket, msg_id) do
+    case Chat.get_message(msg_id) do
+      nil -> socket
+      msg -> stream_insert(socket, :messages, msg)
+    end
   end
 
   defp load_thread_messages(space_id, thread_id) do
@@ -3603,14 +3821,102 @@ defmodule PlatformWeb.ChatLive do
     _ -> false
   end
 
+  defp build_participant_identity_map(participants, users_by_id) do
+    Map.new(participants, fn participant ->
+      {participant.id,
+       participant_identity(participant, Map.get(users_by_id, participant.participant_id))}
+    end)
+  end
+
+  defp participant_identity(participant, user \\ nil)
+
+  defp participant_identity(%{participant_type: "agent"} = participant, _user) do
+    %{
+      participant_type: "agent",
+      name: participant.display_name || "Agent",
+      avatar_url: participant.avatar_url,
+      avatar_seed: participant.participant_id || participant.id
+    }
+  end
+
+  defp participant_identity(participant, user) do
+    %{
+      participant_type: "user",
+      name: participant_name(participant, user),
+      avatar_url: participant.avatar_url || (user && user.avatar_url),
+      avatar_seed: participant_avatar_seed(participant, user)
+    }
+  end
+
+  defp participant_name(participant), do: participant_name(participant, nil)
+
+  defp participant_name(%{name: name}, _user) when is_binary(name) and name != "", do: name
+
+  defp participant_name(%{resolved_name: name}, _user) when is_binary(name) and name != "",
+    do: name
+
+  defp participant_name(%{display_name: name}, _user) when is_binary(name) and name != "",
+    do: name
+
+  defp participant_name(_participant, %{name: name}) when is_binary(name) and name != "", do: name
+
+  defp participant_name(_participant, %{email: email}) when is_binary(email) and email != "",
+    do: email
+
+  defp participant_name(_participant, _user), do: "User"
+
+  defp participant_avatar_url(%{avatar_url: avatar_url}) when is_binary(avatar_url),
+    do: avatar_url
+
+  defp participant_avatar_url(_participant), do: nil
+
+  defp participant_avatar_seed(%{avatar_seed: seed}) when not is_nil(seed), do: seed
+
+  defp participant_avatar_seed(participant, user \\ nil) do
+    cond do
+      user && is_binary(user.oidc_sub) && user.oidc_sub != "" ->
+        user.oidc_sub
+
+      user && is_binary(user.email) && user.email != "" ->
+        user.email
+
+      is_binary(participant.participant_id) && participant.participant_id != "" ->
+        participant.participant_id
+
+      is_binary(participant.id) && participant.id != "" ->
+        participant.id
+
+      true ->
+        "user"
+    end
+  end
+
   defp sender_name(participants_map, participant_id) do
-    Map.get(participants_map, participant_id, "User")
+    case Map.get(participants_map, participant_id) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      name when is_binary(name) and name != "" -> name
+      _ -> "User"
+    end
+  end
+
+  defp sender_avatar_url(participants_map, participant_id) do
+    case Map.get(participants_map, participant_id) do
+      %{avatar_url: avatar_url} when is_binary(avatar_url) -> avatar_url
+      _ -> nil
+    end
+  end
+
+  defp sender_avatar_seed(participants_map, participant_id) do
+    case Map.get(participants_map, participant_id) do
+      %{avatar_seed: avatar_seed} when not is_nil(avatar_seed) -> avatar_seed
+      %{name: name} when is_binary(name) and name != "" -> name
+      name when is_binary(name) and name != "" -> name
+      _ -> participant_id || "user"
+    end
   end
 
   defp avatar_initial(participants_map, participant_id) do
-    name = Map.get(participants_map, participant_id, "U")
-
-    name
+    sender_name(participants_map, participant_id)
     |> String.trim()
     |> String.first()
     |> case do

@@ -43,6 +43,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   attr(:canvas, Canvas, required: true)
   attr(:inline, :boolean, default: false)
   attr(:show_header, :boolean, default: true)
+  attr(:dom_id_base, :string, default: nil)
 
   def canvas_document(assigns) do
     state = assigns.canvas.state || %{}
@@ -51,7 +52,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       url_canvas?(state) ->
         ~H"""
         <div
-          id={"canvas-url-#{@canvas.id}"}
+          id={canvas_root_id(assigns, "url")}
           class={[
             "rounded-2xl border border-base-300 bg-base-100 shadow-sm overflow-hidden",
             @inline && "cursor-pointer"
@@ -95,7 +96,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
         ~H"""
         <div
-          id={"canvas-a2ui-#{@canvas.id}"}
+          id={canvas_root_id(assigns, "a2ui")}
           class={[
             "rounded-2xl border border-base-300 bg-base-100 shadow-sm overflow-hidden",
             @inline && "cursor-pointer"
@@ -104,7 +105,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           phx-value-canvas-id={if(@inline, do: @canvas.id)}
         >
           <div class="p-4 flex flex-col gap-3">
-            <.render_node :for={node <- @a2ui_nodes} node={node} />
+            <.render_node :for={node <- @a2ui_nodes} node={node} canvas_id={@canvas.id} />
           </div>
         </div>
         """
@@ -120,7 +121,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           |> assign(:supporting_artifacts, Enum.reject(artifacts, &image_artifact?/1))
 
         ~H"""
-        <div id={"canvas-review-evidence-#{@canvas.id}"} class="space-y-4 p-4">
+        <div id={canvas_root_id(assigns, "review-evidence")} class="space-y-4 p-4">
           <div :if={@summary} class="rounded-xl border border-base-300 bg-base-100 p-4">
             <p class="text-xs font-semibold uppercase tracking-widest text-base-content/50">
               Summary
@@ -192,7 +193,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       canonical_document?(state) ->
         ~H"""
         <div
-          id={"canvas-doc-#{@canvas.id}"}
+          id={canvas_root_id(assigns, "doc")}
           class={[
             "overflow-x-auto",
             @inline && "cursor-pointer"
@@ -200,7 +201,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           phx-click={if(@inline, do: "open_canvas")}
           phx-value-canvas-id={if(@inline, do: @canvas.id)}
         >
-          <.render_node node={@canvas.state["root"]} />
+          <.render_node node={@canvas.state["root"]} canvas_id={@canvas.id} />
         </div>
         """
 
@@ -209,7 +210,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
         ~H"""
         <div
-          id={"canvas-flat-#{@canvas.id}"}
+          id={canvas_root_id(assigns, "flat")}
           class={[
             "overflow-x-auto",
             @inline && "cursor-pointer"
@@ -217,7 +218,22 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           phx-click={if(@inline, do: "open_canvas")}
           phx-value-canvas-id={if(@inline, do: @canvas.id)}
         >
-          <.render_node node={@synthetic_root} />
+          <.render_node node={@synthetic_root} canvas_id={@canvas.id} />
+        </div>
+        """
+
+      bare_node?(state) ->
+        ~H"""
+        <div
+          id={canvas_root_id(assigns, "bare")}
+          class={[
+            "overflow-x-auto",
+            @inline && "cursor-pointer"
+          ]}
+          phx-click={if(@inline, do: "open_canvas")}
+          phx-value-canvas-id={if(@inline, do: @canvas.id)}
+        >
+          <.render_node node={@canvas.state} canvas_id={@canvas.id} />
         </div>
         """
 
@@ -228,12 +244,20 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     end
   end
 
+  defp canvas_root_id(assigns, kind) do
+    case assigns[:dom_id_base] do
+      base when is_binary(base) and base != "" -> "#{base}-#{kind}-#{assigns.canvas.id}"
+      _ -> "canvas-#{kind}-#{assigns.canvas.id}"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Node renderer (recursive)
   # ---------------------------------------------------------------------------
 
   @doc false
   attr(:node, :map, required: true)
+  attr(:canvas_id, :string, default: nil)
 
   def render_node(%{node: %{"type" => "stack"} = node} = assigns) do
     assigns = assign(assigns, :node, node)
@@ -243,7 +267,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       class="flex flex-col"
       style={"gap: #{@node["props"]["gap"] || 8}px"}
     >
-      <.render_node :for={child <- @node["children"] || []} node={child} />
+      <.render_node :for={child <- @node["children"] || []} node={child} canvas_id={@canvas_id} />
     </div>
     """
   end
@@ -256,7 +280,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       class="flex flex-row flex-wrap"
       style={"gap: #{@node["props"]["gap"] || 8}px"}
     >
-      <.render_node :for={child <- @node["children"] || []} node={child} />
+      <.render_node :for={child <- @node["children"] || []} node={child} canvas_id={@canvas_id} />
     </div>
     """
   end
@@ -272,7 +296,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       >
         {@node["props"]["title"]}
       </p>
-      <.render_node :for={child <- @node["children"] || []} node={child} />
+      <.render_node :for={child <- @node["children"] || []} node={child} canvas_id={@canvas_id} />
     </div>
     """
   end
@@ -444,7 +468,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           {@complete} / {@total} tasks
         </span>
       </div>
-      <.render_node :for={child <- @node["children"] || []} node={child} />
+      <.render_node :for={child <- @node["children"] || []} node={child} canvas_id={@canvas_id} />
     </div>
     """
   end
@@ -496,7 +520,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       >
         {@node["props"]["label"]}
       </p>
-      <.render_node :for={child <- @node["children"] || []} node={child} />
+      <.render_node :for={child <- @node["children"] || []} node={child} canvas_id={@canvas_id} />
     </div>
     """
   end
@@ -512,10 +536,50 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       ]}
       phx-click="canvas_action"
       phx-value-value={@node["props"]["value"] || ""}
-      phx-value-canvas-id={@node["props"]["canvas_id"] || ""}
+      phx-value-canvas-id={@node["props"]["canvas_id"] || @canvas_id || ""}
     >
       {@node["props"]["label"] || "Action"}
     </button>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "key_value"} = node} = assigns) do
+    rows = node["props"]["rows"] || node["children"] || []
+    assigns = assign(assigns, :node, node) |> assign(:rows, rows)
+
+    ~H"""
+    <div class="rounded-lg border border-base-300 overflow-hidden text-sm">
+      <div
+        :for={row <- @rows}
+        class="flex border-b border-base-300 last:border-b-0"
+      >
+        <div class="w-2/5 px-3 py-1.5 bg-base-200 font-medium text-base-content/70 shrink-0">
+          {row_key(row)}
+        </div>
+        <div class="flex-1 px-3 py-1.5 text-base-content">
+          {row_value(row)}
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "status"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div class="flex items-center gap-2">
+      <span
+        :if={@node["props"]["label"]}
+        class={[
+          "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold",
+          status_color(@node["props"]["color"] || @node["props"]["variant"])
+        ]}
+      >
+        <span :if={@node["props"]["icon"]} class="size-3">{@node["props"]["icon"]}</span>
+        {@node["props"]["label"]}
+      </span>
+    </div>
     """
   end
 
@@ -592,6 +656,15 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   @spec flat_nodes_array?(map()) :: boolean()
   def flat_nodes_array?(%{"nodes" => nodes}) when is_list(nodes) and nodes != [], do: true
   def flat_nodes_array?(_), do: false
+
+  @doc """
+  Returns true if the canvas state is itself a bare renderable node — a map with
+  a `"type"` key. This catches agent-emitted canvases where the node tree was set
+  directly as the state without a canonical or flat-nodes wrapper.
+  """
+  @spec bare_node?(map()) :: boolean()
+  def bare_node?(%{"type" => type}) when is_binary(type), do: true
+  def bare_node?(_), do: false
 
   @doc """
   Converts a flat `%{"nodes" => [...]}` state into a canonical document root node.
@@ -717,4 +790,30 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   defp action_button_class("ghost"), do: "btn-ghost"
   defp action_button_class("outline"), do: "btn-outline"
   defp action_button_class(_), do: "btn-outline"
+
+  # key_value row helpers — supports both list-of-pairs and map-children formats
+  defp row_key([k, _v]), do: k
+  defp row_key(%{"key" => k}), do: k
+  defp row_key(%{"label" => l}), do: l
+  defp row_key(%{"props" => %{"key" => k}}), do: k
+  defp row_key(%{"props" => %{"label" => l}}), do: l
+  defp row_key(_), do: ""
+
+  defp row_value([_k, v]), do: v
+  defp row_value(%{"value" => v}), do: v
+  defp row_value(%{"props" => %{"value" => v}}), do: v
+  defp row_value(_), do: ""
+
+  # status node color helpers
+  defp status_color("success"), do: "bg-success/20 text-success"
+  defp status_color("green"), do: "bg-success/20 text-success"
+  defp status_color("warning"), do: "bg-warning/20 text-warning"
+  defp status_color("yellow"), do: "bg-warning/20 text-warning"
+  defp status_color("amber"), do: "bg-warning/20 text-warning"
+  defp status_color("error"), do: "bg-error/20 text-error"
+  defp status_color("red"), do: "bg-error/20 text-error"
+  defp status_color("info"), do: "bg-info/20 text-info"
+  defp status_color("blue"), do: "bg-info/20 text-info"
+  defp status_color("cyan"), do: "bg-info/20 text-info"
+  defp status_color(_), do: "bg-base-300 text-base-content/70"
 end

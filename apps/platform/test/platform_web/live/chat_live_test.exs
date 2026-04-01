@@ -27,15 +27,67 @@ defmodule PlatformWeb.ChatLiveTest do
     :ok
   end
 
-  defp authenticated_conn(conn) do
-    user =
-      Repo.insert!(%User{
-        email: "chat_test@example.com",
-        name: "Chat Test User",
-        oidc_sub: "oidc-chat-test"
+  defp authenticated_conn(conn, attrs \\ %{}) do
+    user = insert_chat_user(attrs)
+    init_test_session(conn, current_user_id: user.id)
+  end
+
+  defp insert_chat_user(attrs \\ %{}) do
+    Repo.insert!(%User{
+      email: Map.get(attrs, :email, "chat_test@example.com"),
+      name: Map.get(attrs, :name, "Chat Test User"),
+      oidc_sub: Map.get(attrs, :oidc_sub, "oidc-chat-test"),
+      avatar_url: Map.get(attrs, :avatar_url)
+    })
+  end
+
+  defp insert_chat_agent(attrs \\ %{}) do
+    Repo.insert!(%Agent{
+      slug: Map.get(attrs, :slug, "agent-#{System.unique_integer([:positive, :monotonic])}"),
+      name: Map.get(attrs, :name, "Agent #{System.unique_integer([:positive, :monotonic])}"),
+      status: Map.get(attrs, :status, "active"),
+      model_config: %{"primary" => "anthropic/claude-sonnet-4-6"}
+    })
+  end
+
+  defp add_user_message(space, user, content) do
+    {:ok, participant} =
+      Chat.add_participant(space.id, %{
+        participant_type: "user",
+        participant_id: user.id,
+        display_name: user.name || user.email,
+        joined_at: DateTime.utc_now()
       })
 
-    init_test_session(conn, current_user_id: user.id)
+    {:ok, _message} =
+      Chat.post_message(%{
+        space_id: space.id,
+        participant_id: participant.id,
+        content_type: "text",
+        content: content
+      })
+
+    participant
+  end
+
+  defp add_agent_message(space, agent, content) do
+    {:ok, participant} =
+      Chat.add_participant(space.id, %{
+        participant_type: "agent",
+        participant_id: agent.id,
+        display_name: agent.name,
+        joined_at: DateTime.utc_now()
+      })
+
+    {:ok, _message} =
+      Chat.post_message(%{
+        space_id: space.id,
+        participant_id: participant.id,
+        content_type: "text",
+        content: content
+      })
+
+    participant
   end
 
   defp count_occurrences(haystack, needle) do
@@ -94,6 +146,66 @@ defmodule PlatformWeb.ChatLiveTest do
     # Text may appear once in the message stream and once in the textarea
     # (LiveView textarea content patching quirk). At most 2 occurrences.
     assert count_occurrences(html, "hello from test") in [1, 2]
+  end
+
+  test "chat renders stored human avatars for users with avatar_url", %{conn: conn} do
+    avatar_url = "https://issuer.example.com/chat-avatar-user.png"
+    conn = authenticated_conn(conn, %{name: "Avatar User", avatar_url: avatar_url})
+
+    {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+    view
+    |> form("#compose-form", compose: %{text: "avatar message"})
+    |> render_submit()
+
+    html = render(view)
+
+    assert html =~ avatar_url
+    assert html =~ "data-avatar-kind=\"human\""
+    assert html =~ "data-avatar-mode=\"image\""
+  end
+
+  test "chat fallback avatars use varied human palettes while agent visuals stay distinct", %{
+    conn: conn
+  } do
+    conn = authenticated_conn(conn)
+
+    space =
+      Chat.get_space_by_slug("general") ||
+        elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
+
+    user_one =
+      insert_chat_user(%{
+        name: "Alicia Amber",
+        email: "alicia@example.com",
+        oidc_sub: "seed-a"
+      })
+
+    user_two =
+      insert_chat_user(%{
+        name: "Bianca Blue",
+        email: "bianca@example.com",
+        oidc_sub: "seed-b"
+      })
+
+    agent = insert_chat_agent(%{name: "Zip Agent"})
+
+    add_user_message(space, user_one, "first fallback avatar")
+    add_user_message(space, user_two, "second fallback avatar")
+    add_agent_message(space, agent, "agent avatar stays separate")
+
+    {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+    palette_classes =
+      Regex.scan(~r/avatar-fallback-\d+/, html)
+      |> List.flatten()
+      |> Enum.uniq()
+
+    assert "avatar-fallback-5" in palette_classes
+    assert "avatar-fallback-4" in palette_classes
+    assert html =~ "data-avatar-kind=\"human\""
+    assert html =~ "msg-agent-avatar"
+    assert html =~ "agent avatar stays separate"
   end
 
   test "opening a canvas refetches latest state from the database", %{conn: conn} do
@@ -712,6 +824,32 @@ defmodule PlatformWeb.ChatLiveTest do
 
       archived = Chat.get_space_by_slug("to-archive")
       assert archived.archived_at != nil
+    end
+  end
+
+  describe "inline thread" do
+    test "reply button opens inline thread section", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Post a message
+      view
+      |> form("#compose-form", compose: %{text: "Parent message for inline thread"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      # Pre-create a thread so the handler finds it on toggle
+      {:ok, _thread} = Chat.create_thread(space.id, %{parent_message_id: msg.id})
+
+      # Click the Reply button (now toggle_inline_thread)
+      render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
+
+      # Assert the inline thread section appears using element checks
+      # (more reliable with LiveView streams than full HTML matching)
+      assert has_element?(view, "#inline-thread-#{msg.id}")
+      assert has_element?(view, "#inline-thread-compose-#{msg.id}")
     end
   end
 end
