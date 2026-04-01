@@ -24,6 +24,8 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   - `checklist`      — ordered list of checklist items with optional `title` prop; children must be `checklist_item` nodes
   - `checklist_item` — single checklist row with `label` prop and optional `checked` (boolean) and `note` props
   - `action_row`     — horizontal strip of labelled action buttons; each child button has `label`, `event`, and optional `payload` + `variant` props
+  - `status`         — inline status bar with optional `badge` and `title` props
+  - `key_value`      — labelled key/value pair with `key` (or `label`) and `value` props
   """
 
   use PlatformWeb, :html
@@ -516,6 +518,42 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     >
       {@node["props"]["label"] || "Action"}
     </button>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "status"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div class="flex flex-row flex-wrap items-center gap-2">
+      <span
+        :if={@node["props"]["badge"]}
+        class="inline-block rounded-full bg-primary/10 text-primary px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-widest"
+      >
+        {@node["props"]["badge"]}
+      </span>
+      <span
+        :if={@node["props"]["title"]}
+        class="text-sm font-semibold text-base-content"
+      >
+        {@node["props"]["title"]}
+      </span>
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "key_value"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div class="flex flex-row items-baseline gap-2 py-0.5">
+      <span class="text-xs font-semibold uppercase tracking-widest text-base-content/50 shrink-0">
+        {@node["props"]["key"] || @node["props"]["label"] || ""}
+      </span>
+      <span class="text-sm text-base-content">
+        {@node["props"]["value"] || ""}
+      </span>
+    </div>
     """
   end
 
