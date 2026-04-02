@@ -2241,7 +2241,10 @@ defmodule PlatformWeb.ChatLive do
                         {Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0)} replies
                       </span>
                       <span class="ts-time">
-                        {relative_time(Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at))}
+                        {relative_time(
+                          Map.get(@thread_previews, msg.id, %{})
+                          |> Map.get(:last_reply_at)
+                        )}
                       </span>
                     </div>
                   <% else %>
@@ -2259,7 +2262,10 @@ defmodule PlatformWeb.ChatLive do
                           else: "replies"}
                       </span>
                       <span :if={Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at)}>
-                        · Last reply {relative_time(Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at))}
+                        · Last reply {relative_time(
+                          Map.get(@thread_previews, msg.id, %{})
+                          |> Map.get(:last_reply_at)
+                        )}
                       </span>
                     </div>
                   <% end %>
@@ -2293,13 +2299,18 @@ defmodule PlatformWeb.ChatLive do
                     </div>
                     <div class="min-w-0 flex-1">
                       <div class="flex items-baseline gap-2">
-                        <span class="msg-username" style="color: inherit; opacity: 0.85; font-weight: 600;">
+                        <span
+                          class="msg-username"
+                          style="color: inherit; opacity: 0.85; font-weight: 600;"
+                        >
                           {sender_name(@participants_map, tmsg.participant_id)}
                         </span>
                         <span
                           :if={MapSet.member?(@agent_participant_ids, tmsg.participant_id)}
                           class="ai-badge-pill"
-                        >AI</span>
+                        >
+                          AI
+                        </span>
                         <.local_time
                           id={"inline-thread-ts-#{tmsg.id}"}
                           timestamp={tmsg.inserted_at}
