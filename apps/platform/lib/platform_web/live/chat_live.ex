@@ -2200,28 +2200,24 @@ defmodule PlatformWeb.ChatLive do
                 <button
                   phx-click="toggle_inline_thread"
                   phx-value-message-id={msg.id}
-                  class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/70 transition-colors"
+                  class="flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/70 transition-colors"
                 >
-                  <span class="hero-chat-bubble-left size-3.5"></span>
+                  <span>↳</span>
                   <span>
                     {Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0)}
                     {if Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0) == 1,
                       do: "reply",
                       else: "replies"}
                   </span>
-                  <span
-                    class="hero-chevron-down size-3 transition-transform"
-                    style={
-                      if MapSet.member?(@expanded_threads, msg.id), do: "transform: rotate(180deg)"
-                    }
-                  >
+                  <span :if={Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at)} class="text-primary/70">
+                    · Last reply {relative_time(Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at))}
                   </span>
                 </button>
 
                 <%!-- Expanded inline thread messages --%>
                 <div
                   :if={MapSet.member?(@expanded_threads, msg.id)}
-                  class="mt-2 space-y-2 border-l-2 border-base-300 pl-3"
+                  class="mt-2 space-y-2 border-l-2 border-primary/30 bg-base-200/50 rounded-lg px-3 py-2"
                   id={"inline-thread-#{msg.id}"}
                   phx-hook="InlineThread"
                 >
@@ -2230,7 +2226,7 @@ defmodule PlatformWeb.ChatLive do
                     class="flex items-start gap-2"
                   >
                     <div class={[
-                      "flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-medium",
+                      "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-medium",
                       if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
                         do: "bg-primary/10 text-primary",
                         else: "bg-base-200 text-base-content/60"
@@ -2243,6 +2239,10 @@ defmodule PlatformWeb.ChatLive do
                         <span class="text-xs font-medium text-base-content/70">
                           {sender_name(@participants_map, tmsg.participant_id)}
                         </span>
+                        <span
+                          :if={MapSet.member?(@agent_participant_ids, tmsg.participant_id)}
+                          class="inline-flex items-center rounded-full bg-primary/15 text-primary text-[10px] font-medium px-1.5 py-0 ml-1"
+                        >AI</span>
                         <.local_time
                           id={"inline-thread-ts-#{tmsg.id}"}
                           timestamp={tmsg.inserted_at}
@@ -2270,19 +2270,30 @@ defmodule PlatformWeb.ChatLive do
                         rows="1"
                         placeholder="Reply…"
                         autocomplete="off"
-                        class="textarea textarea-bordered w-full resize-none rounded-xl pr-10 text-sm leading-relaxed"
+                        class="textarea w-full resize-none rounded-lg border-base-300/50 pr-10 text-sm leading-relaxed py-1.5 px-2.5"
                         phx-hook="ComposeInput"
                       ></textarea>
                       <button
                         type="submit"
-                        class="absolute right-2 bottom-2 w-7 h-7 rounded-full btn btn-primary btn-xs flex items-center justify-center p-0"
+                        class="absolute right-2 bottom-1.5 btn btn-ghost btn-xs flex items-center justify-center p-0"
                         disabled={is_nil(@current_participant)}
                         title="Reply"
                       >
-                        <span class="hero-paper-airplane size-4 -rotate-45"></span>
+                        <span class="hero-paper-airplane size-3.5 -rotate-45"></span>
                       </button>
                     </div>
                   </.form>
+
+                  <%!-- Collapse thread button --%>
+                  <div class="flex justify-center pt-1">
+                    <button
+                      phx-click="toggle_inline_thread"
+                      phx-value-message-id={msg.id}
+                      class="text-xs text-base-content/50 hover:text-base-content/70 transition-colors"
+                    >
+                      ▲ Collapse thread
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -3656,6 +3667,19 @@ defmodule PlatformWeb.ChatLive do
 
   defp sender_name(participants_map, participant_id) do
     Map.get(participants_map, participant_id, "User")
+  end
+
+  defp relative_time(nil), do: ""
+
+  defp relative_time(datetime) do
+    diff = DateTime.diff(DateTime.utc_now(), datetime, :second)
+
+    cond do
+      diff < 60 -> "just now"
+      diff < 3600 -> "#{div(diff, 60)}m ago"
+      diff < 86400 -> "#{div(diff, 3600)}h ago"
+      true -> "#{div(diff, 86400)}d ago"
+    end
   end
 
   defp avatar_initial(participants_map, participant_id) do
