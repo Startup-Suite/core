@@ -2284,19 +2284,7 @@ defmodule PlatformWeb.ChatLive do
                   class="thread-indicator"
                 >
                   <div class="thread-avatars">
-                    <div class="t-av ai">
-                      {avatar_initial(
-                        @participants_map,
-                        List.first(
-                          Map.keys(
-                            Map.get(@thread_previews, msg.id, %{})
-                            |> Map.get(:participants, %{})
-                          )
-                          |> List.wrap()
-                        )
-                        |> List.first()
-                      )}
-                    </div>
+                    <div class="t-av ai">↩</div>
                   </div>
                   <span class="ti-count">
                     {Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0)}
