@@ -2175,7 +2175,8 @@ defmodule PlatformWeb.ChatLive do
 
                 <%!-- Image gallery --%>
                 <% images = Enum.filter(Map.get(@attachments_map, msg.id, []), &image_attachment?/1) %>
-                <% non_images = Enum.reject(Map.get(@attachments_map, msg.id, []), &image_attachment?/1) %>
+                <% non_images =
+                  Enum.reject(Map.get(@attachments_map, msg.id, []), &image_attachment?/1) %>
                 <div
                   :if={images != []}
                   class={"image-gallery count-#{min(length(images), 5)}"}
@@ -2194,7 +2195,14 @@ defmodule PlatformWeb.ChatLive do
                     />
                     <span class="gallery-filename">{attachment.filename}</span>
                     <div class="gallery-overlay">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line
+                          x1="11"
+                          y1="8"
+                          x2="11"
+                          y2="14"
+                        /><line x1="8" y1="11" x2="14" y2="11" />
+                      </svg>
                     </div>
                   </a>
                 </div>
@@ -2582,16 +2590,25 @@ defmodule PlatformWeb.ChatLive do
                 <%!-- Header --%>
                 <div class="upload-header">
                   <div class="upload-header-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                        cx="8.5"
+                        cy="8.5"
+                        r="1.5"
+                      /><path d="M21 15l-5-5L5 21" />
+                    </svg>
                   </div>
                   <div class="upload-header-text">
                     <div class="upload-title">Share Images</div>
                     <div class="upload-subtitle">
-                      Upload images to <strong>{"##{(@active_space && @active_space.name) || ""}"}</strong>
+                      Upload images to
+                      <strong>{"##{(@active_space && @active_space.name) || ""}"}</strong>
                     </div>
                   </div>
                   <button type="button" class="upload-close" phx-click="hide_upload_dialog">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
                   </button>
                 </div>
 
@@ -2601,7 +2618,14 @@ defmodule PlatformWeb.ChatLive do
                   class="upload-dropzone"
                   phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                 >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line
+                      x1="12"
+                      y1="3"
+                      x2="12"
+                      y2="15"
+                    />
+                  </svg>
                   <div class="upload-dropzone-title">Drag & drop images here</div>
                   <div class="upload-dropzone-or">or</div>
                   <button
@@ -2612,7 +2636,9 @@ defmodule PlatformWeb.ChatLive do
                     Browse files
                   </button>
                   <div class="upload-dropzone-sub">You can also paste images with ⌘V</div>
-                  <div class="upload-dropzone-formats">PNG · JPG · GIF · WebP · SVG — max 15 MB each</div>
+                  <div class="upload-dropzone-formats">
+                    PNG · JPG · GIF · WebP · SVG — max 15 MB each
+                  </div>
                 </div>
 
                 <%!-- Populated: Image Grid --%>
@@ -2620,20 +2646,43 @@ defmodule PlatformWeb.ChatLive do
                   <div class="upload-grid">
                     <div :for={entry <- @uploads.attachments.entries} class="upload-thumb">
                       <%= if String.starts_with?(entry.client_type, "image/") do %>
-                        <.live_img_preview entry={entry} class="upload-thumb-inner" style="width:100%;height:100%;object-fit:cover" />
+                        <.live_img_preview
+                          entry={entry}
+                          class="upload-thumb-inner"
+                          style="width:100%;height:100%;object-fit:cover"
+                        />
                       <% else %>
                         <div class="upload-thumb-inner">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                          >
+                            <rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                              cx="8.5"
+                              cy="8.5"
+                              r="1.5"
+                            /><path d="M21 15l-5-5L5 21" />
+                          </svg>
                         </div>
                       <% end %>
                       <span class="upload-thumb-name">{entry.client_name}</span>
-                      <button type="button" class="upload-thumb-remove" phx-click="cancel_upload" phx-value-ref={entry.ref}>×</button>
+                      <button
+                        type="button"
+                        class="upload-thumb-remove"
+                        phx-click="cancel_upload"
+                        phx-value-ref={entry.ref}
+                      >
+                        ×
+                      </button>
                       <%!-- Progress bar --%>
                       <div
                         :if={entry.progress > 0 and entry.progress < 100}
                         style="position:absolute;bottom:0;left:0;right:0;height:3px;background:rgba(0,0,0,0.3)"
                       >
-                        <div style={"height:100%;background:var(--cyan);width:#{entry.progress}%;transition:width 300ms ease"}></div>
+                        <div style={"height:100%;background:var(--cyan);width:#{entry.progress}%;transition:width 300ms ease"}>
+                        </div>
                       </div>
                     </div>
                     <%!-- Add more tile --%>
@@ -2642,7 +2691,9 @@ defmodule PlatformWeb.ChatLive do
                       class="upload-add-tile"
                       phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                     >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
                       Add more
                     </button>
                   </div>
@@ -2650,12 +2701,20 @@ defmodule PlatformWeb.ChatLive do
 
                 <%!-- Upload errors --%>
                 <div :if={upload_errors(@uploads.attachments) != []} style="padding:0 20px">
-                  <p :for={error <- upload_errors(@uploads.attachments)} class="text-xs" style="color:var(--danger);margin-bottom:4px">
+                  <p
+                    :for={error <- upload_errors(@uploads.attachments)}
+                    class="text-xs"
+                    style="color:var(--danger);margin-bottom:4px"
+                  >
                     {upload_error_to_string(error)}
                   </p>
                 </div>
                 <div :for={entry <- @uploads.attachments.entries} style="padding:0 20px">
-                  <p :for={error <- upload_errors(@uploads.attachments, entry)} class="text-xs" style="color:var(--danger);margin-bottom:4px">
+                  <p
+                    :for={error <- upload_errors(@uploads.attachments, entry)}
+                    class="text-xs"
+                    style="color:var(--danger);margin-bottom:4px"
+                  >
                     {entry.client_name}: {upload_error_to_string(error)}
                   </p>
                 </div>
@@ -2665,7 +2724,14 @@ defmodule PlatformWeb.ChatLive do
                   <div class="upload-agent-label">Tag an agent</div>
                   <div class="upload-agent-chips">
                     <button
-                      :for={{slug, label} <- [{"beacon", "Beacon"}, {"pixel", "Pixel"}, {"builder", "Builder"}, {"higgins", "Higgins"}]}
+                      :for={
+                        {slug, label} <- [
+                          {"beacon", "Beacon"},
+                          {"pixel", "Pixel"},
+                          {"builder", "Builder"},
+                          {"higgins", "Higgins"}
+                        ]
+                      }
                       type="button"
                       class={"agent-chip #{slug}#{if MapSet.member?(@upload_tagged_agents, slug), do: " selected", else: ""}"}
                       phx-click="toggle_upload_agent_tag"
@@ -2695,14 +2761,18 @@ defmodule PlatformWeb.ChatLive do
                     {if length(@uploads.attachments.entries) == 1, do: "image", else: "images"} selected
                   </div>
                   <div class="upload-footer-actions">
-                    <button type="button" class="upload-btn-cancel" phx-click="hide_upload_dialog">Cancel</button>
+                    <button type="button" class="upload-btn-cancel" phx-click="hide_upload_dialog">
+                      Cancel
+                    </button>
                     <button
                       type="button"
                       class="upload-btn-send"
                       phx-click="send_upload"
                       disabled={@uploads.attachments.entries == []}
                     >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+                      </svg>
                       Send to {"##{(@active_space && @active_space.name) || ""}"}
                     </button>
                   </div>
