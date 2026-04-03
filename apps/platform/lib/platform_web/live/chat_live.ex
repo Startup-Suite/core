@@ -2536,8 +2536,12 @@ defmodule PlatformWeb.ChatLive do
                 >
                   <span class="hero-plus size-5"></span>
                 </button>
-                <%!-- Hidden file input keeps LiveView upload channel active for drag-drop --%>
-                <.live_file_input upload={@uploads.attachments} class="hidden" />
+                <%!-- Hidden file input — single instance, used by both compose attach button and upload panel --%>
+                <.live_file_input
+                  upload={@uploads.attachments}
+                  class="hidden"
+                  id="upload-file-trigger"
+                />
 
                 <textarea
                   name="compose[text]"
@@ -2779,8 +2783,7 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               </div>
             </div>
-            <%!-- Hidden file input trigger for upload panel buttons --%>
-            <.live_file_input upload={@uploads.attachments} class="hidden" id="upload-file-trigger" />
+            <%!-- Upload file input is in the compose area above (single instance to avoid duplicate IDs) --%>
           <% end %>
         </div>
 
