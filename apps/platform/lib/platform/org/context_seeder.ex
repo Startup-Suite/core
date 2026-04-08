@@ -18,7 +18,13 @@ defmodule Platform.Org.ContextSeeder do
   def seed_defaults(workspace_id \\ nil) do
     existing_keys =
       ContextFile
-      |> where([cf], cf.workspace_id == ^workspace_id)
+      |> then(fn q ->
+        if is_nil(workspace_id) do
+          where(q, [cf], is_nil(cf.workspace_id))
+        else
+          where(q, [cf], cf.workspace_id == ^workspace_id)
+        end
+      end)
       |> select([cf], cf.file_key)
       |> Repo.all()
       |> MapSet.new()
