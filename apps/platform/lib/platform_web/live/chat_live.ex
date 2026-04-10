@@ -29,6 +29,8 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.AttachmentStorage
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
+  alias Platform.Meetings
+  alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
   @message_limit 50
@@ -79,6 +81,9 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:canvases_by_message_id, %{})
       |> assign(:active_canvas, nil)
       |> assign(:show_canvases, false)
+      |> assign(:meeting_active, false)
+      |> assign(:meeting_participants, [])
+      |> assign(:meeting_participant_count, 0)
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -137,6 +142,7 @@ defmodule PlatformWeb.ChatLive do
       if prev = socket.assigns.active_space do
         ChatPubSub.unsubscribe(prev.id)
         Phoenix.PubSub.unsubscribe(Platform.PubSub, "active_agent:#{prev.id}")
+        MeetingsPubSub.unsubscribe_presence(prev.id)
 
         if connected?(socket) do
           ChatPresence.untrack_in_space(self(), prev.id, socket.assigns.user_id)
@@ -160,6 +166,7 @@ defmodule PlatformWeb.ChatLive do
       if connected?(socket) do
         ChatPubSub.subscribe(space.id)
         Phoenix.PubSub.subscribe(Platform.PubSub, "active_agent:#{space.id}")
+        MeetingsPubSub.subscribe_presence(space.id)
       end
 
       participant = ensure_participant(space.id, socket.assigns.user_id)
@@ -206,6 +213,11 @@ defmodule PlatformWeb.ChatLive do
       {active_agent_participant_id, active_agent_name} =
         resolve_active_agent(space.id, participants)
 
+      # Load meeting presence for this space
+      meeting_participants = Meetings.list_active_participants_for_space(space.id)
+      meeting_active = meeting_participants != []
+      meeting_participant_count = length(meeting_participants)
+
       # Refresh sidebar lists
       channels = Chat.list_spaces(kind: "channel")
       user_convos = Chat.list_user_conversations(socket.assigns.user_id)
@@ -246,6 +258,9 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:canvases_by_message_id, canvases_by_message_id)
        |> assign(:active_canvas, nil)
        |> assign(:show_canvases, false)
+       |> assign(:meeting_active, meeting_active)
+       |> assign(:meeting_participants, meeting_participants)
+       |> assign(:meeting_participant_count, meeting_participant_count)
        |> assign(:active_agent_participant_id, active_agent_participant_id)
        |> assign(:active_agent_name, active_agent_name)
        |> assign(:mobile_browser_open, false)
@@ -1345,6 +1360,25 @@ defmodule PlatformWeb.ChatLive do
      |> assign(:active_agent_name, name)}
   end
 
+  # Meeting presence updates from Meetings.PubSub
+  def handle_info(
+        {:meeting_presence_update, %{space_id: space_id, active: active, count: count}},
+        socket
+      ) do
+    if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
+      meeting_participants =
+        if active, do: Meetings.list_active_participants_for_space(space_id), else: []
+
+      {:noreply,
+       socket
+       |> assign(:meeting_active, active)
+       |> assign(:meeting_participants, meeting_participants)
+       |> assign(:meeting_participant_count, count)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
@@ -1577,6 +1611,31 @@ defmodule PlatformWeb.ChatLive do
                 >
                   — {length(Enum.filter(@space_participants, &is_nil(&1.left_at)))} members
                 </span>
+              </span>
+
+              <%!-- Meeting presence indicator --%>
+              <span
+                :if={@meeting_active}
+                class="flex items-center gap-1.5 ml-2 px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-medium cursor-pointer hover:bg-success/20 transition-colors"
+                title={"#{@meeting_participant_count} in meeting"}
+              >
+                <span class="relative flex h-2 w-2">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75">
+                  </span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                </span>
+                <%!-- Participant avatars (max 3) --%>
+                <span
+                  :for={p <- Enum.take(@meeting_participants, 3)}
+                  class="inline-flex items-center justify-center size-5 rounded-full bg-success/20 text-[0.6rem] font-bold"
+                  title={p.display_name || p.name || p.identity}
+                >
+                  {String.first(p.display_name || p.name || p.identity || "?")}
+                </span>
+                <span :if={@meeting_participant_count > 3} class="text-[0.65rem]">
+                  +{@meeting_participant_count - 3}
+                </span>
+                <span class="text-[0.65rem]">In call</span>
               </span>
 
               <%!-- Promote to channel button for groups --%>

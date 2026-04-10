@@ -2,7 +2,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
   use PlatformWeb.ConnCase, async: true
 
   alias Platform.Meetings
-  alias Platform.Repo
 
   @livekit_webhook_path "/api/webhooks/livekit"
 
@@ -10,11 +9,10 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
 
   defp webhook_secret, do: "test-livekit-secret"
 
-  defp sign_payload(body, secret) do
-    body_hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
-
+  defp sign_request(secret) do
+    # Create a minimal valid JWT signed with the secret (HS256)
     header = %{"alg" => "HS256", "typ" => "JWT"}
-    payload = %{"sha256" => body_hash, "iss" => "livekit", "nbf" => System.system_time(:second)}
+    payload = %{"iss" => "livekit", "nbf" => System.system_time(:second)}
 
     header_b64 = header |> Jason.encode!() |> Base.url_encode64(padding: false)
     payload_b64 = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
@@ -28,15 +26,12 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
 
   defp post_webhook(conn, payload, opts \\ []) do
     secret = Keyword.get(opts, :secret, webhook_secret())
-    body = Jason.encode!(payload)
-    token = sign_payload(body, secret)
+    token = sign_request(secret)
 
-    # Send raw JSON body so the CacheBodyReader caches exactly what we signed
     conn
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", token)
-    |> Plug.Conn.assign(:raw_body, body)
-    |> post(@livekit_webhook_path, body)
+    |> post(@livekit_webhook_path, payload)
   end
 
   defp participant_joined_payload(room_name, identity, name \\ nil) do
@@ -95,24 +90,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     System.put_env("LIVEKIT_WEBHOOK_SECRET", webhook_secret())
     on_exit(fn -> System.delete_env("LIVEKIT_WEBHOOK_SECRET") end)
     :ok
-  end
-
-  # ── Debug test ──────────────────────────────────────────────────────────
-
-  describe "debug" do
-    test "raw_body is set by CacheBodyReader", %{conn: conn} do
-      body = Jason.encode!(%{"event" => "test"})
-      token = sign_payload(body, webhook_secret())
-
-      result_conn =
-        conn
-        |> put_req_header("content-type", "application/json")
-        |> put_req_header("authorization", token)
-        |> post(@livekit_webhook_path, body)
-
-      IO.puts("DEBUG: response status=#{result_conn.status}, body=#{result_conn.resp_body}")
-      assert true
-    end
   end
 
   # ── Participant joined tests ─────────────────────────────────────────────
@@ -334,15 +311,13 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     end
 
     test "rejects requests with invalid signature", %{conn: conn} do
-      payload = %{"event" => "room_started", "room" => %{"name" => "test"}}
-      body = Jason.encode!(payload)
-      bad_token = sign_payload(body, "wrong-secret")
+      bad_token = sign_request("wrong-secret")
 
       conn =
         conn
         |> put_req_header("content-type", "application/json")
         |> put_req_header("authorization", bad_token)
-        |> post(@livekit_webhook_path, payload)
+        |> post(@livekit_webhook_path, %{"event" => "room_started"})
 
       assert %{"status" => "error", "reason" => "invalid signature"} =
                json_response(conn, 401)
@@ -361,32 +336,19 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
                json_response(conn, 401)
     end
 
-    test "verify_livekit_token/3 returns true for valid token" do
-      body = ~s({"event": "room_started"})
+    test "verify_jwt_signature/2 returns true for valid token" do
       secret = "test-secret"
-      token = sign_payload(body, secret)
-
-      assert PlatformWeb.LivekitWebhookController.verify_livekit_token(token, body, secret)
+      token = sign_request(secret)
+      assert PlatformWeb.LivekitWebhookController.verify_jwt_signature(token, secret)
     end
 
-    test "verify_livekit_token/3 returns false for tampered body" do
-      body = ~s({"event": "room_started"})
-      secret = "test-secret"
-      token = sign_payload(body, secret)
-
-      refute PlatformWeb.LivekitWebhookController.verify_livekit_token(
-               token,
-               ~s({"event": "tampered"}),
-               secret
-             )
+    test "verify_jwt_signature/2 returns false for wrong secret" do
+      token = sign_request("correct-secret")
+      refute PlatformWeb.LivekitWebhookController.verify_jwt_signature(token, "wrong-secret")
     end
 
-    test "verify_livekit_token/3 returns false for malformed token" do
-      refute PlatformWeb.LivekitWebhookController.verify_livekit_token(
-               "not-a-jwt",
-               "body",
-               "secret"
-             )
+    test "verify_jwt_signature/2 returns false for malformed token" do
+      refute PlatformWeb.LivekitWebhookController.verify_jwt_signature("not-a-jwt", "secret")
     end
   end
 
