@@ -157,7 +157,8 @@ defmodule PlatformWeb.OrgContextLive do
     file_key =
       if String.ends_with?(file_key, ".md"), do: file_key, else: file_key <> ".md"
 
-    template = Context.default_template(file_key) || "# #{String.replace(file_key, ".md", "")}\n\n"
+    template =
+      Context.default_template(file_key) || "# #{String.replace(file_key, ".md", "")}\n\n"
 
     case Context.upsert_file(%{
            file_key: file_key,
@@ -306,7 +307,8 @@ defmodule PlatformWeb.OrgContextLive do
           <div class="flex-1 overflow-y-auto py-2">
             <%= if @files == [] do %>
               <div class="px-4 py-8 text-center">
-                <span class="hero-document-text mb-2 size-8 text-base-content/30 mx-auto block"></span>
+                <span class="hero-document-text mb-2 size-8 text-base-content/30 mx-auto block">
+                </span>
                 <p class="text-sm text-base-content/40 mb-3">No context files yet</p>
                 <button
                   phx-click="seed_defaults"
@@ -342,8 +344,7 @@ defmodule PlatformWeb.OrgContextLive do
               phx-click="seed_defaults"
               class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-base-content/40 hover:bg-base-300 hover:text-base-content/60 transition-colors"
             >
-              <span class="hero-arrow-path size-3.5"></span>
-              Seed missing defaults
+              <span class="hero-arrow-path size-3.5"></span> Seed missing defaults
             </button>
           </div>
         <% else %>
@@ -363,12 +364,10 @@ defmodule PlatformWeb.OrgContextLive do
           <div class="flex-1 overflow-y-auto px-4 py-2">
             <div class="space-y-2 text-xs text-base-content/50">
               <div class="flex items-center gap-2">
-                <span class="inline-block size-2 rounded-full bg-info"></span>
-                Daily notes
+                <span class="inline-block size-2 rounded-full bg-info"></span> Daily notes
               </div>
               <div class="flex items-center gap-2">
-                <span class="inline-block size-2 rounded-full bg-success"></span>
-                Long-term memory
+                <span class="inline-block size-2 rounded-full bg-success"></span> Long-term memory
               </div>
             </div>
           </div>
@@ -450,8 +449,7 @@ defmodule PlatformWeb.OrgContextLive do
             phx-click="start_edit"
             class="btn btn-primary btn-sm gap-1"
           >
-            <span class="hero-pencil-square size-4"></span>
-            Edit
+            <span class="hero-pencil-square size-4"></span> Edit
           </button>
           <div class="relative">
             <button
@@ -507,8 +505,7 @@ defmodule PlatformWeb.OrgContextLive do
           {line_count(@file.content)} lines
         </span>
         <span class="flex items-center gap-1">
-          <span class="hero-arrow-up-circle size-3.5"></span>
-          v{@file.version}
+          <span class="hero-arrow-up-circle size-3.5"></span> v{@file.version}
         </span>
         <span :if={@file.inserted_at} class="flex items-center gap-1">
           <span class="hero-clock size-3.5"></span>
@@ -547,14 +544,16 @@ defmodule PlatformWeb.OrgContextLive do
             phx-click={JS.dispatch("org-context:save", to: "#org-context-editor")}
             class="btn btn-primary btn-sm gap-1"
           >
-            <span class="hero-check size-4"></span>
-            Save
+            <span class="hero-check size-4"></span> Save
           </button>
         </div>
       </div>
 
       <%!-- Error banner --%>
-      <div :if={@save_error} class="mx-6 mt-3 rounded-lg bg-error/10 border border-error/20 px-4 py-2 text-sm text-error">
+      <div
+        :if={@save_error}
+        class="mx-6 mt-3 rounded-lg bg-error/10 border border-error/20 px-4 py-2 text-sm text-error"
+      >
         {@save_error}
       </div>
 
@@ -622,10 +621,18 @@ defmodule PlatformWeb.OrgContextLive do
                   do: "border-base-300 bg-base-200/50 opacity-50 cursor-not-allowed",
                   else: "border-base-300 hover:border-primary hover:bg-primary/5 cursor-pointer"
                 ),
-                if(@new_file_key == key, do: "border-primary bg-primary/5 ring-1 ring-primary", else: "")
+                if(@new_file_key == key,
+                  do: "border-primary bg-primary/5 ring-1 ring-primary",
+                  else: ""
+                )
               ]}
             >
-              <span class={[file_icon(key), "size-5 mb-2", if(existing, do: "text-base-content/30", else: "text-primary")]}></span>
+              <span class={[
+                file_icon(key),
+                "size-5 mb-2",
+                if(existing, do: "text-base-content/30", else: "text-primary")
+              ]}>
+              </span>
               <span class="text-sm font-medium">{key}</span>
               <span class="text-xs text-base-content/40 mt-0.5">
                 {template_description(key)}
@@ -658,8 +665,7 @@ defmodule PlatformWeb.OrgContextLive do
             disabled={@new_file_key == ""}
             class="btn btn-primary btn-sm gap-1"
           >
-            <span class="hero-plus size-4"></span>
-            Create
+            <span class="hero-plus size-4"></span> Create
           </button>
         </div>
       </div>
@@ -713,7 +719,8 @@ defmodule PlatformWeb.OrgContextLive do
                         <span class={[
                           "inline-block size-2 rounded-full",
                           if(entry.memory_type == "daily", do: "bg-info", else: "bg-success")
-                        ]}></span>
+                        ]}>
+                        </span>
                         <span class="text-xs font-medium text-base-content/60">
                           {String.capitalize(String.replace(entry.memory_type, "_", " "))}
                         </span>
@@ -752,8 +759,11 @@ defmodule PlatformWeb.OrgContextLive do
     }
 
     case Earmark.as_html(content, options) do
-      {:ok, html, _warnings} -> html
-      {:error, _html, _errors} -> Phoenix.HTML.html_escape(content) |> Phoenix.HTML.safe_to_string()
+      {:ok, html, _warnings} ->
+        html
+
+      {:error, _html, _errors} ->
+        Phoenix.HTML.html_escape(content) |> Phoenix.HTML.safe_to_string()
     end
   end
 
