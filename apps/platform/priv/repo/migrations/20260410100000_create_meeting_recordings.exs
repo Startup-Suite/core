@@ -9,30 +9,25 @@ defmodule Platform.Repo.Migrations.CreateMeetingRecordings do
         null: false
       )
 
+      add(:space_id, references(:chat_spaces, type: :binary_id, on_delete: :delete_all))
+
       add(:egress_id, :string)
-      add(:status, :string, null: false, default: "pending")
+      add(:status, :string, null: false, default: "starting")
       add(:file_path, :string)
-      add(:file_url, :string)
+      add(:file_size, :bigint)
       add(:duration_seconds, :integer)
-      add(:file_size_bytes, :bigint)
-      add(:format, :string, default: "mp4")
+      add(:content_type, :string, default: "video/webm")
+      add(:started_by, references(:users, type: :uuid, on_delete: :nilify_all))
       add(:started_at, :utc_datetime_usec)
       add(:ended_at, :utc_datetime_usec)
-      add(:started_by, :string)
       add(:metadata, :map, default: %{})
 
       timestamps(type: :utc_datetime_usec)
     end
 
     create(index(:meeting_recordings, [:room_id]))
-    create(index(:meeting_recordings, [:egress_id]))
+    create(index(:meeting_recordings, [:space_id]))
+    create(unique_index(:meeting_recordings, [:egress_id]))
     create(index(:meeting_recordings, [:status]))
-
-    # For listing recordings by space — join through meeting_rooms
-    create(
-      index(:meeting_recordings, [:room_id, :started_at],
-        name: :meeting_recordings_room_started_idx
-      )
-    )
   end
 end

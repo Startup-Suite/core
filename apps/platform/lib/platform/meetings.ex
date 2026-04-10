@@ -9,7 +9,7 @@ defmodule Platform.Meetings do
 
   import Ecto.Query
 
-  alias Platform.Meetings.{LivekitEgress, Participant, Recording, Room}
+  alias Platform.Meetings.{Participant, Recording, Room}
   alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
@@ -337,79 +337,6 @@ defmodule Platform.Meetings do
 
   # ── Recordings ───────────────────────────────────────────────────────────
 
-  @doc """
-  Start recording a meeting room via LiveKit Egress.
-
-  Creates a `meeting_recordings` record in `pending` status, then calls the
-  LiveKit Egress API to start a room composite recording. On success, updates
-  the record with the egress ID and transitions to `recording` status.
-
-  Returns `{:ok, recording}` or `{:error, reason}`.
-  """
-  @spec start_recording(Room.t(), map()) :: {:ok, Recording.t()} | {:error, term()}
-  def start_recording(%Room{} = room, opts \\ %{}) do
-    started_by = Map.get(opts, :started_by)
-    format = Map.get(opts, :format, "mp4")
-
-    # Create the recording record first
-    recording_attrs = %{
-      room_id: room.id,
-      status: "pending",
-      format: format,
-      started_by: started_by,
-      started_at: DateTime.utc_now()
-    }
-
-    with {:ok, recording} <- create_recording(recording_attrs),
-         {:ok, egress_info} <-
-           LivekitEgress.start_room_composite(
-             room.livekit_room_name,
-             format: format,
-             audio_only: Map.get(opts, :audio_only, false)
-           ) do
-      egress_id = Map.get(egress_info, "egressId") || Map.get(egress_info, "egress_id")
-
-      update_recording(recording, %{
-        egress_id: egress_id,
-        status: "recording",
-        metadata: Map.merge(recording.metadata || %{}, %{"egress_info" => egress_info})
-      })
-      |> tap(fn
-        {:ok, rec} ->
-          MeetingsPubSub.broadcast_room(room.id, {:recording_started, rec})
-          broadcast_presence_update(room.space_id)
-
-        _ ->
-          :ok
-      end)
-    else
-      {:error, reason} ->
-        Logger.error("[Meetings] Failed to start recording: #{inspect(reason)}")
-        {:error, reason}
-    end
-  end
-
-  @doc """
-  Stop an active recording by its egress ID.
-
-  Calls the LiveKit Egress API to stop the egress. The actual status update
-  happens when the `egress_ended` webhook fires.
-  """
-  @spec stop_recording(Recording.t()) :: {:ok, map()} | {:error, term()}
-  def stop_recording(%Recording{egress_id: nil}), do: {:error, :no_egress_id}
-
-  def stop_recording(%Recording{egress_id: egress_id} = recording) do
-    case LivekitEgress.stop_egress(egress_id) do
-      {:ok, _egress_info} = result ->
-        # Mark as pending completion — webhook will finalize
-        update_recording(recording, %{status: "completed", ended_at: DateTime.utc_now()})
-        result
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
   @doc "Create a recording record."
   @spec create_recording(map()) :: {:ok, Recording.t()} | {:error, Ecto.Changeset.t()}
   def create_recording(attrs) do
@@ -462,11 +389,11 @@ defmodule Platform.Meetings do
     |> Repo.all()
   end
 
-  @doc "Get the active recording for a room (status = recording), if any."
+  @doc "Get the active recording for a room (status in starting/active), if any."
   @spec get_active_recording(binary()) :: Recording.t() | nil
   def get_active_recording(room_id) do
     from(r in Recording,
-      where: r.room_id == ^room_id and r.status == "recording",
+      where: r.room_id == ^room_id and r.status in ["starting", "active"],
       order_by: [desc: r.started_at],
       limit: 1
     )
@@ -477,7 +404,7 @@ defmodule Platform.Meetings do
   @spec recording?(binary()) :: boolean()
   def recording?(room_id) do
     from(r in Recording,
-      where: r.room_id == ^room_id and r.status == "recording"
+      where: r.room_id == ^room_id and r.status in ["starting", "active"]
     )
     |> Repo.exists?()
   end

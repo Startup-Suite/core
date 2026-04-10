@@ -3,12 +3,13 @@ defmodule Platform.Meetings.Recording do
   Schema for a meeting recording created via LiveKit Egress.
 
   Lifecycle:
-    pending → recording → completed | failed
+    starting → active → processing → completed | failed
 
-  - `pending`   — egress requested but not yet confirmed started
-  - `recording` — egress is actively recording
-  - `completed` — egress finished, file available
-  - `failed`    — egress failed or was cancelled
+  - `starting`    — egress requested, waiting for LiveKit confirmation
+  - `active`      — egress is actively recording
+  - `processing`  — egress ended, file being finalized
+  - `completed`   — file available for playback
+  - `failed`      — egress failed or was cancelled
   """
 
   use Ecto.Schema
@@ -17,28 +18,28 @@ defmodule Platform.Meetings.Recording do
   @primary_key {:id, Platform.Types.UUIDv7, autogenerate: true}
   @foreign_key_type :binary_id
 
-  @statuses ~w(pending recording completed failed)
+  @statuses ~w(starting active processing completed failed)
 
   schema "meeting_recordings" do
     field(:egress_id, :string)
-    field(:status, :string, default: "pending")
+    field(:status, :string, default: "starting")
     field(:file_path, :string)
-    field(:file_url, :string)
+    field(:file_size, :integer)
     field(:duration_seconds, :integer)
-    field(:file_size_bytes, :integer)
-    field(:format, :string, default: "mp4")
+    field(:content_type, :string, default: "video/webm")
     field(:started_at, :utc_datetime_usec)
     field(:ended_at, :utc_datetime_usec)
-    field(:started_by, :string)
     field(:metadata, :map, default: %{})
 
     belongs_to(:room, Platform.Meetings.Room)
+    belongs_to(:space, Platform.Chat.Space, foreign_key: :space_id)
+    belongs_to(:started_by_user, Platform.Accounts.User, foreign_key: :started_by)
 
     timestamps(type: :utc_datetime_usec)
   end
 
   @required ~w(room_id)a
-  @optional ~w(egress_id status file_path file_url duration_seconds file_size_bytes format started_at ended_at started_by metadata)a
+  @optional ~w(space_id egress_id status file_path file_size duration_seconds content_type started_at ended_at started_by metadata)a
 
   def changeset(recording, attrs) do
     recording
@@ -46,5 +47,8 @@ defmodule Platform.Meetings.Recording do
     |> validate_required(@required)
     |> validate_inclusion(:status, @statuses)
     |> foreign_key_constraint(:room_id)
+    |> foreign_key_constraint(:space_id)
+    |> foreign_key_constraint(:started_by)
+    |> unique_constraint(:egress_id)
   end
 end
