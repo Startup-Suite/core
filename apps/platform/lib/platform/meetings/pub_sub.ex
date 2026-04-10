@@ -18,6 +18,10 @@ defmodule Platform.Meetings.PubSub do
   | `meetings:room:{room_id}`          | `{:room_finished, room}`                 | `%Meetings.Room{}`                     |
   | `meetings:room:{room_id}`          | `{:room_activated, room}`                | `%Meetings.Room{}`                     |
   | `meetings:presence:{space_id}`     | `{:meeting_presence_update, data}`       | `%{space_id, active, count}`           |
+  | `meetings:room:{room_id}`          | `{:recording_started, rec}`              | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_stopped, rec}`              | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_completed, rec}`            | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_failed, rec}`               | `%Meetings.Recording{}`               |
   """
 
   @pubsub Platform.PubSub
