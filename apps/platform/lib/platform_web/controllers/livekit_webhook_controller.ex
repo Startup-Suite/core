@@ -8,7 +8,8 @@ defmodule PlatformWeb.LivekitWebhookController do
   - `participant_left` — set `left_at`, broadcast presence
   - `room_started` — update room status to `active`
   - `room_finished` — update room status to `idle`, clean up participants
-  - `egress_ended` — update recording status, store file URL
+  - `egress_started` — update recording status to `active`
+  - `egress_ended` — update recording with file path, duration, final status
 
   Webhook payloads are verified using `LIVEKIT_WEBHOOK_SECRET` env var.
   The Authorization header must contain a valid HS256 JWT signed with the secret.
@@ -18,6 +19,7 @@ defmodule PlatformWeb.LivekitWebhookController do
   use PlatformWeb, :controller
 
   alias Platform.Meetings
+  alias Platform.Meetings.PubSub, as: MeetingsPubSub
 
   require Logger
 
@@ -36,6 +38,7 @@ defmodule PlatformWeb.LivekitWebhookController do
       "participant_left" -> handle_participant_left(conn, params)
       "room_started" -> handle_room_started(conn, params)
       "room_finished" -> handle_room_finished(conn, params)
+      "egress_started" -> handle_egress_started(conn, params)
       "egress_ended" -> handle_egress_ended(conn, params)
       _ -> conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unhandled event"})
     end
@@ -162,36 +165,94 @@ defmodule PlatformWeb.LivekitWebhookController do
     end
   end
 
-  defp handle_egress_ended(conn, params) do
-    room_name = get_in(params, ["room", "name"])
+  defp handle_egress_started(conn, params) do
     egress_id = get_in(params, ["egressInfo", "egressId"])
-    file_url = extract_file_url(params)
-    status = get_in(params, ["egressInfo", "status"])
+    room_name = get_in(params, ["egressInfo", "roomName"]) || get_in(params, ["room", "name"])
 
-    case Meetings.get_room_by_name(room_name) do
+    case Meetings.get_recording_by_egress_id(egress_id) do
       nil ->
-        Logger.warning("[LiveKit Webhook] egress_ended for unknown room: #{room_name}")
-        conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unknown room"})
+        Logger.warning(
+          "[LiveKit Webhook] egress_started for unknown recording: egress_id=#{egress_id}"
+        )
 
-      room ->
-        egress_info = %{
-          "egress_id" => egress_id,
-          "file_url" => file_url,
-          "status" => status,
-          "ended_at" => DateTime.utc_now() |> DateTime.to_iso8601()
-        }
+        conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unknown recording"})
 
-        existing_egresses = Map.get(room.metadata || %{}, "egresses", [])
+      recording ->
+        case Meetings.update_recording(recording, %{
+               status: "active",
+               metadata: Map.merge(recording.metadata || %{}, %{"room_name" => room_name})
+             }) do
+          {:ok, updated} ->
+            MeetingsPubSub.broadcast_recording_update(
+              recording.room_id,
+              {:recording_active, updated}
+            )
 
-        updated_metadata =
-          Map.put(room.metadata || %{}, "egresses", existing_egresses ++ [egress_info])
+            Logger.info("[LiveKit Webhook] Egress started: #{egress_id} for room #{room_name}")
 
-        case room
-             |> Platform.Meetings.Room.changeset(%{metadata: updated_metadata})
-             |> Platform.Repo.update() do
-          {:ok, _room} ->
+            conn
+            |> put_status(:ok)
+            |> json(%{status: "recorded", event: "egress_started", egress_id: egress_id})
+
+          {:error, changeset} ->
+            Logger.warning(
+              "[LiveKit Webhook] Failed to update recording for egress_started: #{inspect(changeset)}"
+            )
+
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{status: "error", reason: "failed to update recording"})
+        end
+    end
+  end
+
+  defp handle_egress_ended(conn, params) do
+    egress_id = get_in(params, ["egressInfo", "egressId"])
+    egress_status = get_in(params, ["egressInfo", "status"])
+    file_path = extract_file_path(params)
+    duration = extract_duration(params)
+    file_size = extract_file_size(params)
+
+    case Meetings.get_recording_by_egress_id(egress_id) do
+      nil ->
+        Logger.warning(
+          "[LiveKit Webhook] egress_ended for unknown recording: egress_id=#{egress_id}"
+        )
+
+        conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unknown recording"})
+
+      recording ->
+        # Determine final status based on egress status
+        final_status =
+          if egress_status in ["EGRESS_COMPLETE", "EGRESS_ENDING"],
+            do: "completed",
+            else: "failed"
+
+        update_attrs =
+          %{
+            status: final_status,
+            ended_at: DateTime.utc_now(),
+            metadata:
+              Map.merge(recording.metadata || %{}, %{
+                "egress_status" => egress_status,
+                "egress_info" => get_in(params, ["egressInfo"]) || %{}
+              })
+          }
+          |> maybe_put(:file_path, file_path)
+          |> maybe_put(:duration_seconds, duration)
+          |> maybe_put(:file_size, file_size)
+
+        case Meetings.update_recording(recording, update_attrs) do
+          {:ok, updated} ->
+            event =
+              if final_status == "completed",
+                do: {:recording_completed, updated},
+                else: {:recording_failed, updated}
+
+            MeetingsPubSub.broadcast_recording_update(recording.room_id, event)
+
             Logger.info(
-              "[LiveKit Webhook] Egress ended: #{egress_id} for room #{room_name} (#{status})"
+              "[LiveKit Webhook] Egress ended: #{egress_id} status=#{final_status} file=#{file_path}"
             )
 
             conn
@@ -200,17 +261,17 @@ defmodule PlatformWeb.LivekitWebhookController do
               status: "recorded",
               event: "egress_ended",
               egress_id: egress_id,
-              file_url: file_url
+              recording_status: final_status
             })
 
           {:error, changeset} ->
             Logger.warning(
-              "[LiveKit Webhook] Failed to record egress for #{room_name}: #{inspect(changeset)}"
+              "[LiveKit Webhook] Failed to update recording for egress_ended: #{inspect(changeset)}"
             )
 
             conn
             |> put_status(:unprocessable_entity)
-            |> json(%{status: "error", reason: "failed to record egress"})
+            |> json(%{status: "error", reason: "failed to update recording"})
         end
     end
   end
@@ -228,11 +289,28 @@ defmodule PlatformWeb.LivekitWebhookController do
 
   defp parse_metadata(metadata) when is_map(metadata), do: metadata
 
-  defp extract_file_url(params) do
+  defp extract_file_path(params) do
     get_in(params, ["egressInfo", "file", "filename"]) ||
-      get_in(params, ["egressInfo", "fileResults", Access.at(0), "filename"]) ||
-      get_in(params, ["egressInfo", "segmentResults", Access.at(0), "playlistName"])
+      get_in(params, ["egressInfo", "fileResults", Access.at(0), "filename"])
   end
+
+  defp extract_duration(params) do
+    case get_in(params, ["egressInfo", "file", "duration"]) ||
+           get_in(params, ["egressInfo", "fileResults", Access.at(0), "duration"]) do
+      nil -> nil
+      # LiveKit returns duration in nanoseconds
+      ns when is_integer(ns) -> div(ns, 1_000_000_000)
+      ns when is_binary(ns) -> ns |> String.to_integer() |> div(1_000_000_000)
+    end
+  end
+
+  defp extract_file_size(params) do
+    get_in(params, ["egressInfo", "file", "size"]) ||
+      get_in(params, ["egressInfo", "fileResults", Access.at(0), "size"])
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   # ── Signature verification ──────────────────────────────────────────────
 

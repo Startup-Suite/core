@@ -36,6 +36,10 @@ defmodule Platform.Meetings.PubSub do
   @spec presence_topic(binary()) :: String.t()
   def presence_topic(space_id), do: "meetings:presence:#{space_id}"
 
+  @doc "Returns the recording topic for a specific room."
+  @spec recording_topic(binary()) :: String.t()
+  def recording_topic(room_id), do: "meetings:recording:#{room_id}"
+
   # ── Subscribe ────────────────────────────────────────────────────────────────
 
   @doc "Subscribe to all events for a specific meeting room."
@@ -48,6 +52,12 @@ defmodule Platform.Meetings.PubSub do
   @spec subscribe_presence(binary()) :: :ok | {:error, term()}
   def subscribe_presence(space_id) do
     Phoenix.PubSub.subscribe(@pubsub, presence_topic(space_id))
+  end
+
+  @doc "Subscribe to recording events for a specific room."
+  @spec subscribe_recording(binary()) :: :ok | {:error, term()}
+  def subscribe_recording(room_id) do
+    Phoenix.PubSub.subscribe(@pubsub, recording_topic(room_id))
   end
 
   @doc "Unsubscribe from a meeting room topic."
@@ -68,6 +78,14 @@ defmodule Platform.Meetings.PubSub do
   @spec broadcast_room(binary(), term()) :: :ok
   def broadcast_room(room_id, event) do
     Phoenix.PubSub.broadcast(@pubsub, room_topic(room_id), event)
+  end
+
+  @doc "Broadcast a recording lifecycle event for a room."
+  @spec broadcast_recording_update(binary(), term()) :: :ok
+  def broadcast_recording_update(room_id, event) do
+    # Broadcast on both the room topic and the dedicated recording topic
+    Phoenix.PubSub.broadcast(@pubsub, room_topic(room_id), event)
+    Phoenix.PubSub.broadcast(@pubsub, recording_topic(room_id), event)
   end
 
   @doc "Broadcast a lightweight presence update for a space."

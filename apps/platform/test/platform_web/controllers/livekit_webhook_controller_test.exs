@@ -72,6 +72,18 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     }
   end
 
+  defp egress_started_payload(egress_id, room_name) do
+    %{
+      "event" => "egress_started",
+      "room" => %{"name" => room_name, "sid" => "RM_test123"},
+      "egressInfo" => %{
+        "egressId" => egress_id,
+        "roomName" => room_name,
+        "status" => "EGRESS_STARTING"
+      }
+    }
+  end
+
   defp egress_ended_payload(room_name, egress_id, file_url) do
     %{
       "event" => "egress_ended",
@@ -79,9 +91,35 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
       "egressInfo" => %{
         "egressId" => egress_id,
         "status" => "EGRESS_COMPLETE",
-        "file" => %{"filename" => file_url}
+        "file" => %{
+          "filename" => file_url,
+          "duration" => 120_000_000_000,
+          "size" => 5_242_880
+        }
       }
     }
+  end
+
+  defp egress_ended_failed_payload(egress_id) do
+    %{
+      "event" => "egress_ended",
+      "egressInfo" => %{
+        "egressId" => egress_id,
+        "status" => "EGRESS_FAILED"
+      }
+    }
+  end
+
+  defp create_recording_for_room(room, egress_id) do
+    {:ok, recording} =
+      Meetings.create_recording(%{
+        room_id: room.id,
+        egress_id: egress_id,
+        status: "starting",
+        started_at: DateTime.utc_now()
+      })
+
+    recording
   end
 
   # ── Setup ────────────────────────────────────────────────────────────────
@@ -238,36 +276,92 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     end
   end
 
+  # ── Egress started tests ─────────────────────────────────────────────
+
+  describe "POST #{@livekit_webhook_path} — egress_started" do
+    test "updates recording status to active", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_start_#{System.unique_integer([:positive])}"
+
+      post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
+
+      conn = post_webhook(conn, egress_started_payload(egress_id, room_name))
+
+      assert %{
+               "status" => "recorded",
+               "event" => "egress_started",
+               "egress_id" => ^egress_id
+             } = json_response(conn, 200)
+
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "active"
+    end
+
+    test "ignores egress_started for unknown recording", %{conn: conn} do
+      conn = post_webhook(conn, egress_started_payload("EG_unknown", "some-room"))
+
+      assert %{"status" => "ignored", "reason" => "unknown recording"} =
+               json_response(conn, 200)
+    end
+  end
+
   # ── Egress ended tests ─────────────────────────────────────────────────
 
   describe "POST #{@livekit_webhook_path} — egress_ended" do
-    test "records egress info in room metadata", %{conn: conn} do
+    test "updates recording with file info and marks completed", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_end_#{System.unique_integer([:positive])}"
 
       post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
 
-      payload = egress_ended_payload(room_name, "EG_abc123", "recordings/meeting.mp4")
+      payload = egress_ended_payload(room_name, egress_id, "recordings/meeting.webm")
       conn = post_webhook(conn, payload)
 
       assert %{
                "status" => "recorded",
                "event" => "egress_ended",
-               "egress_id" => "EG_abc123",
-               "file_url" => "recordings/meeting.mp4"
+               "egress_id" => ^egress_id,
+               "recording_status" => "completed"
              } = json_response(conn, 200)
 
-      room = Meetings.get_room_by_name(room_name)
-      assert [egress] = room.metadata["egresses"]
-      assert egress["egress_id"] == "EG_abc123"
-      assert egress["file_url"] == "recordings/meeting.mp4"
-      assert egress["status"] == "EGRESS_COMPLETE"
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "completed"
+      assert updated.file_path == "recordings/meeting.webm"
+      assert updated.duration_seconds == 120
+      assert updated.file_size == 5_242_880
+      assert updated.ended_at != nil
     end
 
-    test "ignores egress for unknown room", %{conn: conn} do
-      payload = egress_ended_payload("nonexistent-room", "EG_abc", "file.mp4")
+    test "marks recording as failed on egress failure", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_fail_#{System.unique_integer([:positive])}"
+
+      post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
+
+      conn = post_webhook(conn, egress_ended_failed_payload(egress_id))
+
+      assert %{
+               "status" => "recorded",
+               "event" => "egress_ended",
+               "recording_status" => "failed"
+             } = json_response(conn, 200)
+
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "failed"
+    end
+
+    test "ignores egress_ended for unknown recording", %{conn: conn} do
+      payload = egress_ended_payload("some-room", "EG_unknown", "file.webm")
       conn = post_webhook(conn, payload)
 
-      assert %{"status" => "ignored", "reason" => "unknown room"} = json_response(conn, 200)
+      assert %{"status" => "ignored", "reason" => "unknown recording"} =
+               json_response(conn, 200)
     end
   end
 
