@@ -11,6 +11,7 @@ defmodule PlatformWeb.ShellLive do
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Chat.SpaceAgentPresence
+  alias Platform.Meetings
   alias Platform.Repo
 
   def on_mount(:default, _params, session, socket) do
@@ -52,6 +53,13 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:roster_space_id, roster_space_id)
       |> assign(:show_presence_panel, false)
       |> assign(:presence_list, presence_list)
+      # Meeting bar state
+      |> assign(:in_meeting, false)
+      |> assign(:meeting_room_name, nil)
+      |> assign(:meeting_space_slug, nil)
+      |> assign(:meeting_space_name, nil)
+      |> assign(:meeting_mic_enabled, true)
+      |> assign(:meeting_camera_enabled, false)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
         uri = URI.parse(url)
         {:cont, assign(socket, :current_path, uri.path)}
@@ -100,6 +108,48 @@ defmodule PlatformWeb.ShellLive do
           # ADR 0027: dismissed role removed — just remove the agent from roster
           Platform.Chat.remove_space_agent(space_id, agent_id)
           {:halt, refresh_roster(socket, space_id)}
+
+        # ── Meeting bar events (from MeetingRoom JS hook) ──────────────
+
+        "meeting-joined", %{"room_name" => room_name, "space_slug" => space_slug}, socket ->
+          space_name = resolve_space_name(space_slug)
+
+          socket =
+            socket
+            |> assign(:in_meeting, true)
+            |> assign(:meeting_room_name, room_name)
+            |> assign(:meeting_space_slug, space_slug)
+            |> assign(:meeting_space_name, space_name)
+            |> assign(:meeting_mic_enabled, true)
+            |> assign(:meeting_camera_enabled, false)
+
+          {:halt, socket}
+
+        "meeting-left", _params, socket ->
+          {:halt, clear_meeting_state(socket)}
+
+        "meeting-disconnected", _params, socket ->
+          {:halt, clear_meeting_state(socket)}
+
+        "meeting-mic-toggled", %{"enabled" => enabled}, socket ->
+          {:halt, assign(socket, :meeting_mic_enabled, enabled)}
+
+        "meeting-camera-toggled", %{"enabled" => enabled}, socket ->
+          {:halt, assign(socket, :meeting_camera_enabled, enabled)}
+
+        "meeting-error", %{"message" => message}, socket ->
+          require Logger
+          Logger.warning("[MeetingBar] Meeting error: #{message}")
+          {:halt, clear_meeting_state(socket)}
+
+        "leave-meeting-click", _params, socket ->
+          {:halt, push_event(socket, "leave-meeting", %{})}
+
+        "toggle-meeting-mic", _params, socket ->
+          {:halt, push_event(socket, "toggle-mic", %{})}
+
+        "toggle-meeting-camera", _params, socket ->
+          {:halt, push_event(socket, "toggle-camera", %{})}
 
         _event, _params, socket ->
           {:cont, socket}
@@ -268,4 +318,27 @@ defmodule PlatformWeb.ShellLive do
         |> String.replace("_", " ")
     end
   end
+
+  # ── Meeting helpers ──────────────────────────────────────────────────────────────
+
+  defp clear_meeting_state(socket) do
+    socket
+    |> assign(:in_meeting, false)
+    |> assign(:meeting_room_name, nil)
+    |> assign(:meeting_space_slug, nil)
+    |> assign(:meeting_space_name, nil)
+    |> assign(:meeting_mic_enabled, true)
+    |> assign(:meeting_camera_enabled, false)
+  end
+
+  defp resolve_space_name(slug) when is_binary(slug) do
+    case Repo.get_by(Platform.Chat.Space, slug: slug) do
+      %{name: name} when is_binary(name) -> name
+      _ -> slug
+    end
+  rescue
+    _ -> slug
+  end
+
+  defp resolve_space_name(_), do: "Meeting"
 end

@@ -5,6 +5,7 @@ import DragDropUpload from "./drag_drop_upload"
 import ExecutionLogScroll from "./execution_log_scroll"
 import KanbanDragDrop from "./kanban_drag_drop"
 import LocalTime from "./local_time"
+import MeetingRoom from "./meeting_room"
 import MermaidDiagram from "./mermaid_diagram"
 import PushSubscribe from "./push_subscribe"
 import ResizableSidebar from "./resizable_sidebar"
@@ -20,6 +21,7 @@ export default {
   ExecutionLogScroll,
   KanbanDragDrop,
   LocalTime,
+  MeetingRoom,
   MermaidDiagram,
   PushSubscribe,
   ResizableSidebar,

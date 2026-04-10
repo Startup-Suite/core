@@ -14,6 +14,29 @@ defmodule Platform.Meetings do
 
   require Logger
 
+  # ── Configuration ─────────────────────────────────────────────────────────
+
+  @doc """
+  Returns true when all required LiveKit env vars are set:
+  LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET.
+
+  Used to gate the "Join Meeting" button in the UI.
+  """
+  @spec enabled?() :: boolean()
+  def enabled? do
+    url = System.get_env("LIVEKIT_URL")
+    key = System.get_env("LIVEKIT_API_KEY")
+    secret = System.get_env("LIVEKIT_API_SECRET")
+
+    is_binary(url) and url != "" and
+      is_binary(key) and key != "" and
+      is_binary(secret) and secret != ""
+  end
+
+  @doc "Returns the configured LiveKit server URL."
+  @spec livekit_url() :: String.t() | nil
+  def livekit_url, do: System.get_env("LIVEKIT_URL")
+
   # ── Rooms ────────────────────────────────────────────────────────────────
 
   @doc "Find or create a room by its LiveKit room name."
@@ -37,6 +60,27 @@ defmodule Platform.Meetings do
   @doc "Get a room by LiveKit room name."
   @spec get_room_by_name(String.t()) :: Room.t() | nil
   def get_room_by_name(name), do: Repo.get_by(Room, livekit_room_name: name)
+
+  @doc """
+  Ensure a meeting room exists for a space.
+
+  Uses `"space:{space_id}"` as the LiveKit room name. If a room already
+  exists for this space, returns it; otherwise creates one.
+  """
+  @spec ensure_room(binary()) :: {:ok, Room.t()} | {:error, Ecto.Changeset.t()}
+  def ensure_room(space_id) do
+    room_name = "space:#{space_id}"
+
+    case Repo.get_by(Room, space_id: space_id) do
+      nil ->
+        %Room{}
+        |> Room.changeset(%{livekit_room_name: room_name, space_id: space_id})
+        |> Repo.insert()
+
+      room ->
+        {:ok, room}
+    end
+  end
 
   @doc "Get the active (non-idle) room for a space, if any."
   @spec get_active_room(binary()) :: Room.t() | nil
@@ -215,6 +259,64 @@ defmodule Platform.Meetings do
   @doc "Subscribe to presence events for a meeting room."
   @spec subscribe_room(binary()) :: :ok | {:error, term()}
   def subscribe_room(room_id), do: MeetingsPubSub.subscribe_room(room_id)
+
+  # ── Token Generation ─────────────────────────────────────────────────────
+
+  @doc """
+  Generate a LiveKit access token (JWT) for a user to join a room.
+
+  The token is an HS256 JWT signed with `LIVEKIT_API_SECRET`, containing:
+  - `iss` — the API key
+  - `sub` — the user identity
+  - `exp` — expiry (default 6 hours)
+  - `nbf` — not before (now)
+  - `video` — grant with room name and permissions
+
+  Returns `{:ok, token_string}` or `{:error, reason}`.
+  """
+  @spec generate_token(Room.t(), map()) :: {:ok, String.t()} | {:error, atom()}
+  def generate_token(%Room{} = room, %{identity: identity, name: name}) do
+    api_key = System.get_env("LIVEKIT_API_KEY")
+    api_secret = System.get_env("LIVEKIT_API_SECRET")
+
+    if is_nil(api_key) or is_nil(api_secret) do
+      {:error, :livekit_not_configured}
+    else
+      now = System.system_time(:second)
+      ttl = 6 * 60 * 60
+
+      claims = %{
+        "iss" => api_key,
+        "sub" => identity,
+        "nbf" => now,
+        "exp" => now + ttl,
+        "jti" => Ecto.UUID.generate(),
+        "name" => name,
+        "video" => %{
+          "room" => room.livekit_room_name,
+          "roomJoin" => true,
+          "canPublish" => true,
+          "canSubscribe" => true,
+          "canPublishData" => true
+        }
+      }
+
+      {:ok, encode_jwt(claims, api_secret)}
+    end
+  end
+
+  defp encode_jwt(claims, secret) do
+    header = %{"alg" => "HS256", "typ" => "JWT"}
+
+    header_b64 = header |> Jason.encode!() |> Base.url_encode64(padding: false)
+    payload_b64 = claims |> Jason.encode!() |> Base.url_encode64(padding: false)
+
+    signing_input = "#{header_b64}.#{payload_b64}"
+    signature = :crypto.mac(:hmac, :sha256, secret, signing_input)
+    sig_b64 = Base.url_encode64(signature, padding: false)
+
+    "#{signing_input}.#{sig_b64}"
+  end
 
   # ── Private ──────────────────────────────────────────────────────────────
 
