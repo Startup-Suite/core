@@ -67,5 +67,6 @@ defmodule PlatformWeb.Router do
   scope "/api/webhooks", PlatformWeb do
     pipe_through(:api)
     post("/github", GithubWebhookController, :handle)
+    post("/livekit", LivekitWebhookController, :handle)
   end
 end
