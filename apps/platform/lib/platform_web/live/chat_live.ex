@@ -22,6 +22,7 @@ defmodule PlatformWeb.ChatLive do
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
 
   alias Platform.Accounts
+  alias Platform.Agents.Agent
   alias Platform.Agents.WorkspaceBootstrap
   alias Ecto.Adapters.SQL.Sandbox
   alias Platform.Chat
@@ -84,6 +85,11 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_active, false)
       |> assign(:meeting_participants, [])
       |> assign(:meeting_participant_count, 0)
+      |> assign(:meeting_invitable_agents, [])
+      |> assign(:recordings, [])
+      |> assign(:show_recordings, false)
+      |> assign(:playing_recording_id, nil)
+      |> assign(:playing_recording, nil)
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -208,6 +214,14 @@ defmodule PlatformWeb.ChatLive do
 
       has_agent_participant = Enum.any?(participants, &(&1.participant_type == "agent"))
 
+      # Build list of agents in this space that have runtimes (invitable to meetings)
+      meeting_invitable_agents =
+        participants
+        |> Enum.filter(&(&1.participant_type == "agent"))
+        |> Enum.map(fn p -> Repo.get(Agent, p.participant_id) end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(& &1.runtime_id)
+
       online_count =
         if connected?(socket), do: ChatPresence.online_count(space.id), else: 0
 
@@ -273,6 +287,11 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:meeting_active, meeting_active)
        |> assign(:meeting_participants, meeting_participants)
        |> assign(:meeting_participant_count, meeting_participant_count)
+       |> assign(:meeting_invitable_agents, meeting_invitable_agents)
+       |> assign(:recordings, Meetings.list_recordings_for_space(space.id))
+       |> assign(:show_recordings, false)
+       |> assign(:playing_recording_id, nil)
+       |> assign(:playing_recording, nil)
        |> assign(:active_agent_participant_id, active_agent_participant_id)
        |> assign(:active_agent_name, active_agent_name)
        |> assign(:mobile_browser_open, false)
@@ -707,6 +726,36 @@ defmodule PlatformWeb.ChatLive do
 
   def handle_event("toggle_canvases_panel", _params, socket) do
     {:noreply, assign(socket, :show_canvases, !socket.assigns.show_canvases)}
+  end
+
+  def handle_event("toggle_recordings_panel", _params, socket) do
+    show = !socket.assigns.show_recordings
+
+    socket =
+      if show && socket.assigns.active_space do
+        recordings = Meetings.list_recordings_for_space(socket.assigns.active_space.id)
+        assign(socket, recordings: recordings, show_recordings: true)
+      else
+        assign(socket, :show_recordings, show)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("play-recording", %{"recording-id" => recording_id}, socket) do
+    recording = Meetings.get_recording(recording_id)
+
+    {:noreply,
+     socket
+     |> assign(:playing_recording_id, recording_id)
+     |> assign(:playing_recording, recording)}
+  end
+
+  def handle_event("stop-playback", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:playing_recording_id, nil)
+     |> assign(:playing_recording, nil)}
   end
 
   def handle_event("toggle_watch", _params, socket) do
@@ -1149,6 +1198,37 @@ defmodule PlatformWeb.ChatLive do
           end
 
         {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not create meeting room.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("invite-agent-to-meeting", %{"agent_id" => agent_id}, socket) do
+    space = socket.assigns.active_space
+
+    if space && Meetings.enabled?() do
+      case {Repo.get(Agent, agent_id), Meetings.ensure_room(space.id)} do
+        {%Agent{runtime_id: rid} = agent, {:ok, room}} when not is_nil(rid) ->
+          case Meetings.dispatch_meeting_join(room, agent, space_id: space.id) do
+            {:ok, :dispatched} ->
+              {:noreply, put_flash(socket, :info, "Invited #{agent.name} to the meeting.")}
+
+            {:error, :runtime_offline} ->
+              {:noreply, put_flash(socket, :error, "#{agent.name}'s runtime is offline.")}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, "Could not invite agent: #{reason}")}
+          end
+
+        {nil, _} ->
+          {:noreply, put_flash(socket, :error, "Agent not found.")}
+
+        {%Agent{runtime_id: nil}, _} ->
+          {:noreply, put_flash(socket, :error, "Agent has no runtime configured.")}
+
+        {_, {:error, _}} ->
           {:noreply, put_flash(socket, :error, "Could not create meeting room.")}
       end
     else
@@ -1751,6 +1831,39 @@ defmodule PlatformWeb.ChatLive do
                 <% end %>
               <% end %>
 
+              <%!-- Invite Agent to meeting dropdown --%>
+              <%= if @in_meeting && @meeting_space_slug == @active_space.slug && @meeting_invitable_agents != [] do %>
+                <div class="dropdown dropdown-end ml-1">
+                  <label
+                    tabindex="0"
+                    class="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                    title="Invite an agent to the meeting"
+                  >
+                    <span class="hero-cpu-chip size-3.5"></span>
+                    <span>Invite Agent</span>
+                  </label>
+                  <ul
+                    tabindex="0"
+                    class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52 mt-2"
+                  >
+                    <%= for agent <- @meeting_invitable_agents do %>
+                      <li>
+                        <button
+                          phx-click="invite-agent-to-meeting"
+                          phx-value-agent_id={agent.id}
+                          class="flex items-center gap-2 text-sm"
+                        >
+                          <span class="inline-flex items-center justify-center size-6 rounded-full bg-primary/20 text-[0.6rem] font-bold">
+                            {String.first(agent.name || "?")}
+                          </span>
+                          <span>{agent.name}</span>
+                        </button>
+                      </li>
+                    <% end %>
+                  </ul>
+                </div>
+              <% end %>
+
               <%!-- Promote to channel button for groups --%>
               <form
                 :if={@active_space.kind == "group" && !@active_space.is_direct}
@@ -1821,6 +1934,18 @@ defmodule PlatformWeb.ChatLive do
               >
                 <span class="hero-bookmark-solid size-4"></span>
                 <span>{length(@pins)} pinned</span>
+              </button>
+
+              <button
+                :if={@recordings != []}
+                phx-click="toggle_recordings_panel"
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_recordings && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-video-camera-solid size-4"></span>
+                <span class="hidden md:inline">{length(@recordings)}</span>
               </button>
 
               <%!-- Active agent indicator --%>
@@ -2074,6 +2199,35 @@ defmodule PlatformWeb.ChatLive do
                   Create canvas
                 </button>
               </.form>
+            </div>
+          </div>
+
+          <%!-- Recordings panel --%>
+          <div
+            :if={@show_recordings}
+            class="border-b border-base-300 bg-base-200 px-5 py-3"
+          >
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-widest text-base-content/50">
+                  Recordings
+                </p>
+                <button
+                  phx-click="toggle_recordings_panel"
+                  class="text-base-content/40 hover:text-base-content transition-colors"
+                >
+                  <span class="hero-x-mark size-4"></span>
+                </button>
+              </div>
+
+              <%= if @playing_recording do %>
+                <PlatformWeb.RecordingComponents.recording_player recording={@playing_recording} />
+              <% end %>
+
+              <PlatformWeb.RecordingComponents.recording_list
+                recordings={@recordings}
+                playing_recording_id={@playing_recording_id}
+              />
             </div>
           </div>
 
