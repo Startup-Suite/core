@@ -13,9 +13,10 @@ defmodule Platform.Meetings.PubSub do
 
   | Topic                              | Event                                    | Payload                                |
   |------------------------------------|------------------------------------------|----------------------------------------|
-  | `meetings:room:{room_id}`          | `{:meeting_participant_joined, p}`       | `%Meetings.Participant{}`              |
-  | `meetings:room:{room_id}`          | `{:meeting_participant_left, p}`         | `%Meetings.Participant{}`              |
-  | `meetings:room:{room_id}`          | `{:meeting_room_status, room}`           | `%Meetings.Room{}`                     |
+  | `meetings:room:{room_id}`          | `{:participant_joined, p}`               | `%Meetings.Participant{}`              |
+  | `meetings:room:{room_id}`          | `{:participant_left, p}`                 | `%Meetings.Participant{}`              |
+  | `meetings:room:{room_id}`          | `{:room_finished, room}`                 | `%Meetings.Room{}`                     |
+  | `meetings:room:{room_id}`          | `{:room_activated, room}`                | `%Meetings.Room{}`                     |
   | `meetings:presence:{space_id}`     | `{:meeting_presence_update, data}`       | `%{space_id, active, count}`           |
   """
 

@@ -294,19 +294,26 @@ defmodule PlatformWeb.LivekitWebhookController do
   """
   def verify_livekit_token(token, body, secret) do
     try do
-      # LiveKit uses a simple JWT with HS256
-      # The token contains a `sha256` claim that must match the body hash
       case decode_jwt(token, secret) do
         {:ok, claims} ->
           expected_hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
           token_hash = Map.get(claims, "sha256", "")
+
+          Logger.warning(
+            "[LiveKit Verify] expected=#{String.slice(expected_hash, 0, 16)}... " <>
+              "token=#{String.slice(token_hash, 0, 16)}... match=#{Plug.Crypto.secure_compare(expected_hash, String.downcase(token_hash))}"
+          )
+
           Plug.Crypto.secure_compare(expected_hash, String.downcase(token_hash))
 
-        {:error, _reason} ->
+        {:error, reason} ->
+          Logger.warning("[LiveKit Verify] JWT decode failed: #{inspect(reason)}")
           false
       end
     rescue
-      _ -> false
+      e ->
+        Logger.warning("[LiveKit Verify] Exception: #{inspect(e)}")
+        false
     end
   end
 

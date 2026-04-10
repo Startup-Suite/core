@@ -58,7 +58,7 @@ defmodule Platform.Meetings do
 
     case result do
       {:ok, updated_room} ->
-        MeetingsPubSub.broadcast_room(room.id, {:meeting_room_status, updated_room})
+        MeetingsPubSub.broadcast_room(room.id, {:room_activated, updated_room})
         broadcast_presence_update(room.space_id)
         {:ok, updated_room}
 
@@ -85,7 +85,7 @@ defmodule Platform.Meetings do
 
     case result do
       {:ok, updated_room} ->
-        MeetingsPubSub.broadcast_room(room.id, {:meeting_room_status, updated_room})
+        MeetingsPubSub.broadcast_room(room.id, {:room_finished, updated_room})
         broadcast_presence_update(room.space_id)
         {:ok, updated_room}
 
@@ -112,7 +112,7 @@ defmodule Platform.Meetings do
 
     case result do
       {:ok, participant} ->
-        MeetingsPubSub.broadcast_room(room.id, {:meeting_participant_joined, participant})
+        MeetingsPubSub.broadcast_room(room.id, {:participant_joined, participant})
         broadcast_presence_update(room.space_id)
         {:ok, participant}
 
@@ -142,15 +142,15 @@ defmodule Platform.Meetings do
           |> Participant.changeset(%{left_at: DateTime.utc_now()})
           |> Repo.update()
 
-        MeetingsPubSub.broadcast_room(room.id, {:meeting_participant_left, updated})
+        MeetingsPubSub.broadcast_room(room.id, {:participant_left, updated})
         broadcast_presence_update(room.space_id)
         {:ok, updated}
     end
   end
 
   @doc "List active (not yet left) participants in a room."
-  @spec list_active_participants_for_room(binary()) :: [Participant.t()]
-  def list_active_participants_for_room(room_id) do
+  @spec list_active_participants(binary()) :: [Participant.t()]
+  def list_active_participants(room_id) do
     from(p in Participant,
       where: p.room_id == ^room_id and is_nil(p.left_at),
       order_by: [asc: p.joined_at]
@@ -164,11 +164,11 @@ defmodule Platform.Meetings do
   List all active (connected) participants for a space's current meeting.
   Returns an empty list if no active meeting exists.
   """
-  @spec list_active_participants(binary()) :: [Participant.t()]
-  def list_active_participants(space_id) do
+  @spec list_active_participants_for_space(binary()) :: [Participant.t()]
+  def list_active_participants_for_space(space_id) do
     case get_active_room(space_id) do
       nil -> []
-      room -> list_active_participants_for_room(room.id)
+      room -> list_active_participants(room.id)
     end
   end
 
