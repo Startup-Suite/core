@@ -97,6 +97,24 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     :ok
   end
 
+  # ── Debug test ──────────────────────────────────────────────────────────
+
+  describe "debug" do
+    test "raw_body is set by CacheBodyReader", %{conn: conn} do
+      body = Jason.encode!(%{"event" => "test"})
+      token = sign_payload(body, webhook_secret())
+
+      result_conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", token)
+        |> post(@livekit_webhook_path, body)
+
+      IO.puts("DEBUG: response status=#{result_conn.status}, body=#{result_conn.resp_body}")
+      assert true
+    end
+  end
+
   # ── Participant joined tests ─────────────────────────────────────────────
 
   describe "POST #{@livekit_webhook_path} — participant_joined" do

@@ -228,6 +228,13 @@ defmodule PlatformWeb.LivekitWebhookController do
 
   defp parse_metadata(metadata) when is_map(metadata), do: metadata
 
+  defp read_raw_body(conn) do
+    case Plug.Conn.read_body(conn) do
+      {:ok, body, _conn} -> body
+      _ -> ""
+    end
+  end
+
   defp extract_file_url(params) do
     # LiveKit egress can have file or segments output
     get_in(params, ["egressInfo", "file", "filename"]) ||
@@ -259,12 +266,16 @@ defmodule PlatformWeb.LivekitWebhookController do
         |> json(%{status: "error", reason: "missing authorization header"})
         |> halt()
       else
-        raw_body = conn.assigns[:raw_body] || ""
+        raw_body = conn.assigns[:raw_body] || read_raw_body(conn)
+        body_len = byte_size(raw_body || "")
+        has_raw = Map.has_key?(conn.assigns, :raw_body)
+
+        Logger.debug("[LiveKit Webhook] raw_body in assigns=#{has_raw}, length=#{body_len}")
 
         if verify_livekit_token(auth_header, raw_body, secret) do
           conn
         else
-          Logger.warning("[LiveKit Webhook] Invalid webhook signature")
+          Logger.warning("[LiveKit Webhook] Invalid webhook signature, body_len=#{body_len}")
 
           conn
           |> put_status(:unauthorized)
