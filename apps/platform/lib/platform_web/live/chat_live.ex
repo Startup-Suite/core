@@ -539,6 +539,11 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, assign(socket, :upload_tagged_agents, tagged)}
   end
 
+  def handle_event("join-meeting-click", _params, socket) do
+    # Placeholder — full join flow handled by the Join Meeting UI task
+    {:noreply, socket}
+  end
+
   def handle_event("noop", _params, socket), do: {:noreply, socket}
 
   # ── End upload staging dialog events ──────────────────────────────────
@@ -1808,6 +1813,42 @@ defmodule PlatformWeb.ChatLive do
                 </button>
               </form>
             </div>
+
+            <%!-- Meeting presence indicator --%>
+            <button
+              :if={@meeting_active}
+              phx-click="join-meeting-click"
+              class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-base-200 transition-colors group"
+              title={"#{@meeting_participant_count} in meeting — click to join"}
+            >
+              <%!-- Green pulsing dot --%>
+              <span class="bg-success rounded-full w-2 h-2 animate-pulse flex-shrink-0"></span>
+              <%!-- Participant avatars (desktop only, max 3 + overflow) --%>
+              <span class="hidden lg:flex items-center -space-x-2">
+                <span :for={p <- Enum.take(@meeting_participants, 3)} class="ring-2 ring-base-100 rounded-full">
+                  <.human_avatar
+                    name={meeting_participant_name(p)}
+                    avatar_url={meeting_participant_avatar(p)}
+                    seed={p.id}
+                    size="xs"
+                  />
+                </span>
+                <span
+                  :if={@meeting_participant_count > 3}
+                  class="flex items-center justify-center size-5 rounded-full bg-base-300 text-[10px] font-semibold ring-2 ring-base-100"
+                >
+                  +{@meeting_participant_count - 3}
+                </span>
+              </span>
+              <%!-- "In call" label (desktop) --%>
+              <span class="hidden lg:inline text-xs text-success font-medium group-hover:text-success/80">
+                In call
+              </span>
+              <%!-- Compact count (mobile) --%>
+              <span class="lg:hidden text-xs text-success font-medium">
+                {@meeting_participant_count}
+              </span>
+            </button>
 
             <div class="flex flex-shrink-0 items-center gap-3 text-xs text-base-content/50">
               <.form
@@ -3860,6 +3901,23 @@ defmodule PlatformWeb.ChatLive do
   defp space_header_name(space, participants, user_id) do
     Chat.display_name_for_space(space, participants, user_id)
   end
+
+  defp meeting_participant_name(%{display_name: name}) when is_binary(name) and name != "",
+    do: name
+
+  defp meeting_participant_name(%{user: %{display_name: name}})
+       when is_binary(name) and name != "", do: name
+
+  defp meeting_participant_name(%{agent: %{name: name}}) when is_binary(name) and name != "",
+    do: name
+
+  defp meeting_participant_name(%{identity: identity}) when is_binary(identity), do: identity
+  defp meeting_participant_name(_), do: "User"
+
+  defp meeting_participant_avatar(%{user: %{avatar_url: url}}) when is_binary(url) and url != "",
+    do: url
+
+  defp meeting_participant_avatar(_), do: nil
 
   defp sidebar_display_name(space, current_user_id) do
     participants = Chat.list_participants(space.id)
