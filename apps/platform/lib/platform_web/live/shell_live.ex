@@ -16,8 +16,10 @@ defmodule PlatformWeb.ShellLive do
   alias Platform.Repo
 
   def on_mount(:default, _params, session, socket) do
+    current_user_id = session["current_user_id"]
+
     current_user =
-      case session["current_user_id"] do
+      case current_user_id do
         user_id when is_binary(user_id) ->
           case Accounts.get_user(user_id) do
             %{name: name} when is_binary(name) and name != "" -> name
@@ -45,6 +47,7 @@ defmodule PlatformWeb.ShellLive do
     socket =
       roster_socket
       |> assign(:current_user, current_user)
+      |> assign(:current_user_id, current_user_id)
       |> assign(:current_path, "/")
       |> assign(:agent_status, default_agent_status())
       |> assign(:drawer_open, false)
@@ -62,6 +65,8 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:meeting_space_name, nil)
       |> assign(:meeting_mic_enabled, true)
       |> assign(:meeting_camera_enabled, false)
+      |> assign(:recording_active, false)
+      |> assign(:current_recording_id, nil)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
         uri = URI.parse(url)
         {:cont, assign(socket, :current_path, uri.path)}
@@ -93,6 +98,34 @@ defmodule PlatformWeb.ShellLive do
 
         # Meeting room activated — no action needed for the bar
         {:room_activated, _room}, socket ->
+          {:halt, socket}
+
+        # Recording lifecycle events — update recording state in the bar
+        {:recording_started, rec}, socket ->
+          {:halt,
+           socket
+           |> assign(:recording_active, true)
+           |> assign(:current_recording_id, rec.id)}
+
+        {:recording_active, rec}, socket ->
+          {:halt,
+           socket
+           |> assign(:recording_active, true)
+           |> assign(:current_recording_id, rec.id)}
+
+        {:recording_completed, _rec}, socket ->
+          {:halt,
+           socket
+           |> assign(:recording_active, false)
+           |> assign(:current_recording_id, nil)}
+
+        {:recording_failed, _rec}, socket ->
+          {:halt,
+           socket
+           |> assign(:recording_active, false)
+           |> assign(:current_recording_id, nil)}
+
+        {:recording_stopping, _rec}, socket ->
           {:halt, socket}
 
         _msg, socket ->
@@ -132,7 +165,19 @@ defmodule PlatformWeb.ShellLive do
 
           if room && connected?(socket) do
             MeetingsPubSub.subscribe_room(room.id)
+            MeetingsPubSub.subscribe_recording(room.id)
           end
+
+          # Check if there's an active recording for this room
+          {rec_active, rec_id} =
+            if room do
+              case Platform.Meetings.get_active_recording(room.id) do
+                nil -> {false, nil}
+                rec -> {true, rec.id}
+              end
+            else
+              {false, nil}
+            end
 
           socket =
             socket
@@ -143,6 +188,8 @@ defmodule PlatformWeb.ShellLive do
             |> assign(:meeting_space_name, space_name)
             |> assign(:meeting_mic_enabled, true)
             |> assign(:meeting_camera_enabled, false)
+            |> assign(:recording_active, rec_active)
+            |> assign(:current_recording_id, rec_id)
 
           {:halt, socket}
 
@@ -173,6 +220,54 @@ defmodule PlatformWeb.ShellLive do
 
         "toggle-meeting-camera", _params, socket ->
           {:halt, push_event(socket, "toggle-camera", %{})}
+
+        "start-recording-click", _params, socket ->
+          room_id = socket.assigns[:meeting_room_id]
+          user_id = socket.assigns[:current_user_id]
+
+          if room_id && user_id do
+            room = Platform.Meetings.get_room(room_id)
+
+            case Platform.Meetings.start_recording(room, %{user_id: user_id}) do
+              {:ok, recording} ->
+                {:halt,
+                 socket
+                 |> assign(:recording_active, true)
+                 |> assign(:current_recording_id, recording.id)}
+
+              {:error, _reason} ->
+                {:halt, socket}
+            end
+          else
+            {:halt, socket}
+          end
+
+        "stop-recording-click", _params, socket ->
+          recording_id = socket.assigns[:current_recording_id]
+
+          if recording_id do
+            case Platform.Meetings.get_recording(recording_id) do
+              nil ->
+                {:halt,
+                 socket
+                 |> assign(:recording_active, false)
+                 |> assign(:current_recording_id, nil)}
+
+              recording ->
+                case Platform.Meetings.stop_recording(recording) do
+                  {:ok, _rec} ->
+                    {:halt,
+                     socket
+                     |> assign(:recording_active, false)
+                     |> assign(:current_recording_id, nil)}
+
+                  {:error, _reason} ->
+                    {:halt, socket}
+                end
+            end
+          else
+            {:halt, socket}
+          end
 
         _event, _params, socket ->
           {:cont, socket}
@@ -353,6 +448,8 @@ defmodule PlatformWeb.ShellLive do
     |> assign(:meeting_space_name, nil)
     |> assign(:meeting_mic_enabled, true)
     |> assign(:meeting_camera_enabled, false)
+    |> assign(:recording_active, false)
+    |> assign(:current_recording_id, nil)
   end
 
   defp unsubscribe_meeting_room(socket) do

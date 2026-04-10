@@ -290,6 +290,11 @@
               {@meeting_space_name || "Meeting"}
             </span>
             <span id="meeting-duration" class="text-xs text-base-content/50">0:00</span>
+            <%= if @recording_active do %>
+              <span class="inline-flex items-center gap-1 text-xs text-error">
+                <span class="size-1.5 rounded-full bg-error animate-pulse"></span> REC
+              </span>
+            <% end %>
           </div>
         </div>
 
@@ -333,6 +338,27 @@
             ]}>
             </span>
           </button>
+
+          <%!-- Record button --%>
+          <%= if @recording_active do %>
+            <button
+              phx-click="stop-recording-click"
+              class="rounded-full p-2 transition-colors bg-error/20 text-error hover:bg-error/30 relative"
+              title="Stop recording"
+            >
+              <span class="size-4 hero-stop-circle"></span>
+              <span class="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-error animate-pulse">
+              </span>
+            </button>
+          <% else %>
+            <button
+              phx-click="start-recording-click"
+              class="rounded-full p-2 transition-colors bg-base-300 text-base-content hover:bg-base-content/20"
+              title="Start recording"
+            >
+              <span class="size-4 hero-stop-circle text-error/60"></span>
+            </button>
+          <% end %>
         </div>
 
         <%!-- Right: navigation + leave --%>
