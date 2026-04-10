@@ -1377,18 +1377,31 @@ defmodule PlatformWeb.ChatLive do
         {:meeting_presence_update, %{space_id: space_id, active: active, count: count}},
         socket
       ) do
-    if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
-      meeting_participants =
-        if active, do: Meetings.list_active_participants_for_space(space_id), else: []
+    # Always update sidebar meeting counts
+    meeting_counts =
+      if active and count > 0 do
+        Map.put(socket.assigns.meeting_counts, space_id, count)
+      else
+        Map.delete(socket.assigns.meeting_counts, space_id)
+      end
 
-      {:noreply,
-       socket
-       |> assign(:meeting_active, active)
-       |> assign(:meeting_participants, meeting_participants)
-       |> assign(:meeting_participant_count, count)}
-    else
-      {:noreply, socket}
-    end
+    socket = assign(socket, :meeting_counts, meeting_counts)
+
+    # If this is the active space, also update detailed presence
+    socket =
+      if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
+        meeting_participants =
+          if active, do: Meetings.list_active_participants_for_space(space_id), else: []
+
+        socket
+        |> assign(:meeting_active, active)
+        |> assign(:meeting_participants, meeting_participants)
+        |> assign(:meeting_participant_count, count)
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -1450,6 +1463,14 @@ defmodule PlatformWeb.ChatLive do
           >
             <span class="text-base-content/40">#</span>
             <span class="truncate flex-1">{space.name}</span>
+            <span
+              :if={Map.has_key?(@meeting_counts, space.id)}
+              class="flex-shrink-0 flex items-center gap-0.5 text-success"
+              title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1488,6 +1509,14 @@ defmodule PlatformWeb.ChatLive do
             ]}
           >
             <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+            <span
+              :if={Map.has_key?(@meeting_counts, space.id)}
+              class="flex-shrink-0 flex items-center gap-0.5 text-success"
+              title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1538,6 +1567,14 @@ defmodule PlatformWeb.ChatLive do
             >
               <span class="text-base-content/40 text-lg">#</span>
               <span class="truncate flex-1">{space.name}</span>
+              <span
+                :if={Map.has_key?(@meeting_counts, space.id)}
+                class="flex-shrink-0 flex items-center gap-0.5 text-success"
+                title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1560,6 +1597,14 @@ defmodule PlatformWeb.ChatLive do
               ]}
             >
               <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+              <span
+                :if={Map.has_key?(@meeting_counts, space.id)}
+                class="flex-shrink-0 flex items-center gap-0.5 text-success"
+                title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
