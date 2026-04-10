@@ -8,6 +8,7 @@ defmodule Platform.Meetings.Room do
   @foreign_key_type :binary_id
 
   schema "meeting_rooms" do
+    field(:space_id, :binary_id)
     field(:livekit_room_name, :string)
     field(:status, :string, default: "idle")
     field(:metadata, :map, default: %{})
@@ -18,7 +19,7 @@ defmodule Platform.Meetings.Room do
   end
 
   @required ~w(livekit_room_name)a
-  @optional ~w(status metadata)a
+  @optional ~w(space_id status metadata)a
 
   def changeset(room, attrs) do
     room
@@ -26,5 +27,6 @@ defmodule Platform.Meetings.Room do
     |> validate_required(@required)
     |> validate_inclusion(:status, ~w(idle active))
     |> unique_constraint(:livekit_room_name)
+    |> foreign_key_constraint(:space_id)
   end
 end
