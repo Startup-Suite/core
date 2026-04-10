@@ -306,6 +306,120 @@ defmodule Platform.Meetings do
     end
   end
 
+  @doc """
+  Generate a LiveKit access token for an agent to join a room.
+
+  Similar to `generate_token/2` but uses the agent's slug as identity
+  and includes agent metadata in the token. The agent gets the same
+  permissions as a human participant (publish, subscribe, data).
+
+  ## Parameters
+
+    - `room` — a `%Room{}` struct with `livekit_room_name`
+    - `agent` — a map or struct with `:id`, `:slug`, and `:name`
+
+  Returns `{:ok, token_string}` or `{:error, reason}`.
+  """
+  @spec generate_agent_token(Room.t(), map()) :: {:ok, String.t()} | {:error, atom()}
+  def generate_agent_token(%Room{} = room, %{id: agent_id, slug: slug, name: name}) do
+    api_key = System.get_env("LIVEKIT_API_KEY")
+    api_secret = System.get_env("LIVEKIT_API_SECRET")
+
+    if is_nil(api_key) or is_nil(api_secret) do
+      {:error, :livekit_not_configured}
+    else
+      now = System.system_time(:second)
+      ttl = 6 * 60 * 60
+      identity = "agent:#{slug}"
+
+      metadata =
+        Jason.encode!(%{
+          "kind" => "agent",
+          "agent_id" => agent_id,
+          "agent_slug" => slug
+        })
+
+      claims = %{
+        "iss" => api_key,
+        "sub" => identity,
+        "nbf" => now,
+        "exp" => now + ttl,
+        "jti" => Ecto.UUID.generate(),
+        "name" => name,
+        "metadata" => metadata,
+        "video" => %{
+          "room" => room.livekit_room_name,
+          "roomJoin" => true,
+          "canPublish" => true,
+          "canSubscribe" => true,
+          "canPublishData" => true
+        }
+      }
+
+      {:ok, encode_jwt(claims, api_secret)}
+    end
+  end
+
+  @doc """
+  Dispatch a meeting_join signal to an agent's runtime.
+
+  Generates an agent token for the given room, then broadcasts a
+  `meeting_join` event to the agent's runtime channel topic. The
+  runtime worker is expected to connect to LiveKit using the provided
+  token and begin the STT/LLM/TTS loop.
+
+  ## Parameters
+
+    - `room` — a `%Room{}` struct (must have `livekit_room_name` and `space_id`)
+    - `agent` — a `%Agent{}` struct (must have `id`, `slug`, `name`, `runtime_id`)
+    - `opts` — optional keyword list:
+      - `:space_id` — the space context (defaults to `room.space_id`)
+
+  Returns `{:ok, :dispatched}` or `{:error, reason}`.
+  """
+  def dispatch_meeting_join(%Room{} = room, %{runtime_id: runtime_id} = agent, opts \\ []) do
+    alias Platform.Federation
+    alias Platform.Federation.RuntimePresence
+
+    space_id = Keyword.get(opts, :space_id, room.space_id)
+
+    with runtime when not is_nil(runtime) <- Federation.get_runtime(runtime_id),
+         true <- RuntimePresence.online?(runtime.runtime_id),
+         {:ok, token} <- generate_agent_token(room, agent) do
+      payload = %{
+        event: "meeting_join",
+        room_name: room.livekit_room_name,
+        room_id: room.id,
+        token: token,
+        agent_identity: "agent:#{agent.slug}",
+        agent_name: agent.name,
+        agent_id: agent.id,
+        space_id: space_id
+      }
+
+      PlatformWeb.Endpoint.broadcast(
+        "runtime:#{runtime.runtime_id}",
+        "meeting_join",
+        payload
+      )
+
+      Logger.info(
+        "[Meetings] dispatched meeting_join to agent=#{agent.slug} " <>
+          "room=#{room.livekit_room_name} runtime=#{runtime.runtime_id}"
+      )
+
+      {:ok, :dispatched}
+    else
+      nil -> {:error, :runtime_not_found}
+      false -> {:error, :runtime_offline}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def dispatch_meeting_join(_room, _agent, _opts) do
+    {:error, :invalid_agent}
+  end
+
   defp encode_jwt(claims, secret) do
     header = %{"alg" => "HS256", "typ" => "JWT"}
 
