@@ -1,4 +1,4 @@
-defmodule Platform.MeetingsTest do
+defmodule Platform.Meetings.PresenceTest do
   @moduledoc """
   Tests for `Platform.Meetings` context — PubSub presence helpers,
   participant tracking, and space-level presence queries.
@@ -32,11 +32,11 @@ defmodule Platform.MeetingsTest do
     room
   end
 
-  defp join_participant(room, identity, attrs \\ %{}) do
+  defp join_participant(room, display_name, attrs \\ %{}) do
     {:ok, participant} =
       Meetings.participant_joined(
         room,
-        Map.merge(%{identity: identity, display_name: identity}, attrs)
+        Map.merge(%{display_name: display_name}, attrs)
       )
 
     participant
@@ -83,7 +83,7 @@ defmodule Platform.MeetingsTest do
       {:ok, room} = Meetings.ensure_room(space.id)
 
       assert room.space_id == space.id
-      assert room.livekit_room_name == "space:#{space.id}"
+      assert room.livekit_room_name == "space-#{space.id}"
       assert room.status == "idle"
     end
 
@@ -141,11 +141,9 @@ defmodule Platform.MeetingsTest do
 
       {:ok, participant} =
         Meetings.participant_joined(room, %{
-          identity: "user:bob",
           display_name: "Bob"
         })
 
-      assert participant.identity == "user:bob"
       assert participant.display_name == "Bob"
       assert participant.room_id == room.id
       assert is_nil(participant.left_at)

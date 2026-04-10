@@ -1896,7 +1896,10 @@ defmodule PlatformWeb.ChatLive do
               <span class="bg-success rounded-full w-2 h-2 animate-pulse flex-shrink-0"></span>
               <%!-- Participant avatars (desktop only, max 3 + overflow) --%>
               <span class="hidden lg:flex items-center -space-x-2">
-                <span :for={p <- Enum.take(@meeting_participants, 3)} class="ring-2 ring-base-100 rounded-full">
+                <span
+                  :for={p <- Enum.take(@meeting_participants, 3)}
+                  class="ring-2 ring-base-100 rounded-full"
+                >
                   <.human_avatar
                     name={meeting_participant_name(p)}
                     avatar_url={meeting_participant_avatar(p)}
