@@ -31,10 +31,12 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     body = Jason.encode!(payload)
     token = sign_payload(body, secret)
 
+    # Send raw JSON body so the CacheBodyReader caches exactly what we signed
     conn
     |> put_req_header("content-type", "application/json")
     |> put_req_header("authorization", token)
-    |> post(@livekit_webhook_path, payload)
+    |> Plug.Conn.assign(:raw_body, body)
+    |> post(@livekit_webhook_path, body)
   end
 
   defp participant_joined_payload(room_name, identity, name \\ nil) do
