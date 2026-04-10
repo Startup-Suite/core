@@ -1123,6 +1123,39 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  # ── Meeting join/leave from chat page ─────────────────────────────────────
+
+  def handle_event("join-meeting-click", _params, socket) do
+    space = socket.assigns.active_space
+
+    if space && Meetings.enabled?() do
+      case Meetings.ensure_room(space.id) do
+        {:ok, room} ->
+          user_id = socket.assigns.user_id
+          display_name = socket.assigns[:current_user] || user_id
+
+          case Meetings.generate_token(room, %{identity: user_id, name: display_name}) do
+            {:ok, token} ->
+              {:noreply,
+               push_event(socket, "join-meeting", %{
+                 token: token,
+                 url: Meetings.livekit_url(),
+                 room_name: room.livekit_room_name,
+                 space_slug: space.slug
+               })}
+
+            {:error, _reason} ->
+              {:noreply, put_flash(socket, :error, "Could not generate meeting token.")}
+          end
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not create meeting room.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({:new_message, msg}, socket) do
     active_space = socket.assigns.active_space
@@ -1694,6 +1727,29 @@ defmodule PlatformWeb.ChatLive do
                 </span>
                 <span class="text-[0.65rem]">In call</span>
               </span>
+
+              <%!-- Join/Leave meeting button --%>
+              <%= if Meetings.enabled?() do %>
+                <%= if @in_meeting && @meeting_space_slug == @active_space.slug do %>
+                  <button
+                    phx-click="leave-meeting-click"
+                    class="ml-2 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-error/10 text-error hover:bg-error/20 transition-colors"
+                    title="Leave meeting"
+                  >
+                    <span class="hero-phone-x-mark size-3.5"></span>
+                    <span>Leave</span>
+                  </button>
+                <% else %>
+                  <button
+                    phx-click="join-meeting-click"
+                    class="ml-2 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-success/10 text-success hover:bg-success/20 transition-colors"
+                    title="Join meeting"
+                  >
+                    <span class="hero-phone size-3.5"></span>
+                    <span>{if @meeting_active, do: "Join", else: "Start call"}</span>
+                  </button>
+                <% end %>
+              <% end %>
 
               <%!-- Promote to channel button for groups --%>
               <form

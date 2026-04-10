@@ -12,6 +12,7 @@ defmodule PlatformWeb.ShellLive do
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Chat.SpaceAgentPresence
   alias Platform.Meetings
+  alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
   def on_mount(:default, _params, session, socket) do
@@ -56,6 +57,7 @@ defmodule PlatformWeb.ShellLive do
       # Meeting bar state
       |> assign(:in_meeting, false)
       |> assign(:meeting_room_name, nil)
+      |> assign(:meeting_room_id, nil)
       |> assign(:meeting_space_slug, nil)
       |> assign(:meeting_space_name, nil)
       |> assign(:meeting_mic_enabled, true)
@@ -81,6 +83,17 @@ defmodule PlatformWeb.ShellLive do
             end
 
           {:halt, assign(socket, :presence_list, list)}
+
+        # Meeting room finished server-side — auto-clear the bar
+        {:room_finished, _room}, socket ->
+          {:halt,
+           socket
+           |> push_event("leave-meeting", %{})
+           |> clear_meeting_state()}
+
+        # Meeting room activated — no action needed for the bar
+        {:room_activated, _room}, socket ->
+          {:halt, socket}
 
         _msg, socket ->
           {:cont, socket}
@@ -114,10 +127,18 @@ defmodule PlatformWeb.ShellLive do
         "meeting-joined", %{"room_name" => room_name, "space_slug" => space_slug}, socket ->
           space_name = resolve_space_name(space_slug)
 
+          # Subscribe to room PubSub for server-side events (room finished, etc.)
+          room = Meetings.get_room_by_name(room_name)
+
+          if room && connected?(socket) do
+            MeetingsPubSub.subscribe_room(room.id)
+          end
+
           socket =
             socket
             |> assign(:in_meeting, true)
             |> assign(:meeting_room_name, room_name)
+            |> assign(:meeting_room_id, room && room.id)
             |> assign(:meeting_space_slug, space_slug)
             |> assign(:meeting_space_name, space_name)
             |> assign(:meeting_mic_enabled, true)
@@ -126,9 +147,11 @@ defmodule PlatformWeb.ShellLive do
           {:halt, socket}
 
         "meeting-left", _params, socket ->
+          unsubscribe_meeting_room(socket)
           {:halt, clear_meeting_state(socket)}
 
         "meeting-disconnected", _params, socket ->
+          unsubscribe_meeting_room(socket)
           {:halt, clear_meeting_state(socket)}
 
         "meeting-mic-toggled", %{"enabled" => enabled}, socket ->
@@ -325,10 +348,17 @@ defmodule PlatformWeb.ShellLive do
     socket
     |> assign(:in_meeting, false)
     |> assign(:meeting_room_name, nil)
+    |> assign(:meeting_room_id, nil)
     |> assign(:meeting_space_slug, nil)
     |> assign(:meeting_space_name, nil)
     |> assign(:meeting_mic_enabled, true)
     |> assign(:meeting_camera_enabled, false)
+  end
+
+  defp unsubscribe_meeting_room(socket) do
+    if room_id = socket.assigns[:meeting_room_id] do
+      MeetingsPubSub.unsubscribe_room(room_id)
+    end
   end
 
   defp resolve_space_name(slug) when is_binary(slug) do
