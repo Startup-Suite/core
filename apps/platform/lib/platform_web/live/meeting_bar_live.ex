@@ -48,7 +48,8 @@ defmodule PlatformWeb.MeetingBarLive do
         <div class="flex h-12 items-center justify-between px-4">
           <%!-- Left: meeting info --%>
           <div class="flex items-center gap-3 min-w-0">
-            <span class="inline-block size-2 rounded-full bg-green-500 animate-pulse flex-shrink-0"></span>
+            <span class="inline-block size-2 rounded-full bg-green-500 animate-pulse flex-shrink-0">
+            </span>
             <div class="min-w-0">
               <span class="text-sm font-medium text-base-content truncate block">
                 {meeting_display_name(@active_meeting)}
@@ -84,7 +85,8 @@ defmodule PlatformWeb.MeetingBarLive do
               <span class={[
                 "size-4",
                 if(@mic_enabled, do: "hero-microphone", else: "hero-microphone-slash")
-              ]}></span>
+              ]}>
+              </span>
             </button>
 
             <%!-- Camera toggle --%>
@@ -102,7 +104,8 @@ defmodule PlatformWeb.MeetingBarLive do
               <span class={[
                 "size-4",
                 if(@camera_enabled, do: "hero-video-camera", else: "hero-video-camera-slash")
-              ]}></span>
+              ]}>
+              </span>
             </button>
 
             <%!-- Return to call --%>

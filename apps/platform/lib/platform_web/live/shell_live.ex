@@ -92,30 +92,38 @@ defmodule PlatformWeb.ShellLive do
 
         {:meeting_joined, info}, socket ->
           {:halt,
-            socket
-            |> assign(:active_meeting, info)
-            |> assign(:meeting_started_at, info[:started_at] || DateTime.utc_now())
-            |> assign(:participant_count, info[:participant_count] || 1)
-            |> assign(:mic_enabled, true)
-            |> assign(:camera_enabled, false)}
+           socket
+           |> assign(:active_meeting, info)
+           |> assign(:meeting_started_at, info[:started_at] || DateTime.utc_now())
+           |> assign(:participant_count, info[:participant_count] || 1)
+           |> assign(:mic_enabled, true)
+           |> assign(:camera_enabled, false)}
 
         {:meeting_left, _info}, socket ->
           {:halt,
-            socket
-            |> assign(:active_meeting, nil)
-            |> assign(:meeting_started_at, nil)
-            |> assign(:participant_count, 0)
-            |> assign(:mic_enabled, true)
-            |> assign(:camera_enabled, false)}
+           socket
+           |> assign(:active_meeting, nil)
+           |> assign(:meeting_started_at, nil)
+           |> assign(:participant_count, 0)
+           |> assign(:mic_enabled, true)
+           |> assign(:camera_enabled, false)}
 
         {:meeting_participant_update, info}, socket ->
-          {:halt, assign(socket, :participant_count, info[:participant_count] || socket.assigns.participant_count)}
+          {:halt,
+           assign(
+             socket,
+             :participant_count,
+             info[:participant_count] || socket.assigns.participant_count
+           )}
 
         {:meeting_media_state, info}, socket ->
           {:halt,
-            socket
-            |> assign(:mic_enabled, Map.get(info, :mic_enabled, socket.assigns.mic_enabled))
-            |> assign(:camera_enabled, Map.get(info, :camera_enabled, socket.assigns.camera_enabled))}
+           socket
+           |> assign(:mic_enabled, Map.get(info, :mic_enabled, socket.assigns.mic_enabled))
+           |> assign(
+             :camera_enabled,
+             Map.get(info, :camera_enabled, socket.assigns.camera_enabled)
+           )}
 
         _msg, socket ->
           {:cont, socket}
@@ -158,28 +166,31 @@ defmodule PlatformWeb.ShellLive do
           }
 
           {:halt,
-            socket
-            |> assign(:active_meeting, meeting_info)
-            |> assign(:meeting_started_at, meeting_info.started_at)
-            |> assign(:participant_count, meeting_info.participant_count)
-            |> assign(:mic_enabled, true)
-            |> assign(:camera_enabled, false)}
+           socket
+           |> assign(:active_meeting, meeting_info)
+           |> assign(:meeting_started_at, meeting_info.started_at)
+           |> assign(:participant_count, meeting_info.participant_count)
+           |> assign(:mic_enabled, true)
+           |> assign(:camera_enabled, false)}
 
         "meeting:disconnected", _params, socket ->
           {:halt,
-            socket
-            |> assign(:active_meeting, nil)
-            |> assign(:meeting_started_at, nil)
-            |> assign(:participant_count, 0)
-            |> assign(:mic_enabled, true)
-            |> assign(:camera_enabled, false)}
+           socket
+           |> assign(:active_meeting, nil)
+           |> assign(:meeting_started_at, nil)
+           |> assign(:participant_count, 0)
+           |> assign(:mic_enabled, true)
+           |> assign(:camera_enabled, false)}
 
         "meeting:state-sync", params, socket ->
           {:halt,
-            socket
-            |> assign(:participant_count, params["participant_count"] || socket.assigns.participant_count)
-            |> assign(:mic_enabled, params["mic_enabled"])
-            |> assign(:camera_enabled, params["camera_enabled"])}
+           socket
+           |> assign(
+             :participant_count,
+             params["participant_count"] || socket.assigns.participant_count
+           )
+           |> assign(:mic_enabled, params["mic_enabled"])
+           |> assign(:camera_enabled, params["camera_enabled"])}
 
         "meeting:error", _params, socket ->
           {:halt, socket}
@@ -195,12 +206,12 @@ defmodule PlatformWeb.ShellLive do
 
         "leave_meeting", _params, socket ->
           {:halt,
-            socket
-            |> assign(:active_meeting, nil)
-            |> assign(:meeting_started_at, nil)
-            |> assign(:participant_count, 0)
-            |> assign(:mic_enabled, true)
-            |> assign(:camera_enabled, false)}
+           socket
+           |> assign(:active_meeting, nil)
+           |> assign(:meeting_started_at, nil)
+           |> assign(:participant_count, 0)
+           |> assign(:mic_enabled, true)
+           |> assign(:camera_enabled, false)}
 
         _event, _params, socket ->
           {:cont, socket}
