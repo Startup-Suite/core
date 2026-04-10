@@ -186,4 +186,43 @@ defmodule Platform.Meetings do
         |> Repo.update()
     end
   end
+
+  # ── Summary Posting ────────────────────────────────────────────────────────
+
+  @doc """
+  Post a meeting summary as a system message to the space.
+
+  The message includes the formatted summary and a download link
+  for the full transcript.
+  """
+  @spec post_summary_to_space(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def post_summary_to_space(space_id, transcript_id, summary)
+      when is_binary(space_id) and is_binary(transcript_id) and is_binary(summary) do
+    content = """
+    📝 **Meeting Summary**
+
+    #{summary}
+
+    [📄 Full transcript](/api/transcripts/#{transcript_id}/download)
+    """
+
+    attrs = %{
+      space_id: space_id,
+      participant_id: system_participant_id(),
+      content_type: "system",
+      content: String.trim(content),
+      metadata: %{"source" => "meeting_summarizer", "transcript_id" => transcript_id}
+    }
+
+    case Platform.Chat.post_message(attrs) do
+      {:ok, _message} -> :ok
+      {:error, reason} -> {:error, {:post_failed, reason}}
+    end
+  end
+
+  # Returns a deterministic "system" participant ID for automated messages.
+  # Uses the nil UUID as a convention for system-generated content.
+  defp system_participant_id do
+    "00000000-0000-0000-0000-000000000000"
+  end
 end

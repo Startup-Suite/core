@@ -69,9 +69,7 @@ defmodule PlatformWeb.LivekitWebhookController do
             {:ok, finalized} ->
               Logger.info("[LiveKit] Finalized transcript #{finalized.id} for room #{room_id}")
 
-              # Trigger async summary generation (built in stage 4).
-              # For now, we just finalize — the Summarizer module will be
-              # wired in when it exists.
+              # Trigger async LLM summary generation
               maybe_trigger_summary(finalized)
 
               conn
@@ -200,15 +198,6 @@ defmodule PlatformWeb.LivekitWebhookController do
   end
 
   defp maybe_trigger_summary(transcript) do
-    # Stage 4 will implement Meetings.Summarizer.summarize_async/1.
-    # For now, check if the module exists and call it if available.
-    if Code.ensure_loaded?(Platform.Meetings.Summarizer) &&
-         function_exported?(Platform.Meetings.Summarizer, :summarize_async, 1) do
-      Platform.Meetings.Summarizer.summarize_async(transcript)
-    else
-      Logger.debug(
-        "[LiveKit] Summarizer not yet available — skipping summary for transcript #{transcript.id}"
-      )
-    end
+    Platform.Meetings.Summarizer.summarize_async(transcript)
   end
 end
