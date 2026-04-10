@@ -9,7 +9,7 @@ defmodule Platform.Meetings do
 
   import Ecto.Query
 
-  alias Platform.Meetings.{Participant, Recording, Room}
+  alias Platform.Meetings.{Egress, Participant, Recording, Room}
   alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
@@ -336,6 +336,76 @@ defmodule Platform.Meetings do
   defp broadcast_presence_update(_), do: :ok
 
   # ── Recordings ───────────────────────────────────────────────────────────
+
+  @doc """
+  Start recording a meeting room via LiveKit Egress.
+
+  Creates a `meeting_recordings` record in `starting` status, then calls the
+  LiveKit Egress API to start a room composite recording. On success, updates
+  the record with the egress ID.
+
+  Returns `{:ok, recording}` or `{:error, reason}`.
+  """
+  @spec start_recording(Room.t(), map()) :: {:ok, Recording.t()} | {:error, term()}
+  def start_recording(%Room{} = room, %{user_id: user_id} = _opts) do
+    recording_attrs = %{
+      room_id: room.id,
+      space_id: room.space_id,
+      status: "starting",
+      started_by: user_id,
+      started_at: DateTime.utc_now()
+    }
+
+    with {:ok, recording} <- create_recording(recording_attrs),
+         {:ok, egress_info} <-
+           Egress.start_room_composite_egress(room.livekit_room_name) do
+      egress_id = Map.get(egress_info, "egressId") || Map.get(egress_info, "egress_id")
+
+      update_recording(recording, %{
+        egress_id: egress_id,
+        metadata: %{"egress_info" => egress_info}
+      })
+      |> tap(fn
+        {:ok, rec} ->
+          MeetingsPubSub.broadcast_room(room.id, {:recording_started, rec})
+          broadcast_presence_update(room.space_id)
+
+        _ ->
+          :ok
+      end)
+    else
+      {:error, reason} ->
+        Logger.error("[Meetings] Failed to start recording: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Stop an active recording.
+
+  Calls the LiveKit Egress API to stop the egress. Updates the recording
+  status to `processing`. The final status update happens when the
+  `egress_ended` webhook fires.
+  """
+  @spec stop_recording(Recording.t()) :: {:ok, Recording.t()} | {:error, term()}
+  def stop_recording(%Recording{egress_id: nil}), do: {:error, :no_egress_id}
+
+  def stop_recording(%Recording{egress_id: egress_id} = recording) do
+    case Egress.stop_egress(egress_id) do
+      {:ok, _egress_info} ->
+        update_recording(recording, %{status: "processing"})
+        |> tap(fn
+          {:ok, rec} ->
+            MeetingsPubSub.broadcast_room(recording.room_id, {:recording_stopping, rec})
+
+          _ ->
+            :ok
+        end)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @doc "Create a recording record."
   @spec create_recording(map()) :: {:ok, Recording.t()} | {:error, Ecto.Changeset.t()}
