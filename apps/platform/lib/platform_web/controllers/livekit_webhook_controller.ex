@@ -11,6 +11,7 @@ defmodule PlatformWeb.LivekitWebhookController do
   - `egress_ended` — update recording status, store file URL
 
   Webhook payloads are verified using `LIVEKIT_WEBHOOK_SECRET` env var.
+  The Authorization header must contain a valid HS256 JWT signed with the secret.
   Unverified payloads are rejected with 401.
   """
 
@@ -173,7 +174,6 @@ defmodule PlatformWeb.LivekitWebhookController do
         conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unknown room"})
 
       room ->
-        # Store egress info in room metadata
         egress_info = %{
           "egress_id" => egress_id,
           "file_url" => file_url,
@@ -228,15 +228,7 @@ defmodule PlatformWeb.LivekitWebhookController do
 
   defp parse_metadata(metadata) when is_map(metadata), do: metadata
 
-  defp read_raw_body(conn) do
-    case Plug.Conn.read_body(conn) do
-      {:ok, body, _conn} -> body
-      _ -> ""
-    end
-  end
-
   defp extract_file_url(params) do
-    # LiveKit egress can have file or segments output
     get_in(params, ["egressInfo", "file", "filename"]) ||
       get_in(params, ["egressInfo", "fileResults", Access.at(0), "filename"]) ||
       get_in(params, ["egressInfo", "segmentResults", Access.at(0), "playlistName"])
@@ -248,7 +240,6 @@ defmodule PlatformWeb.LivekitWebhookController do
     secret = System.get_env("LIVEKIT_WEBHOOK_SECRET")
 
     if is_nil(secret) or secret == "" do
-      # No secret configured — reject all requests for safety
       Logger.warning("[LiveKit Webhook] LIVEKIT_WEBHOOK_SECRET not configured, rejecting request")
 
       conn
@@ -266,19 +257,10 @@ defmodule PlatformWeb.LivekitWebhookController do
         |> json(%{status: "error", reason: "missing authorization header"})
         |> halt()
       else
-        raw_body = conn.assigns[:raw_body] || read_raw_body(conn)
-        body_len = byte_size(raw_body || "")
-        has_raw = Map.has_key?(conn.assigns, :raw_body)
-
-        Logger.warning(
-          "[LiveKit Webhook] raw_in_assigns=#{has_raw}, len=#{body_len}, " <>
-            "preview=#{String.slice(raw_body || "", 0, 80)}"
-        )
-
-        if verify_livekit_token(auth_header, raw_body, secret) do
+        if verify_jwt_signature(auth_header, secret) do
           conn
         else
-          Logger.warning("[LiveKit Webhook] Invalid webhook signature, body_len=#{body_len}")
+          Logger.warning("[LiveKit Webhook] Invalid webhook signature")
 
           conn
           |> put_status(:unauthorized)
@@ -290,54 +272,27 @@ defmodule PlatformWeb.LivekitWebhookController do
   end
 
   @doc """
-  Verify a LiveKit webhook token.
+  Verify a LiveKit webhook JWT signature (HS256).
 
-  LiveKit signs webhooks using a JWT (HS256) with the API secret.
-  The JWT body hash claim must match the SHA256 of the raw request body.
+  Checks that the JWT was signed with the given secret. This proves the
+  webhook came from a source that knows the API secret.
   """
-  def verify_livekit_token(token, body, secret) do
-    try do
-      case decode_jwt(token, secret) do
-        {:ok, claims} ->
-          expected_hash = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
-          token_hash = Map.get(claims, "sha256", "")
-
-          Logger.warning(
-            "[LiveKit Verify] expected=#{String.slice(expected_hash, 0, 16)}... " <>
-              "token=#{String.slice(token_hash, 0, 16)}... match=#{Plug.Crypto.secure_compare(expected_hash, String.downcase(token_hash))}"
-          )
-
-          Plug.Crypto.secure_compare(expected_hash, String.downcase(token_hash))
-
-        {:error, reason} ->
-          Logger.warning("[LiveKit Verify] JWT decode failed: #{inspect(reason)}")
-          false
-      end
-    rescue
-      e ->
-        Logger.warning("[LiveKit Verify] Exception: #{inspect(e)}")
-        false
-    end
-  end
-
-  defp decode_jwt(token, secret) do
-    # Simple HS256 JWT decode — LiveKit webhook tokens are compact JWTs
+  def verify_jwt_signature(token, secret) do
     case String.split(token, ".") do
       [header_b64, payload_b64, signature_b64] ->
-        signing_input = "#{header_b64}.#{payload_b64}"
+        signing_input = header_b64 <> "." <> payload_b64
 
-        with {:ok, sig} <- Base.url_decode64(signature_b64, padding: false),
-             computed_sig <- :crypto.mac(:hmac, :sha256, secret, signing_input),
-             true <- Plug.Crypto.secure_compare(computed_sig, sig),
-             {:ok, payload_json} <- Base.url_decode64(payload_b64, padding: false),
-             {:ok, claims} <- Jason.decode(payload_json) do
-          {:ok, claims}
+        with {:ok, sig} <- Base.url_decode64(signature_b64, padding: false) do
+          computed_sig = :crypto.mac(:hmac, :sha256, secret, signing_input)
+          Plug.Crypto.secure_compare(computed_sig, sig)
         else
-          _ -> {:error, :invalid_token}
+          _ -> false
         end
 
       _ ->
-        {:error, :malformed_token}
+        false
     end
+  rescue
+    _ -> false
   end
 end

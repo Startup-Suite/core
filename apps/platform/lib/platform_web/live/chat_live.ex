@@ -103,6 +103,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:mention_suggestions, [])
       |> assign(:push_permission, "unknown")
       |> assign(:unread_counts, if(user_id, do: Chat.unread_counts_for_user(user_id), else: %{}))
+      |> assign(:meeting_counts, %{})
       |> assign(:upload_dialog_open, false)
       |> assign(:upload_caption, "")
       |> assign(:drafts, %{})
@@ -126,11 +127,22 @@ defmodule PlatformWeb.ChatLive do
 
     # Subscribe to all spaces (channels + DMs) so we can count unread messages
     # in background conversations (active space subscription happens in handle_params)
-    if connected?(socket) do
-      Enum.each(channels ++ dm_conversations, fn space ->
-        ChatPubSub.subscribe(space.id)
-      end)
-    end
+    socket =
+      if connected?(socket) do
+        all_spaces = channels ++ dm_conversations
+
+        Enum.each(all_spaces, fn space ->
+          ChatPubSub.subscribe(space.id)
+          MeetingsPubSub.subscribe_presence(space.id)
+        end)
+
+        # Load initial meeting counts for sidebar indicators
+        space_ids = Enum.map(all_spaces, & &1.id)
+        meeting_counts = Meetings.spaces_with_active_meetings(space_ids)
+        assign(socket, :meeting_counts, meeting_counts)
+      else
+        socket
+      end
 
     {:ok, socket}
   end

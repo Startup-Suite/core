@@ -10,18 +10,18 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
   defp webhook_secret, do: "test-livekit-secret"
 
   defp sign_request(secret) do
-    # Create a minimal valid JWT signed with the secret (HS256)
+    # Create a minimal valid HS256 JWT signed with the secret
     header = %{"alg" => "HS256", "typ" => "JWT"}
     payload = %{"iss" => "livekit", "nbf" => System.system_time(:second)}
 
     header_b64 = header |> Jason.encode!() |> Base.url_encode64(padding: false)
     payload_b64 = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
 
-    signing_input = "#{header_b64}.#{payload_b64}"
+    signing_input = header_b64 <> "." <> payload_b64
     signature = :crypto.mac(:hmac, :sha256, secret, signing_input)
     sig_b64 = Base.url_encode64(signature, padding: false)
 
-    "#{header_b64}.#{payload_b64}.#{sig_b64}"
+    header_b64 <> "." <> payload_b64 <> "." <> sig_b64
   end
 
   defp post_webhook(conn, payload, opts \\ []) do
@@ -109,11 +109,9 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
 
       assert is_binary(id)
 
-      # Room was created
       room = Meetings.get_room_by_name(room_name)
       assert room != nil
 
-      # Participant was recorded
       participants = Meetings.list_active_participants(room.id)
       assert length(participants) == 1
       assert hd(participants).identity == "user-alice"
@@ -141,11 +139,9 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "marks participant as left", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Join first
       conn1 = post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
       assert %{"status" => "recorded"} = json_response(conn1, 201)
 
-      # Then leave
       conn2 = post_webhook(conn, participant_left_payload(room_name, "user-alice"))
 
       assert %{
@@ -168,11 +164,9 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "ignores leave for unknown participant", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Create room via join
       conn1 = post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
       assert %{"status" => "recorded"} = json_response(conn1, 201)
 
-      # Leave with different identity
       conn2 = post_webhook(conn, participant_left_payload(room_name, "user-unknown"))
 
       assert %{"status" => "ignored", "reason" => "participant not found"} =
@@ -218,7 +212,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "sets room to idle and cleans up participants", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Start room and add participants
       post_webhook(conn, room_started_payload(room_name))
       post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
       post_webhook(conn, participant_joined_payload(room_name, "user-bob"))
@@ -226,7 +219,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
       room = Meetings.get_room_by_name(room_name)
       assert length(Meetings.list_active_participants(room.id)) == 2
 
-      # Finish room
       conn = post_webhook(conn, room_finished_payload(room_name))
 
       assert %{
@@ -252,7 +244,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "records egress info in room metadata", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Create room first
       post_webhook(conn, room_started_payload(room_name))
 
       payload = egress_ended_payload(room_name, "EG_abc123", "recordings/meeting.mp4")
@@ -358,7 +349,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "participant_joined broadcasts on room topic", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Create room first so we know the ID for subscribing
       {:ok, room} = Meetings.find_or_create_room(room_name)
       Meetings.subscribe_room(room.id)
 
@@ -372,7 +362,6 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "participant_left broadcasts on room topic", %{conn: conn} do
       room_name = "room-#{System.unique_integer([:positive])}"
 
-      # Join first
       post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
 
       room = Meetings.get_room_by_name(room_name)
