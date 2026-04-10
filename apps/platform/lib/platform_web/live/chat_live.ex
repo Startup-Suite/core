@@ -29,6 +29,8 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.AttachmentStorage
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
+  alias Platform.Meetings
+  alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
   @message_limit 50
@@ -80,6 +82,10 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:canvases_by_message_id, %{})
       |> assign(:active_canvas, nil)
       |> assign(:show_canvases, false)
+      |> assign(:meeting_active, false)
+      |> assign(:meeting_participants, [])
+      |> assign(:meeting_participant_count, 0)
+      |> assign(:meeting_counts, %{})
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -130,11 +136,25 @@ defmodule PlatformWeb.ChatLive do
 
     # Subscribe to all spaces (channels + DMs) so we can count unread messages
     # in background conversations (active space subscription happens in handle_params)
-    if connected?(socket) do
-      Enum.each(channels ++ dm_conversations, fn space ->
-        ChatPubSub.subscribe(space.id)
-      end)
-    end
+    socket =
+      if connected?(socket) do
+        all_spaces = channels ++ dm_conversations
+
+        Enum.each(all_spaces, fn space ->
+          ChatPubSub.subscribe(space.id)
+          MeetingsPubSub.subscribe_presence(space.id)
+        end)
+
+        # Subscribe to global meeting presence summary for sidebar indicators
+        MeetingsPubSub.subscribe_presence_summary()
+
+        # Load initial meeting counts for sidebar indicators
+        space_ids = Enum.map(all_spaces, & &1.id)
+        meeting_counts = Meetings.active_meeting_counts(space_ids)
+        assign(socket, :meeting_counts, meeting_counts)
+      else
+        socket
+      end
 
     {:ok, socket}
   end
@@ -146,6 +166,11 @@ defmodule PlatformWeb.ChatLive do
       if prev = socket.assigns.active_space do
         ChatPubSub.unsubscribe(prev.id)
         Phoenix.PubSub.unsubscribe(Platform.PubSub, "active_agent:#{prev.id}")
+
+        # Unsubscribe from previous space's meeting room presence
+        if prev_room = Meetings.get_active_room(prev.id) do
+          MeetingsPubSub.unsubscribe_room(prev_room.id)
+        end
 
         if connected?(socket) do
           ChatPresence.untrack_in_space(self(), prev.id, socket.assigns.user_id)
@@ -173,6 +198,22 @@ defmodule PlatformWeb.ChatLive do
 
       participant = ensure_participant(space.id, socket.assigns.user_id)
       agent_presence = ensure_native_agent_presence(space.id)
+
+      # Subscribe to meeting room presence for this space and load participants
+      {meeting_participants, meeting_active, meeting_participant_count} =
+        if connected?(socket) do
+          case Meetings.get_active_room(space.id) do
+            nil ->
+              {[], false, 0}
+
+            room ->
+              MeetingsPubSub.subscribe_room(room.id)
+              participants = Meetings.active_participants(room.id)
+              {participants, participants != [], length(participants)}
+          end
+        else
+          {[], false, 0}
+        end
 
       if connected?(socket) && participant do
         display_name = resolve_display_name(socket.assigns.user_id, participant)
@@ -272,6 +313,9 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:channels, channels)
        |> assign(:dm_conversations, dm_convos)
        |> assign(:spaces, channels ++ dm_convos)
+       |> assign(:meeting_active, meeting_active)
+       |> assign(:meeting_participants, meeting_participants)
+       |> assign(:meeting_participant_count, meeting_participant_count)
        |> assign_new_canvas_form()
        |> assign(:meeting_active, false)
        |> assign(:meeting_room_name, nil)
@@ -1538,6 +1582,47 @@ defmodule PlatformWeb.ChatLive do
      socket
      |> assign(:active_agent_participant_id, agent_participant_id)
      |> assign(:active_agent_name, name)}
+  end
+
+  # ── Meeting presence updates ──────────────────────────────────────────────
+
+  def handle_info(
+        {:meeting_presence_update, %{space_id: space_id, active: active, count: count}},
+        socket
+      ) do
+    # Update sidebar meeting counts
+    meeting_counts =
+      if active do
+        Map.put(socket.assigns.meeting_counts, space_id, count)
+      else
+        Map.delete(socket.assigns.meeting_counts, space_id)
+      end
+
+    socket = assign(socket, :meeting_counts, meeting_counts)
+
+    # If this is the active space, also update the header presence
+    socket =
+      if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
+        meeting_participants =
+          if active, do: Meetings.active_participants_for_space(space_id), else: []
+
+        socket
+        |> assign(:meeting_active, active)
+        |> assign(:meeting_participants, meeting_participants)
+        |> assign(:meeting_participant_count, count)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:meeting_presence_summary, %{space_id: _space_id}}, socket) do
+    # Re-fetch all meeting counts for sidebar
+    all_spaces = socket.assigns.channels ++ socket.assigns.dm_conversations
+    space_ids = Enum.map(all_spaces, & &1.id)
+    meeting_counts = Meetings.active_meeting_counts(space_ids)
+    {:noreply, assign(socket, :meeting_counts, meeting_counts)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
