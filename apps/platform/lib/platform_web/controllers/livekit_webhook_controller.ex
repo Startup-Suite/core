@@ -25,7 +25,7 @@ defmodule PlatformWeb.LivekitWebhookController do
 
   # ── Plugs ────────────────────────────────────────────────────────────────
 
-  plug :verify_livekit_signature when action in [:handle]
+  plug(:verify_livekit_signature when action in [:handle])
 
   # ── Handlers ─────────────────────────────────────────────────────────────
 
