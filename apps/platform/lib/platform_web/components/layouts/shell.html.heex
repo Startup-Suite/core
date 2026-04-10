@@ -274,13 +274,17 @@
       <div
         class={[
           "fixed bottom-0 inset-x-0 z-50 flex items-center justify-between gap-3 border-t border-base-300 bg-base-200 px-4 py-2 shadow-lg",
-          if(String.starts_with?(@current_path, "/chat/#{@meeting_space_slug}"), do: "hidden", else: "")
+          if(String.starts_with?(@current_path, "/chat/#{@meeting_space_slug}"),
+            do: "hidden",
+            else: ""
+          )
         ]}
         id="meeting-bar"
       >
         <%!-- Left: meeting info --%>
         <div class="flex items-center gap-3 min-w-0">
-          <span class="inline-block size-2 rounded-full bg-success animate-pulse flex-shrink-0"></span>
+          <span class="inline-block size-2 rounded-full bg-success animate-pulse flex-shrink-0">
+          </span>
           <div class="min-w-0">
             <span class="text-sm font-medium text-base-content truncate block">
               {@meeting_space_name || "Meeting"}
@@ -304,8 +308,9 @@
           >
             <span class={[
               "size-4",
-              if(@meeting_mic_enabled, do: "hero-microphone", else: "hero-microphone-slash" )
-            ]}></span>
+              if(@meeting_mic_enabled, do: "hero-microphone", else: "hero-microphone-slash")
+            ]}>
+            </span>
           </button>
 
           <button
@@ -321,8 +326,12 @@
           >
             <span class={[
               "size-4",
-              if(@meeting_camera_enabled, do: "hero-video-camera", else: "hero-video-camera-slash")
-            ]}></span>
+              if(@meeting_camera_enabled,
+                do: "hero-video-camera",
+                else: "hero-video-camera-slash"
+              )
+            ]}>
+            </span>
           </button>
         </div>
 
