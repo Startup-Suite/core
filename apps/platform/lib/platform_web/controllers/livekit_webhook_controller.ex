@@ -270,7 +270,10 @@ defmodule PlatformWeb.LivekitWebhookController do
         body_len = byte_size(raw_body || "")
         has_raw = Map.has_key?(conn.assigns, :raw_body)
 
-        Logger.debug("[LiveKit Webhook] raw_body in assigns=#{has_raw}, length=#{body_len}")
+        Logger.warning(
+          "[LiveKit Webhook] raw_in_assigns=#{has_raw}, len=#{body_len}, " <>
+            "preview=#{String.slice(raw_body || "", 0, 80)}"
+        )
 
         if verify_livekit_token(auth_header, raw_body, secret) do
           conn
