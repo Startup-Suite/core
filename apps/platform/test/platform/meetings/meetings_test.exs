@@ -8,6 +8,8 @@ defmodule Platform.Meetings.PresenceTest do
 
   alias Platform.Meetings
   alias Platform.Meetings.PubSub, as: MeetingsPubSub
+  alias Platform.Meetings.{Recording, Room}
+  alias Platform.Chat
 
   # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -197,6 +199,17 @@ defmodule Platform.Meetings.PresenceTest do
   end
 
   # ── Helpers (shared) ─────────────────────────────────────────────────────
+
+  defp create_space(attrs \\ %{}) do
+    default = %{
+      name: "Test Space",
+      slug: "test-space-#{System.unique_integer([:positive])}",
+      kind: "channel"
+    }
+
+    {:ok, space} = Chat.create_space(Map.merge(default, attrs))
+    space
+  end
 
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
