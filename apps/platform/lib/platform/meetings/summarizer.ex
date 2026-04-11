@@ -116,12 +116,12 @@ defmodule Platform.Meetings.Summarizer do
 
   # -- Private ---------------------------------------------------------------
 
-  defp handle_empty_transcript(%{id: id, space_id: space_id}) do
+  defp handle_empty_transcript(%{id: id}) do
     summary = "This meeting had no transcribed content."
 
     case Meetings.complete_transcript(id, summary) do
       {:ok, _} ->
-        Meetings.post_summary_to_space(space_id, id, summary)
+        Logger.info("[Summarizer] Empty transcript #{id} marked complete (no summary posted)")
         :ok
 
       {:error, reason} ->

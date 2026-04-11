@@ -206,23 +206,20 @@ defmodule Platform.Meetings do
     [📄 Full transcript](/api/transcripts/#{transcript_id}/download)
     """
 
-    attrs = %{
-      space_id: space_id,
-      participant_id: system_participant_id(),
-      content_type: "system",
-      content: String.trim(content),
-      metadata: %{"source" => "meeting_summarizer", "transcript_id" => transcript_id}
-    }
+    with {:ok, participant} <-
+           Platform.Orchestration.ExecutionSpace.ensure_system_participant(space_id) do
+      attrs = %{
+        space_id: space_id,
+        participant_id: participant.id,
+        content_type: "system",
+        content: String.trim(content),
+        metadata: %{"source" => "meeting_summarizer", "transcript_id" => transcript_id}
+      }
 
-    case Platform.Chat.post_message(attrs) do
-      {:ok, _message} -> :ok
-      {:error, reason} -> {:error, {:post_failed, reason}}
+      case Platform.Chat.post_message(attrs) do
+        {:ok, _message} -> :ok
+        {:error, reason} -> {:error, {:post_failed, reason}}
+      end
     end
-  end
-
-  # Returns a deterministic "system" participant ID for automated messages.
-  # Uses the nil UUID as a convention for system-generated content.
-  defp system_participant_id do
-    "00000000-0000-0000-0000-000000000000"
   end
 end
