@@ -85,6 +85,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_active, false)
       |> assign(:meeting_participants, [])
       |> assign(:meeting_participant_count, 0)
+      |> assign(:meeting_speaking_identities, MapSet.new())
       |> assign(:meeting_invitable_agents, [])
       |> assign(:recordings, [])
       |> assign(:show_recordings, false)
@@ -1395,6 +1396,10 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
+  def handle_info({:active_speakers_changed, identities}, socket) do
+    {:noreply, assign(socket, :meeting_speaking_identities, MapSet.new(identities))}
+  end
+
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
     online_count =
       if space = socket.assigns.active_space do
@@ -1506,10 +1511,14 @@ defmodule PlatformWeb.ChatLive do
         meeting_participants =
           if active, do: Meetings.list_active_participants_for_space(space_id), else: []
 
+        speaking =
+          if active, do: socket.assigns.meeting_speaking_identities, else: MapSet.new()
+
         socket
         |> assign(:meeting_active, active)
         |> assign(:meeting_participants, meeting_participants)
         |> assign(:meeting_participant_count, count)
+        |> assign(:meeting_speaking_identities, speaking)
       else
         socket
       end
@@ -1797,10 +1806,33 @@ defmodule PlatformWeb.ChatLive do
                 <%!-- Participant avatars (max 3) --%>
                 <span
                   :for={p <- Enum.take(@meeting_participants, 3)}
-                  class="inline-flex items-center justify-center size-5 rounded-full bg-success/20 text-[0.6rem] font-bold"
-                  title={p.display_name || p.name || p.identity}
+                  class="relative"
+                  title={p.name || p.identity}
                 >
-                  {String.first(p.display_name || p.name || p.identity || "?")}
+                  <%!-- Speaking ring --%>
+                  <span
+                    class={[
+                      "inline-flex items-center justify-center size-5 rounded-full text-[0.6rem] font-bold ring-1 transition-all",
+                      if(String.starts_with?(p.identity || "", "agent:"),
+                        do: "bg-primary/20 text-primary ring-primary/30",
+                        else: "bg-success/20 text-success ring-success/30"
+                      ),
+                      if(MapSet.member?(@meeting_speaking_identities, p.identity),
+                        do: "ring-2 ring-success animate-pulse",
+                        else: ""
+                      )
+                    ]}
+                  >
+                    {String.first(p.name || p.identity || "?")}
+                  </span>
+                  <%!-- AI badge for agent participants --%>
+                  <span
+                    :if={String.starts_with?(p.identity || "", "agent:")}
+                    class="absolute -bottom-0.5 -right-0.5 flex items-center justify-center size-2.5 rounded-full bg-primary text-[0.35rem] font-bold text-primary-content"
+                    title="AI Agent"
+                  >
+                    AI
+                  </span>
                 </span>
                 <span :if={@meeting_participant_count > 3} class="text-[0.65rem]">
                   +{@meeting_participant_count - 3}

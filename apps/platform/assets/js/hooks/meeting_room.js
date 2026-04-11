@@ -75,6 +75,14 @@ const MeetingRoom = {
         })
       })
 
+      // Active speaker detection — fires when speaking participants change
+      this.room.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const identities = speakers.map((p) => p.identity)
+        this.pushEvent("meeting-active-speakers-changed", {
+          identities: identities,
+        })
+      })
+
       // Connect
       await this.room.connect(url, token)
 

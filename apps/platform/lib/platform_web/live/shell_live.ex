@@ -221,6 +221,19 @@ defmodule PlatformWeb.ShellLive do
         "toggle-meeting-camera", _params, socket ->
           {:halt, push_event(socket, "toggle-camera", %{})}
 
+        "meeting-active-speakers-changed", %{"identities" => identities}, socket ->
+          # Broadcast to room PubSub so chat_live can update speaking indicators
+          room_id = socket.assigns[:meeting_room_id]
+
+          if room_id do
+            MeetingsPubSub.broadcast_room(
+              room_id,
+              {:active_speakers_changed, identities}
+            )
+          end
+
+          {:halt, socket}
+
         "start-recording-click", _params, socket ->
           room_id = socket.assigns[:meeting_room_id]
           user_id = socket.assigns[:current_user_id]
