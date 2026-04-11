@@ -10,8 +10,9 @@ defmodule Platform.Chat.AttentionRouter do
   3. **Single @mention** — set mentioned agent as active (mutex) and route.
   4. **Multi @mention** — route to all mentioned agents, clear the mutex.
   5. **No mention + active agent** — route to the mutex holder, refresh timeout.
-  6. **No mention + no active + watch ON + primary agent** — activate and route.
-  7. **No mention + no active + watch OFF** — silence (empty list).
+  6. **Execution spaces + no active** — route to the assigned task agent.
+  7. **No mention + no active + watch ON + primary agent** — activate and route.
+  8. **No mention + no active + watch OFF** — silence (empty list).
 
   ## Human participant routing
 
@@ -40,6 +41,7 @@ defmodule Platform.Chat.AttentionRouter do
   alias Platform.Chat.{ActiveAgentStore, AgentResponder, Message, Participant, Presence, Space}
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Repo
+  alias Platform.Tasks.Task, as: TaskRecord
 
   @handler_id "platform-chat-attention-router"
   @table :chat_attention_heartbeat
@@ -294,7 +296,7 @@ defmodule Platform.Chat.AttentionRouter do
 
     case length(mentioned_agents) do
       0 ->
-        route_no_mention(space, agent_recipients)
+        route_no_mention(space, message, agent_recipients)
 
       1 ->
         # Single @mention → set as active agent (mutex)
@@ -312,8 +314,36 @@ defmodule Platform.Chat.AttentionRouter do
     end
   end
 
-  # No @mention — check mutex, then watch, then silence
-  defp route_no_mention(%Space{} = space, agent_recipients) do
+  # No @mention — check mutex, then execution fallback/watch, then silence
+  defp route_no_mention(
+         %Space{kind: "execution"} = space,
+         %Message{participant_id: author_id},
+         agent_recipients
+       ) do
+    case execution_assignee_participant(space) do
+      {:ok, %Participant{id: assignee_participant_id}}
+      when assignee_participant_id == author_id ->
+        ActiveAgentStore.set_active(space.id, assignee_participant_id)
+        []
+
+      {:ok, %Participant{id: assignee_participant_id}} ->
+        reason =
+          if ActiveAgentStore.get_active(space.id) == assignee_participant_id and
+               Enum.any?(agent_recipients, &(&1.id == assignee_participant_id)) do
+            :active_agent
+          else
+            :watch
+          end
+
+        ActiveAgentStore.set_active(space.id, assignee_participant_id)
+        [%{participant_id: assignee_participant_id, reason: reason}]
+
+      _ ->
+        route_execution_active_or_watch(space, agent_recipients)
+    end
+  end
+
+  defp route_no_mention(%Space{} = space, _message, agent_recipients) do
     case ActiveAgentStore.get_active(space.id) do
       nil ->
         # No active agent — check watch mode
@@ -352,6 +382,49 @@ defmodule Platform.Chat.AttentionRouter do
         end
     end
   end
+
+  defp route_execution_active_or_watch(%Space{} = space, agent_recipients) do
+    case ActiveAgentStore.get_active(space.id) do
+      nil ->
+        route_watch(space, agent_recipients)
+
+      active_participant_id ->
+        if Enum.any?(agent_recipients, &(&1.id == active_participant_id)) do
+          ActiveAgentStore.set_active(space.id, active_participant_id)
+          [%{participant_id: active_participant_id, reason: :active_agent}]
+        else
+          still_active =
+            Repo.exists?(
+              from(p in Participant,
+                where: p.id == ^active_participant_id and is_nil(p.left_at)
+              )
+            )
+
+          if still_active do
+            []
+          else
+            ActiveAgentStore.clear_active(space.id)
+            route_watch(space, agent_recipients)
+          end
+        end
+    end
+  end
+
+  defp execution_assignee_participant(%Space{} = space) do
+    with task_id when is_binary(task_id) <- execution_space_task_id(space),
+         %TaskRecord{assignee_type: "agent", assignee_id: agent_id} when is_binary(agent_id) <-
+           Repo.get(TaskRecord, task_id) do
+      Chat.ensure_agent_participant(space.id, agent_id, attention_mode: "all")
+    else
+      _ -> {:error, :no_execution_assignee}
+    end
+  end
+
+  defp execution_space_task_id(%Space{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, "task_id") || Map.get(metadata, :task_id)
+  end
+
+  defp execution_space_task_id(_space), do: nil
 
   defp route_watch(
          %Space{watch_enabled: true, primary_agent_id: primary_agent_id} = space,

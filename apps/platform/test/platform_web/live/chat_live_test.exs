@@ -5,6 +5,7 @@ defmodule PlatformWeb.ChatLiveTest do
   alias Platform.Accounts.User
   alias Platform.Agents.{Agent, AgentServer}
   alias Platform.Chat
+  alias Platform.Chat.Canvas
   alias Platform.Repo
 
   setup do
@@ -26,15 +27,67 @@ defmodule PlatformWeb.ChatLiveTest do
     :ok
   end
 
-  defp authenticated_conn(conn) do
-    user =
-      Repo.insert!(%User{
-        email: "chat_test@example.com",
-        name: "Chat Test User",
-        oidc_sub: "oidc-chat-test"
+  defp authenticated_conn(conn, attrs \\ %{}) do
+    user = insert_chat_user(attrs)
+    init_test_session(conn, current_user_id: user.id)
+  end
+
+  defp insert_chat_user(attrs \\ %{}) do
+    Repo.insert!(%User{
+      email: Map.get(attrs, :email, "chat_test@example.com"),
+      name: Map.get(attrs, :name, "Chat Test User"),
+      oidc_sub: Map.get(attrs, :oidc_sub, "oidc-chat-test"),
+      avatar_url: Map.get(attrs, :avatar_url)
+    })
+  end
+
+  defp insert_chat_agent(attrs \\ %{}) do
+    Repo.insert!(%Agent{
+      slug: Map.get(attrs, :slug, "agent-#{System.unique_integer([:positive, :monotonic])}"),
+      name: Map.get(attrs, :name, "Agent #{System.unique_integer([:positive, :monotonic])}"),
+      status: Map.get(attrs, :status, "active"),
+      model_config: %{"primary" => "anthropic/claude-sonnet-4-6"}
+    })
+  end
+
+  defp add_user_message(space, user, content) do
+    {:ok, participant} =
+      Chat.add_participant(space.id, %{
+        participant_type: "user",
+        participant_id: user.id,
+        display_name: user.name || user.email,
+        joined_at: DateTime.utc_now()
       })
 
-    init_test_session(conn, current_user_id: user.id)
+    {:ok, _message} =
+      Chat.post_message(%{
+        space_id: space.id,
+        participant_id: participant.id,
+        content_type: "text",
+        content: content
+      })
+
+    participant
+  end
+
+  defp add_agent_message(space, agent, content) do
+    {:ok, participant} =
+      Chat.add_participant(space.id, %{
+        participant_type: "agent",
+        participant_id: agent.id,
+        display_name: agent.name,
+        joined_at: DateTime.utc_now()
+      })
+
+    {:ok, _message} =
+      Chat.post_message(%{
+        space_id: space.id,
+        participant_id: participant.id,
+        content_type: "text",
+        content: content
+      })
+
+    participant
   end
 
   defp count_occurrences(haystack, needle) do
@@ -47,6 +100,31 @@ defmodule PlatformWeb.ChatLiveTest do
   test "GET /chat redirects unauthenticated users to login", %{conn: conn} do
     conn = get(conn, ~p"/chat")
     assert redirected_to(conn) == "/auth/login"
+  end
+
+  test "navigating to a garbage slug does not create an accidental channel", %{conn: conn} do
+    conn = authenticated_conn(conn)
+    # Tool-artifact strings like __from_file__ should never bootstrap real spaces.
+    # The route should redirect back to /chat instead of creating a new space.
+    space_count_before = Platform.Repo.aggregate(Platform.Chat.Space, :count)
+
+    {:error, {:live_redirect, %{to: "/chat"}}} = live(conn, "/chat/__from_file__")
+
+    space_count_after = Platform.Repo.aggregate(Platform.Chat.Space, :count)
+
+    assert space_count_after == space_count_before,
+           "bootstrap_space should not create a space for invalid slugs"
+  end
+
+  test "navigating to a valid unknown slug creates a channel via bootstrap", %{conn: conn} do
+    conn = authenticated_conn(conn)
+    slug = "test-bootstrap-channel-#{System.unique_integer([:positive])}"
+    space_count_before = Platform.Repo.aggregate(Platform.Chat.Space, :count)
+    {:ok, _view, _html} = live(conn, "/chat/#{slug}")
+    space_count_after = Platform.Repo.aggregate(Platform.Chat.Space, :count)
+
+    assert space_count_after == space_count_before + 1,
+           "valid slug should bootstrap a new channel"
   end
 
   test "GET /chat renders chat surface for authenticated users", %{conn: conn} do
@@ -68,6 +146,16 @@ defmodule PlatformWeb.ChatLiveTest do
     assert html =~ "/control"
   end
 
+  test "chat page renders client hooks for last-space and per-space draft persistence", %{
+    conn: conn
+  } do
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+    assert html =~ "phx-hook=\"ChatState\""
+    assert html =~ "data-draft-key=\"chat-draft:"
+  end
+
   test "sending a message renders it once in the chat", %{conn: conn} do
     conn = authenticated_conn(conn)
     {:ok, view, _html} = live(conn, ~p"/chat/general")
@@ -83,6 +171,122 @@ defmodule PlatformWeb.ChatLiveTest do
     # Text may appear once in the message stream and once in the textarea
     # (LiveView textarea content patching quirk). At most 2 occurrences.
     assert count_occurrences(html, "hello from test") in [1, 2]
+  end
+
+  test "chat renders stored human avatars for users with avatar_url", %{conn: conn} do
+    avatar_url = "https://issuer.example.com/chat-avatar-user.png"
+    conn = authenticated_conn(conn, %{name: "Avatar User", avatar_url: avatar_url})
+
+    {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+    view
+    |> form("#compose-form", compose: %{text: "avatar message"})
+    |> render_submit()
+
+    html = render(view)
+
+    assert html =~ avatar_url
+    assert html =~ "data-avatar-kind=\"human\""
+    assert html =~ "data-avatar-mode=\"image\""
+  end
+
+  test "chat fallback avatars use varied human palettes while agent visuals stay distinct", %{
+    conn: conn
+  } do
+    conn = authenticated_conn(conn)
+
+    space =
+      Chat.get_space_by_slug("general") ||
+        elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
+
+    user_one =
+      insert_chat_user(%{
+        name: "Alicia Amber",
+        email: "alicia@example.com",
+        oidc_sub: "seed-a"
+      })
+
+    user_two =
+      insert_chat_user(%{
+        name: "Bianca Blue",
+        email: "bianca@example.com",
+        oidc_sub: "seed-b"
+      })
+
+    agent = insert_chat_agent(%{name: "Zip Agent"})
+
+    add_user_message(space, user_one, "first fallback avatar")
+    add_user_message(space, user_two, "second fallback avatar")
+    add_agent_message(space, agent, "agent avatar stays separate")
+
+    {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+    palette_classes =
+      Regex.scan(~r/avatar-fallback-\d+/, html)
+      |> List.flatten()
+      |> Enum.uniq()
+
+    assert "avatar-fallback-5" in palette_classes
+    assert "avatar-fallback-4" in palette_classes
+    assert html =~ "data-avatar-kind=\"human\""
+    assert html =~ "msg-agent-avatar"
+    assert html =~ "agent avatar stays separate"
+  end
+
+  test "opening a canvas refetches latest state from the database", %{conn: conn} do
+    conn = authenticated_conn(conn)
+
+    {:ok, view, _html} = live(conn, ~p"/chat/general", on_error: :warn)
+
+    user = Repo.get_by!(User, email: "chat_test@example.com")
+    space = Repo.get_by!(Chat.Space, slug: "general")
+
+    participant =
+      Repo.get_by(Chat.Participant,
+        space_id: space.id,
+        participant_type: "user",
+        participant_id: user.id
+      ) ||
+        elem(
+          Chat.add_participant(space.id, %{participant_type: "user", participant_id: user.id}),
+          1
+        )
+
+    {:ok, canvas, _message} =
+      Chat.create_canvas_with_message(space.id, participant.id, %{
+        canvas_type: "custom",
+        title: "Out-of-band canvas",
+        state: %{}
+      })
+
+    updated_state = %{
+      "version" => 1,
+      "root" => %{
+        "type" => "stack",
+        "props" => %{"gap" => 8},
+        "children" => [
+          %{
+            "type" => "heading",
+            "props" => %{"level" => 3, "value" => "Out-of-band render test"}
+          },
+          %{
+            "type" => "markdown",
+            "props" => %{"content" => "Canvas should render the latest stored state."}
+          }
+        ]
+      }
+    }
+
+    canvas
+    |> Canvas.changeset(%{"state" => updated_state})
+    |> Repo.update!()
+
+    render_click(view, "open_canvas", %{"canvas-id" => canvas.id})
+
+    html = render(view)
+
+    assert html =~ "Out-of-band render test"
+    assert html =~ "Canvas should render the latest stored state."
   end
 
   test "shows the shell agent indicator without a duplicate chat header presence badge", %{
@@ -237,7 +441,7 @@ defmodule PlatformWeb.ChatLiveTest do
       assert html =~ "match"
     end
 
-    test "opening a threaded search result opens the thread panel", %{conn: conn} do
+    test "opening a threaded search result expands the inline thread", %{conn: conn} do
       conn = authenticated_conn(conn)
       {:ok, view, _html} = live(conn, ~p"/chat/general")
 
@@ -250,9 +454,12 @@ defmodule PlatformWeb.ChatLiveTest do
 
       render_click(view, "open_thread", %{"message-id" => root_message.id})
 
-      view
-      |> form("#thread-compose-form", thread_compose: %{text: "Phoenix lives in threads too"})
-      |> render_submit()
+      render_submit(view, "send_inline_thread_message", %{
+        "inline_thread_compose" => %{
+          "text" => "Phoenix lives in threads too",
+          "message_id" => root_message.id
+        }
+      })
 
       thread_message =
         space.id
@@ -271,7 +478,7 @@ defmodule PlatformWeb.ChatLiveTest do
 
       html = render_click(view, "open_search_result", %{"message-id" => thread_message.id})
 
-      assert html =~ "thread-compose-form"
+      assert html =~ "inline-thread-compose-form-#{root_message.id}"
       assert html =~ "Phoenix lives in threads too"
     end
   end
@@ -350,8 +557,7 @@ defmodule PlatformWeb.ChatLiveTest do
       # Before reacting — no reaction row for this message in the DB
       assert Chat.list_reactions(msg.id) == []
 
-      # Trigger the react event (key is "message-id", hyphenated, as Phoenix serializes phx-value-*)
-      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
+      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
 
       # The reaction is persisted in the DB
       assert [%{emoji: "👍"}] = Chat.list_reactions(msg.id)
@@ -375,11 +581,11 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       # React once — reaction is added
-      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
+      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
       assert [_] = Chat.list_reactions(msg.id)
 
       # React again (same user, same emoji) — reaction is removed
-      render_click(view, "react", %{"message-id" => msg.id, "emoji" => "👍"})
+      render_click(view, "react", %{"message_id" => msg.id, "emoji" => "👍"})
       assert Chat.list_reactions(msg.id) == []
     end
 
@@ -409,11 +615,10 @@ defmodule PlatformWeb.ChatLiveTest do
   # ── Threads ──────────────────────────────────────────────────────────────────
 
   describe "threads" do
-    test "opening a thread shows the thread panel", %{conn: conn} do
+    test "opening a thread expands the inline thread composer", %{conn: conn} do
       conn = authenticated_conn(conn)
       {:ok, view, _html} = live(conn, ~p"/chat/general")
 
-      # Post a message to open a thread on
       view
       |> form("#compose-form", compose: %{text: "start a thread here"})
       |> render_submit()
@@ -424,11 +629,11 @@ defmodule PlatformWeb.ChatLiveTest do
 
       html = render_click(view, "open_thread", %{"message-id" => msg.id})
 
-      assert html =~ "Thread"
-      assert html =~ "thread-compose-form"
+      assert html =~ "inline-thread-compose-form-#{msg.id}"
+      assert html =~ "Reply in thread..."
     end
 
-    test "closing the thread panel hides it", %{conn: conn} do
+    test "toggling the inline thread closed hides its composer", %{conn: conn} do
       conn = authenticated_conn(conn)
       {:ok, view, _html} = live(conn, ~p"/chat/general")
 
@@ -440,12 +645,12 @@ defmodule PlatformWeb.ChatLiveTest do
       [msg | _] = Chat.list_messages(space.id)
 
       render_click(view, "open_thread", %{"message-id" => msg.id})
-      html = render_click(view, "close_thread", %{})
+      html = render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
 
-      refute html =~ "thread-compose-form"
+      refute html =~ "inline-thread-compose-form-#{msg.id}"
     end
 
-    test "posting a thread reply appears once in thread panel", %{conn: conn} do
+    test "posting a thread reply appears once inline", %{conn: conn} do
       conn = authenticated_conn(conn)
       {:ok, view, _html} = live(conn, ~p"/chat/general")
 
@@ -458,9 +663,9 @@ defmodule PlatformWeb.ChatLiveTest do
 
       render_click(view, "open_thread", %{"message-id" => msg.id})
 
-      view
-      |> form("#thread-compose-form", thread_compose: %{text: "thread reply"})
-      |> render_submit()
+      render_submit(view, "send_inline_thread_message", %{
+        "inline_thread_compose" => %{"text" => "thread reply", "message_id" => msg.id}
+      })
 
       html = render(view)
 
@@ -481,11 +686,12 @@ defmodule PlatformWeb.ChatLiveTest do
 
       render_click(view, "open_thread", %{"message-id" => msg.id})
 
-      view
-      |> form("#thread-compose-form",
-        thread_compose: %{text: "thread reply should stay in thread"}
-      )
-      |> render_submit()
+      render_submit(view, "send_inline_thread_message", %{
+        "inline_thread_compose" => %{
+          "text" => "thread reply should stay in thread",
+          "message_id" => msg.id
+        }
+      })
 
       {:ok, _reloaded, html} = live(conn, ~p"/chat/general")
 
@@ -524,15 +730,15 @@ defmodule PlatformWeb.ChatLiveTest do
 
       render_click(view, "open_thread", %{"message-id" => msg.id})
 
-      view
-      |> form("#thread-compose-form", thread_compose: %{text: "timestamp thread reply"})
-      |> render_submit()
+      render_submit(view, "send_inline_thread_message", %{
+        "inline_thread_compose" => %{"text" => "timestamp thread reply", "message_id" => msg.id}
+      })
 
       html = render(view)
 
       assert html =~ "timestamp thread reply"
-      assert Regex.match?(~r/id="thread-messages"[\s\S]*phx-hook="LocalTime"/, html)
-      assert Regex.match?(~r/id="thread-messages"[\s\S]*data-local-time=/, html)
+      assert Regex.match?(~r/id="inline-thread-ts-[^"]+"[\s\S]*phx-hook="LocalTime"/, html)
+      assert Regex.match?(~r/id="inline-thread-ts-[^"]+"[\s\S]*data-local-time=/, html)
     end
   end
 
@@ -645,6 +851,32 @@ defmodule PlatformWeb.ChatLiveTest do
 
       archived = Chat.get_space_by_slug("to-archive")
       assert archived.archived_at != nil
+    end
+  end
+
+  describe "inline thread" do
+    test "reply button opens inline thread section", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      # Post a message
+      view
+      |> form("#compose-form", compose: %{text: "Parent message for inline thread"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      # Pre-create a thread so the handler finds it on toggle
+      {:ok, _thread} = Chat.create_thread(space.id, %{parent_message_id: msg.id})
+
+      # Click the Reply button (now toggle_inline_thread)
+      render_click(view, "toggle_inline_thread", %{"message-id" => msg.id})
+
+      # Assert the inline thread section appears using element checks
+      # (more reliable with LiveView streams than full HTML matching)
+      assert has_element?(view, "#inline-thread-#{msg.id}")
+      assert has_element?(view, "#inline-thread-compose-#{msg.id}")
     end
   end
 end

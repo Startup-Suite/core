@@ -63,6 +63,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:highlighted_thread_message_id, nil)
       |> assign(:participants_map, %{})
       |> assign(:agent_participant_ids, MapSet.new())
+      |> assign(:agent_colors_map, %{})
       |> assign(:online_count, 0)
       |> assign(:agent_presence, default_agent_presence())
       |> assign(:has_agent_participant, false)
@@ -108,11 +109,14 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:agent_typing_pids, MapSet.new())
       |> assign(:streaming_replies, %{})
       |> assign(:mention_suggestions, [])
+      |> assign(:mention_source, "compose-form")
       |> assign(:push_permission, "unknown")
       |> assign(:unread_counts, if(user_id, do: Chat.unread_counts_for_user(user_id), else: %{}))
       |> assign(:meeting_counts, %{})
       |> assign(:upload_dialog_open, false)
       |> assign(:upload_caption, "")
+      |> assign(:lightbox_url, nil)
+      |> assign(:upload_tagged_agents, MapSet.new())
       |> assign(:drafts, %{})
       |> assign_compose("")
       |> assign_thread_compose("")
@@ -122,13 +126,15 @@ defmodule PlatformWeb.ChatLive do
         accept: :any,
         auto_upload: true,
         max_entries: @max_upload_entries,
-        max_file_size: @max_upload_size
+        max_file_size: @max_upload_size,
+        progress: &handle_upload_progress/3
       )
       |> allow_upload(:thread_attachments,
         accept: :any,
         auto_upload: true,
         max_entries: @max_upload_entries,
-        max_file_size: @max_upload_size
+        max_file_size: @max_upload_size,
+        progress: &handle_upload_progress/3
       )
       |> stream(:messages, [])
 
@@ -208,10 +214,19 @@ defmodule PlatformWeb.ChatLive do
       end
 
       participants = Chat.list_participants(space.id)
-      participants_map = Map.new(participants, fn p -> {p.id, p.display_name || "User"} end)
+
+      users_by_id =
+        participants
+        |> Enum.filter(&(&1.participant_type == "user"))
+        |> Enum.map(& &1.participant_id)
+        |> Accounts.get_users_map()
+
+      participants_map = build_participant_identity_map(participants, users_by_id)
 
       agent_participant_ids =
         participants |> Enum.filter(&(&1.participant_type == "agent")) |> MapSet.new(& &1.id)
+
+      agent_colors_map = Chat.agent_color_map_for_participants(participants)
 
       has_agent_participant = Enum.any?(participants, &(&1.participant_type == "agent"))
 
@@ -262,6 +277,7 @@ defmodule PlatformWeb.ChatLive do
        |> assign_search_form("")
        |> assign(:participants_map, participants_map)
        |> assign(:agent_participant_ids, agent_participant_ids)
+       |> assign(:agent_colors_map, agent_colors_map)
        |> assign(:online_count, online_count)
        |> assign(:agent_presence, agent_presence)
        |> assign(:has_agent_participant, has_agent_participant)
@@ -269,6 +285,7 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:agent_typing_pids, MapSet.new())
        |> assign(:streaming_replies, %{})
        |> assign(:mention_suggestions, [])
+       |> assign(:mention_source, "compose-form")
        |> assign(:current_participant, participant)
        |> assign(:reactions_map, reactions_map)
        |> assign(:attachments_map, attachments_map)
@@ -340,18 +357,27 @@ defmodule PlatformWeb.ChatLive do
         {:noreply, put_flash(socket, :error, "Search result not found.")}
 
       %{thread_id: thread_id} = message when is_binary(thread_id) ->
-        thread = Chat.get_thread(thread_id)
-        thread_messages = load_thread_messages(message.space_id, thread_id)
-        thread_attachments_map = build_attachments_map(thread_messages)
+        # Find the parent message for this thread and expand inline
+        parent_msg_id =
+          Enum.find_value(socket.assigns.thread_previews, fn {pmid, %{thread_id: tid}} ->
+            if tid == thread_id, do: pmid
+          end)
 
-        {:noreply,
-         socket
-         |> assign(:active_thread, thread)
-         |> assign(:active_canvas, nil)
-         |> assign(:thread_messages, thread_messages)
-         |> assign(:thread_attachments_map, thread_attachments_map)
-         |> assign(:highlighted_message_id, nil)
-         |> assign(:highlighted_thread_message_id, message.id)}
+        thread_msgs = load_thread_messages(message.space_id, thread_id)
+
+        socket =
+          if parent_msg_id do
+            socket
+            |> update(:expanded_threads, &MapSet.put(&1, parent_msg_id))
+            |> update(:inline_thread_messages, &Map.put(&1, parent_msg_id, thread_msgs))
+            |> assign(:highlighted_message_id, parent_msg_id)
+            |> reinsert_stream_message(parent_msg_id)
+          else
+            socket
+            |> assign(:highlighted_message_id, message.id)
+          end
+
+        {:noreply, socket}
 
       message ->
         {:noreply,
@@ -419,6 +445,18 @@ defmodule PlatformWeb.ChatLive do
 
   # ── Upload staging dialog events ──────────────────────────────────────
 
+  defp handle_upload_progress(_upload_name, _entry, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("open_lightbox", %{"url" => url}, socket) do
+    {:noreply, assign(socket, :lightbox_url, url)}
+  end
+
+  def handle_event("close_lightbox", _params, socket) do
+    {:noreply, assign(socket, :lightbox_url, nil)}
+  end
+
   def handle_event("show_upload_dialog", _params, socket) do
     {:noreply, assign(socket, :upload_dialog_open, true)}
   end
@@ -432,7 +470,8 @@ defmodule PlatformWeb.ChatLive do
     {:noreply,
      socket
      |> assign(:upload_dialog_open, false)
-     |> assign(:upload_caption, "")}
+     |> assign(:upload_caption, "")
+     |> assign(:upload_tagged_agents, MapSet.new())}
   end
 
   def handle_event("upload_caption_changed", %{"caption" => text}, socket) do
@@ -442,11 +481,29 @@ defmodule PlatformWeb.ChatLive do
   def handle_event("send_upload", _params, socket) do
     with space when not is_nil(space) <- socket.assigns.active_space,
          participant when not is_nil(participant) <- socket.assigns.current_participant do
+      caption = String.trim(socket.assigns.upload_caption || "")
+      tagged = socket.assigns.upload_tagged_agents
+
+      # Append @mentions for tagged agents not already in caption
+      mentions =
+        tagged
+        |> MapSet.to_list()
+        |> Enum.reject(fn slug -> String.contains?(caption, "@#{String.capitalize(slug)}") end)
+        |> Enum.map(fn slug -> "@#{String.capitalize(slug)}" end)
+
+      content =
+        case {caption, mentions} do
+          {"", []} -> ""
+          {"", _} -> Enum.join(mentions, " ")
+          {c, []} -> c
+          {c, _} -> c <> " " <> Enum.join(mentions, " ")
+        end
+
       attrs = %{
         space_id: space.id,
         participant_id: participant.id,
         content_type: "text",
-        content: String.trim(socket.assigns.upload_caption || "")
+        content: content
       }
 
       case post_message_from_upload(socket, :attachments, attrs) do
@@ -456,7 +513,8 @@ defmodule PlatformWeb.ChatLive do
            |> stream_insert(:messages, msg)
            |> put_attachment_map_entry(msg.id, attachments)
            |> assign(:upload_dialog_open, false)
-           |> assign(:upload_caption, "")}
+           |> assign(:upload_caption, "")
+           |> assign(:upload_tagged_agents, MapSet.new())}
 
         {:noop, _socket} ->
           {:noreply, put_flash(socket, :info, "No files selected")}
@@ -472,6 +530,19 @@ defmodule PlatformWeb.ChatLive do
   def handle_event("cancel_upload", %{"ref" => ref}, socket) do
     {:noreply, cancel_upload(socket, :attachments, ref)}
   end
+
+  def handle_event("toggle_upload_agent_tag", %{"agent" => slug}, socket) do
+    tagged = socket.assigns.upload_tagged_agents
+
+    tagged =
+      if MapSet.member?(tagged, slug),
+        do: MapSet.delete(tagged, slug),
+        else: MapSet.put(tagged, slug)
+
+    {:noreply, assign(socket, :upload_tagged_agents, tagged)}
+  end
+
+  def handle_event("noop", _params, socket), do: {:noreply, socket}
 
   # ── End upload staging dialog events ──────────────────────────────────
 
@@ -494,23 +565,36 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
-  def handle_event("mention_query", %{"query" => query}, socket) do
+  def handle_event("mention_query", %{"query" => query} = params, socket) do
+    source = Map.get(params, "source", "compose-form")
+
     suggestions =
       case socket.assigns.active_space do
         nil ->
           []
 
         space ->
-          space.id
-          |> Chat.list_participants()
+          participants = Chat.list_participants(space.id)
+
+          users_by_id =
+            participants
+            |> Enum.filter(&(&1.participant_type == "user"))
+            |> Enum.map(& &1.participant_id)
+            |> Accounts.get_users_map()
+
+          participants
           |> Enum.filter(fn p ->
             name = (p.display_name || "") |> String.downcase()
             String.starts_with?(name, String.downcase(query))
           end)
           |> Enum.take(8)
+          |> Enum.map(&participant_identity(&1, Map.get(users_by_id, &1.participant_id)))
       end
 
-    {:noreply, assign(socket, :mention_suggestions, suggestions)}
+    {:noreply,
+     socket
+     |> assign(:mention_suggestions, suggestions)
+     |> assign(:mention_source, source)}
   end
 
   def handle_event("mention_query", _params, socket) do
@@ -518,14 +602,43 @@ defmodule PlatformWeb.ChatLive do
   end
 
   def handle_event("clear_mention_suggestions", _params, socket) do
-    {:noreply, assign(socket, :mention_suggestions, [])}
+    {:noreply,
+     socket
+     |> assign(:mention_suggestions, [])
+     |> assign(:mention_source, "compose-form")}
   end
 
   def handle_event("open_reaction_picker", _params, socket) do
     {:noreply, socket}
   end
 
+  def handle_event("react", %{"message_id" => msg_id, "emoji" => emoji}, socket) do
+    react_to_message(socket, msg_id, emoji)
+  end
+
   def handle_event("react", %{"message-id" => msg_id, "emoji" => emoji}, socket) do
+    react_to_message(socket, msg_id, emoji)
+  end
+
+  # Redirect open_thread to inline expansion (side panel removed)
+  def handle_event("open_thread", %{"message-id" => message_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => message_id}, socket)
+  end
+
+  def handle_event("open_thread", %{"message_id" => message_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => message_id}, socket)
+  end
+
+  def handle_event("close_thread", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_thread, nil)
+     |> assign(:thread_messages, [])
+     |> assign(:thread_attachments_map, %{})
+     |> assign(:highlighted_thread_message_id, nil)}
+  end
+
+  defp react_to_message(socket, msg_id, emoji) do
     with participant when not is_nil(participant) <- socket.assigns.current_participant do
       groups = Map.get(socket.assigns.reactions_map, msg_id, [])
       already_reacted = Enum.any?(groups, &(&1.emoji == emoji && &1.reacted_by_me))
@@ -547,47 +660,6 @@ defmodule PlatformWeb.ChatLive do
       require Logger
       Logger.error("Reaction handler crashed: #{Exception.message(e)}")
       {:noreply, socket}
-  end
-
-  def handle_event("open_thread", %{"message-id" => message_id}, socket) do
-    with space when not is_nil(space) <- socket.assigns.active_space do
-      thread =
-        Chat.get_thread_for_message(message_id) ||
-          case Chat.create_thread(space.id, %{parent_message_id: message_id}) do
-            {:ok, t} -> t
-            {:error, _} -> nil
-          end
-
-      case thread do
-        nil ->
-          {:noreply, put_flash(socket, :error, "Could not open thread.")}
-
-        thread ->
-          thread_messages = load_thread_messages(space.id, thread.id)
-          thread_attachments_map = build_attachments_map(thread_messages)
-
-          {:noreply,
-           socket
-           |> assign(:active_thread, thread)
-           |> assign(:active_canvas, nil)
-           |> assign(:thread_messages, thread_messages)
-           |> assign(:thread_attachments_map, thread_attachments_map)
-           |> assign(:highlighted_message_id, nil)
-           |> assign(:highlighted_thread_message_id, nil)
-           |> assign_thread_compose("")}
-      end
-    else
-      _ -> {:noreply, socket}
-    end
-  end
-
-  def handle_event("close_thread", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:active_thread, nil)
-     |> assign(:thread_messages, [])
-     |> assign(:thread_attachments_map, %{})
-     |> assign(:highlighted_thread_message_id, nil)}
   end
 
   def handle_event("send_thread_message", %{"thread_compose" => %{"text" => content}}, socket) do
@@ -620,12 +692,20 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  def handle_event("toggle_inline_thread", %{"message_id" => msg_id}, socket) do
+    handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket)
+  end
+
   def handle_event("toggle_inline_thread", %{"message-id" => msg_id}, socket) do
     if MapSet.member?(socket.assigns.expanded_threads, msg_id) do
-      {:noreply,
-       socket
-       |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
-       |> update(:inline_thread_messages, &Map.delete(&1, msg_id))}
+      # Collapse: remove from expanded set and re-insert message to force re-render
+      socket =
+        socket
+        |> update(:expanded_threads, &MapSet.delete(&1, msg_id))
+        |> update(:inline_thread_messages, &Map.delete(&1, msg_id))
+
+      socket = reinsert_stream_message(socket, msg_id)
+      {:noreply, socket}
     else
       space = socket.assigns.active_space
 
@@ -643,18 +723,22 @@ defmodule PlatformWeb.ChatLive do
         thread ->
           thread_msgs = load_thread_messages(space.id, thread.id)
 
-          {:noreply,
-           socket
-           |> update(:expanded_threads, &MapSet.put(&1, msg_id))
-           |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
-           |> update(
-             :thread_previews,
-             &Map.put(&1, msg_id, %{
-               thread_id: thread.id,
-               reply_count: length(thread_msgs),
-               last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
-             })
-           )}
+          socket =
+            socket
+            |> update(:expanded_threads, &MapSet.put(&1, msg_id))
+            |> update(:inline_thread_messages, &Map.put(&1, msg_id, thread_msgs))
+            |> update(
+              :thread_previews,
+              &Map.put(&1, msg_id, %{
+                thread_id: thread.id,
+                reply_count: length(thread_msgs),
+                last_reply_at: List.last(thread_msgs) && List.last(thread_msgs).inserted_at
+              })
+            )
+            |> push_event("focus_inline_thread_compose", %{message_id: msg_id})
+
+          socket = reinsert_stream_message(socket, msg_id)
+          {:noreply, socket}
       end
     end
   end
@@ -695,7 +779,8 @@ defmodule PlatformWeb.ChatLive do
                | reply_count: preview.reply_count + 1,
                  last_reply_at: msg.inserted_at
              })
-           end)}
+           end)
+           |> reinsert_stream_message(msg_id)}
 
         {:error, _reason} ->
           {:noreply, put_flash(socket, :error, "Failed to send reply.")}
@@ -703,6 +788,10 @@ defmodule PlatformWeb.ChatLive do
     else
       _ -> {:noreply, socket}
     end
+  end
+
+  def handle_event("toggle_pin", %{"message_id" => msg_id, "space_id" => space_id}, socket) do
+    handle_event("toggle_pin", %{"message-id" => msg_id, "space-id" => space_id}, socket)
   end
 
   def handle_event("toggle_pin", %{"message-id" => msg_id, "space-id" => space_id}, socket) do
@@ -819,14 +908,36 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  def handle_event("canvas_action", %{"value" => value, "canvas-id" => canvas_id}, socket) do
+    require Logger
+
+    case find_canvas(socket, canvas_id) do
+      nil ->
+        Logger.warning("canvas_action: canvas not found (canvas_id=#{inspect(canvas_id)})")
+        {:noreply, socket}
+
+      canvas ->
+        Logger.info(
+          "canvas_action: canvas=#{canvas.id} value=#{inspect(value)} space=#{canvas.space_id}"
+        )
+
+        ChatPubSub.broadcast(canvas.space_id, {:canvas_action, canvas, value})
+        dispatch_canvas_action_to_agent(canvas, value)
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("close_canvas", _params, socket) do
     {:noreply, assign(socket, :active_canvas, nil)}
   end
 
   def handle_event("open_canvas_mobile", %{"message-id" => message_id}, socket) do
     case Map.get(socket.assigns.canvases_by_message_id, message_id) do
-      nil -> {:noreply, socket}
-      canvas -> {:noreply, assign(socket, :active_canvas, canvas)}
+      nil ->
+        {:noreply, socket}
+
+      canvas ->
+        {:noreply, assign(socket, :active_canvas, find_canvas(socket, canvas.id) || canvas)}
     end
   end
 
@@ -1377,6 +1488,12 @@ defmodule PlatformWeb.ChatLive do
      |> assign(:pinned_message_ids, pinned_message_ids)}
   end
 
+  def handle_info({:canvas_action, _canvas, _value}, socket) do
+    # Canvas action events are handled at the source (handle_event);
+    # other LiveView clients just ignore the PubSub broadcast.
+    {:noreply, socket}
+  end
+
   def handle_info({:canvas_created, canvas}, socket) do
     {:noreply, put_canvas(socket, canvas)}
   end
@@ -1386,9 +1503,16 @@ defmodule PlatformWeb.ChatLive do
   end
 
   def handle_info({:participant_joined, participant}, socket) do
+    user =
+      if participant.participant_type == "user" do
+        Accounts.get_user(participant.participant_id)
+      else
+        nil
+      end
+
     {:noreply,
      update(socket, :participants_map, fn map ->
-       Map.put(map, participant.id, participant.display_name || "User")
+       Map.put(map, participant.id, participant_identity(participant, user))
      end)}
   end
 
@@ -1532,6 +1656,8 @@ defmodule PlatformWeb.ChatLive do
   def render(assigns) do
     ~H"""
     <div id="push-subscribe" phx-hook="PushSubscribe" class="hidden"></div>
+
+    <div id="chat-state" phx-hook="ChatState" class="hidden"></div>
 
     <%!-- Notification opt-in banner (shown when permission not yet granted) --%>
     <div
@@ -2265,6 +2391,7 @@ defmodule PlatformWeb.ChatLive do
             </div>
           </div>
 
+          <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>
           <div
             id="message-list"
             class="flex-1 overflow-y-auto overflow-x-hidden bg-base-100 px-5 py-4 flex flex-col space-y-1"
@@ -2282,20 +2409,35 @@ defmodule PlatformWeb.ChatLive do
                 @current_participant && msg.participant_id == @current_participant.id &&
                   !MapSet.member?(@agent_participant_ids, msg.participant_id) && "bg-base-200/60"
               ]}
+              style={
+                if MapSet.member?(@agent_participant_ids, msg.participant_id) do
+                  accent =
+                    Map.get(
+                      @agent_colors_map,
+                      msg.participant_id,
+                      Platform.Agents.ColorPalette.default_accent()
+                    )
+
+                  "--agent-accent: #{accent};"
+                end
+              }
               data-participant-id={msg.participant_id}
               data-date={msg.inserted_at && DateTime.to_date(msg.inserted_at) |> Date.to_iso8601()}
             >
               <%!-- Avatar circle (hidden when grouped with previous message via JS) --%>
               <div class="flex-shrink-0 mt-0.5 message-avatar">
-                <div class={[
-                  "w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold select-none",
-                  if(MapSet.member?(@agent_participant_ids, msg.participant_id),
-                    do: "bg-base-300 text-primary msg-agent-avatar",
-                    else: "bg-primary text-primary-content"
-                  )
-                ]}>
-                  {avatar_initial(@participants_map, msg.participant_id)}
-                </div>
+                <%= if MapSet.member?(@agent_participant_ids, msg.participant_id) do %>
+                  <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold select-none bg-base-300 text-primary msg-agent-avatar">
+                    {avatar_initial(@participants_map, msg.participant_id)}
+                  </div>
+                <% else %>
+                  <.human_avatar
+                    name={sender_name(@participants_map, msg.participant_id)}
+                    avatar_url={sender_avatar_url(@participants_map, msg.participant_id)}
+                    seed={sender_avatar_seed(@participants_map, msg.participant_id)}
+                    size="md"
+                  />
+                <% end %>
               </div>
 
               <%!-- Message body --%>
@@ -2346,12 +2488,21 @@ defmodule PlatformWeb.ChatLive do
                     </button>
 
                     <button
-                      phx-click="open_thread"
+                      phx-click="toggle_inline_thread"
                       phx-value-message-id={msg.id}
-                      title="Reply in thread"
+                      title="Reply"
                       class="rounded px-1.5 py-0.5 text-xs text-base-content/50 hover:text-base-content hover:bg-base-300 transition-colors"
                     >
                       <span class="hero-chat-bubble-left-right size-4"></span>
+                    </button>
+
+                    <button
+                      phx-click="toggle_inline_thread"
+                      phx-value-message-id={msg.id}
+                      title="Open thread"
+                      class="rounded px-1.5 py-0.5 text-xs text-base-content/40 hover:text-base-content/60 hover:bg-base-300 transition-colors"
+                    >
+                      <span class="hero-arrow-top-right-on-square size-4"></span>
                     </button>
 
                     <button
@@ -2378,7 +2529,11 @@ defmodule PlatformWeb.ChatLive do
                   class="mt-1"
                 >
                   <div :if={Map.get(@canvases_by_message_id, msg.id)} class="min-w-0 overflow-hidden">
-                    <.canvas_document canvas={Map.get(@canvases_by_message_id, msg.id)} inline={true} />
+                    <.canvas_document
+                      canvas={Map.get(@canvases_by_message_id, msg.id)}
+                      inline={true}
+                      dom_id_base="chat-message-inline"
+                    />
                   </div>
 
                   <div
@@ -2403,32 +2558,41 @@ defmodule PlatformWeb.ChatLive do
                   {Platform.Chat.ContentRenderer.render_message(msg.content)}
                 </div>
 
+                <%!-- Image gallery --%>
+                <% images = Enum.filter(Map.get(@attachments_map, msg.id, []), &image_attachment?/1) %>
+                <% non_images =
+                  Enum.reject(Map.get(@attachments_map, msg.id, []), &image_attachment?/1) %>
                 <div
-                  :if={Map.get(@attachments_map, msg.id, []) != []}
-                  class="mt-1 flex flex-col gap-2"
+                  :if={images != []}
+                  class={"image-gallery count-#{min(length(images), 5)}"}
                 >
-                  <a
-                    :for={
-                      attachment <-
-                        Enum.filter(Map.get(@attachments_map, msg.id, []), &image_attachment?/1)
-                    }
-                    href={attachment_url(attachment)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="block max-w-sm"
+                  <div
+                    :for={{attachment, idx} <- Enum.with_index(images)}
+                    phx-click="open_lightbox"
+                    phx-value-url={attachment_url(attachment)}
+                    class={"gallery-item cursor-pointer#{if length(images) == 3 and idx == 0, do: " span-2", else: ""}"}
                   >
                     <img
                       src={attachment_url(attachment)}
                       alt={attachment.filename}
                       loading="lazy"
-                      class="rounded-lg max-h-64 object-contain bg-base-200"
                     />
-                  </a>
+                    <span class="gallery-filename">{attachment.filename}</span>
+                    <div class="gallery-overlay">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line
+                          x1="11"
+                          y1="8"
+                          x2="11"
+                          y2="14"
+                        /><line x1="8" y1="11" x2="14" y2="11" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+                <div :if={non_images != []} class="mt-1 flex flex-col gap-2">
                   <a
-                    :for={
-                      attachment <-
-                        Enum.reject(Map.get(@attachments_map, msg.id, []), &image_attachment?/1)
-                    }
+                    :for={attachment <- non_images}
                     href={attachment_url(attachment)}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -2470,7 +2634,195 @@ defmodule PlatformWeb.ChatLive do
                     <span class="hero-plus size-4"></span>
                   </button>
                 </div>
+
+                <%!-- Inline thread: indicator + expanded thread --%>
+                <div :if={
+                  Map.has_key?(@thread_previews, msg.id) or
+                    MapSet.member?(@expanded_threads, msg.id)
+                }>
+                  <%!-- Thread indicator (collapsed state) --%>
+                  <div
+                    :if={not MapSet.member?(@expanded_threads, msg.id)}
+                    phx-click="toggle_inline_thread"
+                    phx-value-message-id={msg.id}
+                    class="thread-indicator"
+                  >
+                    <div class="thread-avatars">
+                      <div class="t-av ai">↩</div>
+                    </div>
+                    <span class="ti-count">
+                      {Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0)}
+                      {if Map.get(@thread_previews, msg.id, %{}) |> Map.get(:reply_count, 0) == 1,
+                        do: "reply",
+                        else: "replies"}
+                    </span>
+                    <span
+                      :if={Map.get(@thread_previews, msg.id, %{}) |> Map.get(:last_reply_at)}
+                      class="ti-time"
+                    >
+                      · {relative_time(
+                        Map.get(@thread_previews, msg.id, %{})
+                        |> Map.get(:last_reply_at)
+                      )}
+                    </span>
+                  </div>
+
+                  <%!-- Expanded thread --%>
+                  <div
+                    :if={MapSet.member?(@expanded_threads, msg.id)}
+                    class="thread-replies"
+                    id={"inline-thread-#{msg.id}"}
+                    phx-hook="InlineThread"
+                  >
+                    <div
+                      :for={tmsg <- Map.get(@inline_thread_messages, msg.id, [])}
+                      class={[
+                        "thread-reply",
+                        if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                          do: "agent-reply"
+                        )
+                      ]}
+                    >
+                      <div
+                        class={[
+                          "msg-avatar",
+                          if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                            do: "ai",
+                            else: "human"
+                          )
+                        ]}
+                        style="width:28px;height:28px;font-size:10px"
+                      >
+                        {avatar_initial(@participants_map, tmsg.participant_id)}
+                      </div>
+                      <div class="msg-body">
+                        <div class="msg-header">
+                          <span class={[
+                            "msg-username",
+                            if(MapSet.member?(@agent_participant_ids, tmsg.participant_id),
+                              do: "ai-name"
+                            )
+                          ]}>
+                            {sender_name(@participants_map, tmsg.participant_id)}
+                          </span>
+                          <span
+                            :if={MapSet.member?(@agent_participant_ids, tmsg.participant_id)}
+                            class="ai-badge"
+                          >
+                            AI
+                          </span>
+                          <.local_time
+                            id={"inline-thread-ts-#{tmsg.id}"}
+                            timestamp={tmsg.inserted_at}
+                            class="msg-time"
+                          />
+                        </div>
+                        <div class="msg-text">
+                          {Platform.Chat.ContentRenderer.render_message(tmsg.content)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <%!-- Thread composer --%>
+                    <div class="thread-composer" style="flex-direction: column; align-items: stretch;">
+                      <.form
+                        for={%{}}
+                        id={"inline-thread-compose-form-#{msg.id}"}
+                        phx-submit="send_inline_thread_message"
+                        class="thread-composer-form"
+                        style="position: relative;"
+                      >
+                        <%!-- @mention autocomplete dropdown (inline thread) --%>
+                        <div
+                          :if={
+                            @mention_suggestions != [] &&
+                              @mention_source == "inline-thread-compose-form-#{msg.id}"
+                          }
+                          style="position: absolute; bottom: 100%; left: 0; z-index: 50; width: 16rem; margin-bottom: 4px;"
+                        >
+                          <div class="rounded-xl border border-base-300 bg-base-100 shadow-lg overflow-hidden">
+                            <div class="py-1">
+                              <button
+                                :for={{suggestion, idx} <- Enum.with_index(@mention_suggestions)}
+                                type="button"
+                                data-mention-suggestion={if idx == 0, do: "first"}
+                                phx-click={
+                                  JS.dispatch("chat:insert-mention",
+                                    to: "#inline-thread-compose-#{msg.id}",
+                                    detail: %{name: suggestion.display_name || "User"}
+                                  )
+                                }
+                                class="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-base-200 text-left transition-colors"
+                              >
+                                <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
+                                  {(suggestion.display_name || "U")
+                                  |> String.trim()
+                                  |> String.first()
+                                  |> String.upcase()}
+                                </div>
+                                <span class="flex-1 truncate font-medium">
+                                  {suggestion.display_name || "User"}
+                                </span>
+                                <span class={[
+                                  "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
+                                  suggestion.participant_type == "agent" &&
+                                    "bg-primary/10 text-primary",
+                                  suggestion.participant_type != "agent" &&
+                                    "bg-base-300 text-base-content/50"
+                                ]}>
+                                  {suggestion.participant_type}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <input
+                          type="hidden"
+                          name="inline_thread_compose[message_id]"
+                          value={msg.id}
+                        />
+                        <input
+                          type="text"
+                          name="inline_thread_compose[text]"
+                          id={"inline-thread-compose-#{msg.id}"}
+                          placeholder="Reply in thread..."
+                          autocomplete="off"
+                          class="thread-input"
+                          phx-hook="ComposeInput"
+                        />
+                        <button
+                          type="submit"
+                          class="thread-send"
+                          disabled={is_nil(@current_participant)}
+                          title="Reply"
+                        >
+                          <span class="hero-paper-airplane size-3.5 -rotate-45"></span>
+                        </button>
+                      </.form>
+                    </div>
+
+                    <%!-- Collapse thread --%>
+                    <button
+                      phx-click="toggle_inline_thread"
+                      phx-value-message-id={msg.id}
+                      class="thread-collapse"
+                    >
+                      ▲ Collapse thread
+                    </button>
+                  </div>
+                </div>
               </div>
+              <%!-- end message body --%>
+
+              <%!-- Left-gutter reply button (desktop, hidden until hover via CSS) --%>
+              <button
+                phx-click="toggle_inline_thread"
+                phx-value-message-id={msg.id}
+                class="msg-reply-gutter"
+                title="Reply"
+              >
+                ↩
+              </button>
             </div>
           </div>
 
@@ -2479,18 +2831,27 @@ defmodule PlatformWeb.ChatLive do
             :for={{chunk_id, entry} <- @streaming_replies}
             :if={entry.text != nil and entry.text != ""}
             id={"streaming-#{chunk_id}"}
-            class="flex-shrink-0 px-5 pb-2"
+            class="flex-shrink-0 px-5 pb-2 msg-agent"
+            style={
+              "--agent-accent: #{Map.get(@agent_colors_map, entry.participant_id, Platform.Agents.ColorPalette.default_accent())};"
+            }
           >
             <div class="flex items-start gap-2">
-              <div class="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+              <div class="flex size-7 shrink-0 items-center justify-center rounded-full bg-base-300 text-xs font-medium msg-agent-avatar">
                 {avatar_initial(@participants_map, entry.participant_id)}
               </div>
               <div class="min-w-0 flex-1">
-                <div class="text-xs font-medium text-base-content/70 mb-0.5">
+                <div class="text-xs font-medium mb-0.5 msg-agent-name">
                   {sender_name(@participants_map, entry.participant_id)}
                 </div>
-                <div class="prose prose-sm max-w-none text-sm text-base-content/80 border-l-2 border-primary/20 pl-3">
-                  {entry.text}<span class="inline-block w-1.5 h-4 bg-primary/50 animate-pulse ml-0.5 align-middle rounded-sm"></span>
+                <div
+                  class="prose prose-sm max-w-none text-sm text-base-content/80 border-l-2 pl-3"
+                  style="border-color: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 30%, transparent);"
+                >
+                  {entry.text}<span
+                    class="inline-block w-1.5 h-4 animate-pulse ml-0.5 align-middle rounded-sm"
+                    style="background: color-mix(in oklch, var(--agent-accent, oklch(82% 0.12 207)) 50%, transparent);"
+                  ></span>
                 </div>
               </div>
             </div>
@@ -2521,7 +2882,7 @@ defmodule PlatformWeb.ChatLive do
             <span>{thinking_label(@agent_typing_pids, @participants_map)} is thinking…</span>
           </div>
 
-          <div class="flex-shrink-0 border-t border-base-300 px-5 py-3 safe-area-bottom">
+          <div class="flex-shrink-0 compose-input-area safe-area-bottom">
             <.form
               :if={@active_space}
               for={@compose_form}
@@ -2532,7 +2893,7 @@ defmodule PlatformWeb.ChatLive do
             >
               <%!-- @mention autocomplete dropdown --%>
               <div
-                :if={@mention_suggestions != []}
+                :if={@mention_suggestions != [] && @mention_source == "compose-form"}
                 class="relative"
               >
                 <div class="absolute bottom-0 left-0 z-50 w-64 rounded-xl border border-base-300 bg-base-100 shadow-lg overflow-hidden">
@@ -2544,19 +2905,30 @@ defmodule PlatformWeb.ChatLive do
                       phx-click={
                         JS.dispatch("chat:insert-mention",
                           to: "##{@compose_form[:text].id}",
-                          detail: %{name: suggestion.display_name || "User"}
+                          detail: %{name: participant_name(suggestion)}
                         )
                       }
                       class="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-base-200 text-left transition-colors"
                     >
-                      <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
-                        {(suggestion.display_name || "U")
-                        |> String.trim()
-                        |> String.first()
-                        |> String.upcase()}
-                      </div>
+                      <%= if suggestion.participant_type == "agent" do %>
+                        <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
+                          {suggestion
+                          |> participant_name()
+                          |> String.trim()
+                          |> String.first()
+                          |> String.upcase()}
+                        </div>
+                      <% else %>
+                        <.human_avatar
+                          name={participant_name(suggestion)}
+                          avatar_url={participant_avatar_url(suggestion)}
+                          seed={participant_avatar_seed(suggestion)}
+                          size="sm"
+                          class="flex-shrink-0"
+                        />
+                      <% end %>
                       <span class="flex-1 truncate font-medium">
-                        {suggestion.display_name || "User"}
+                        {participant_name(suggestion)}
                       </span>
                       <span class={[
                         "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
@@ -2570,33 +2942,39 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               </div>
 
-              <%!-- Compose row: [+] [input stretches] [send] --%>
-              <div class="flex items-center gap-2">
+              <%!-- Hidden file input — outside pill bar to avoid flex layout interference --%>
+              <.live_file_input
+                upload={@uploads.attachments}
+                class="hidden"
+                id="upload-file-trigger"
+              />
+
+              <%!-- Pill-shaped compose bar --%>
+              <div class="compose-pill-bar">
                 <button
                   type="button"
                   phx-click="show_upload_dialog"
-                  class="flex-shrink-0 cursor-pointer rounded-full w-9 h-9 flex items-center justify-center text-base-content/50 hover:bg-base-300 transition-colors"
+                  class="compose-pill-attach cursor-pointer text-base-content/50 hover:bg-base-300/50 transition-colors"
                   title="Attach files"
                 >
                   <span class="hero-plus size-5"></span>
                 </button>
-                <%!-- Hidden file input keeps LiveView upload channel active for drag-drop --%>
-                <.live_file_input upload={@uploads.attachments} class="hidden" />
 
                 <textarea
                   name="compose[text]"
                   id={@compose_form[:text].id}
+                  data-draft-key={if @active_space, do: "chat-draft:" <> @active_space.id, else: nil}
                   placeholder={"Message ##{(@active_space && @active_space.name) || ""}"}
                   autocomplete="off"
                   rows="1"
-                  class="min-w-0 flex-1 rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors"
-                  style="line-height:1.5;padding:6px 12px;min-height:33px;max-height:200px;overflow-y:auto;field-sizing:content"
+                  class="min-w-0 flex-1 text-sm resize-none"
+                  style="line-height:1.5;padding:4px 0;min-height:28px;max-height:200px;overflow-y:auto;field-sizing:content"
                   phx-hook="ComposeInput"
                 >{Phoenix.HTML.Form.normalize_value("text", @compose_form[:text].value)}</textarea>
 
                 <button
                   type="submit"
-                  class="flex-shrink-0 w-9 h-9 rounded-full btn btn-primary btn-sm flex items-center justify-center p-0"
+                  class="compose-pill-send"
                   disabled={is_nil(@current_participant)}
                   title="Send"
                 >
@@ -2628,148 +3006,201 @@ defmodule PlatformWeb.ChatLive do
 
           <%!-- Upload staging dialog --%>
           <%= if @upload_dialog_open do %>
-            <div
-              class="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-              phx-click="hide_upload_dialog"
-            >
-              <div
-                class="mx-4 w-full max-w-lg rounded-2xl bg-base-100 shadow-2xl border border-base-300"
-                phx-click-away="hide_upload_dialog"
-                onclick="event.stopPropagation()"
-              >
+            <div class="upload-backdrop" phx-click="hide_upload_dialog">
+              <div class="upload-panel" phx-click="noop">
                 <%!-- Header --%>
-                <div class="flex items-center justify-between border-b border-base-300 px-5 py-3">
-                  <h3 class="text-base font-semibold">Upload files</h3>
-                  <button
-                    type="button"
-                    phx-click="hide_upload_dialog"
-                    class="btn btn-ghost btn-xs btn-circle"
-                    title="Close"
-                  >
-                    <span class="hero-x-mark size-4"></span>
+                <div class="upload-header">
+                  <div class="upload-header-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                        cx="8.5"
+                        cy="8.5"
+                        r="1.5"
+                      /><path d="M21 15l-5-5L5 21" />
+                    </svg>
+                  </div>
+                  <div class="upload-header-text">
+                    <div class="upload-title">Share Images</div>
+                    <div class="upload-subtitle">
+                      Upload images to
+                      <strong>{"##{(@active_space && @active_space.name) || ""}"}</strong>
+                    </div>
+                  </div>
+                  <button type="button" class="upload-close" phx-click="hide_upload_dialog">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
                   </button>
                 </div>
 
-                <%!-- File previews --%>
-                <div class="px-5 py-4">
-                  <div
-                    :if={@uploads.attachments.entries != []}
-                    class="grid grid-cols-3 gap-3 mb-4"
+                <%!-- Empty: Drop Zone --%>
+                <div
+                  :if={@uploads.attachments.entries == []}
+                  class="upload-dropzone"
+                  phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line
+                      x1="12"
+                      y1="3"
+                      x2="12"
+                      y2="15"
+                    />
+                  </svg>
+                  <div class="upload-dropzone-title">Drag & drop images here</div>
+                  <div class="upload-dropzone-or">or</div>
+                  <button
+                    type="button"
+                    class="upload-browse-btn"
+                    phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                   >
-                    <div
-                      :for={entry <- @uploads.attachments.entries}
-                      class="relative group"
-                    >
+                    Browse files
+                  </button>
+                  <div class="upload-dropzone-sub">You can also paste images with ⌘V</div>
+                  <div class="upload-dropzone-formats">
+                    PNG · JPG · GIF · WebP · SVG — max 15 MB each
+                  </div>
+                </div>
+
+                <%!-- Populated: Image Grid --%>
+                <div :if={@uploads.attachments.entries != []} class="upload-grid-area">
+                  <div class="upload-grid">
+                    <div :for={entry <- @uploads.attachments.entries} class="upload-thumb">
                       <%= if String.starts_with?(entry.client_type, "image/") do %>
                         <.live_img_preview
                           entry={entry}
-                          class="w-full h-24 object-cover rounded-lg border border-base-300"
+                          class="upload-thumb-inner"
+                          style="width:100%;height:100%;object-fit:cover"
                         />
                       <% else %>
-                        <div class="w-full h-24 rounded-lg border border-base-300 bg-base-200 flex flex-col items-center justify-center gap-1 px-2">
-                          <span class="hero-document size-8 text-base-content/40"></span>
-                          <span class="text-[10px] text-base-content/60 truncate w-full text-center">
-                            {entry.client_name}
-                          </span>
+                        <div class="upload-thumb-inner">
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.5"
+                          >
+                            <rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                              cx="8.5"
+                              cy="8.5"
+                              r="1.5"
+                            /><path d="M21 15l-5-5L5 21" />
+                          </svg>
                         </div>
                       <% end %>
-
-                      <%!-- Remove button --%>
+                      <span class="upload-thumb-name">{entry.client_name}</span>
                       <button
                         type="button"
+                        class="upload-thumb-remove"
                         phx-click="cancel_upload"
                         phx-value-ref={entry.ref}
-                        class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-error text-error-content flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                        title="Remove"
                       >
-                        <span class="hero-x-mark size-3"></span>
+                        ×
                       </button>
-
                       <%!-- Progress bar --%>
                       <div
                         :if={entry.progress > 0 and entry.progress < 100}
-                        class="absolute bottom-1 left-1 right-1"
+                        style="position:absolute;bottom:0;left:0;right:0;height:3px;background:rgba(0,0,0,0.3)"
                       >
-                        <div class="h-1 rounded-full bg-base-300 overflow-hidden">
-                          <div
-                            class="h-full bg-primary transition-all duration-300"
-                            style={"width: #{entry.progress}%"}
-                          >
-                          </div>
+                        <div style={"height:100%;background:var(--cyan);width:#{entry.progress}%;transition:width 300ms ease"}>
                         </div>
                       </div>
                     </div>
+                    <%!-- Add more tile --%>
+                    <button
+                      type="button"
+                      class="upload-add-tile"
+                      phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                      Add more
+                    </button>
                   </div>
+                </div>
 
-                  <div
-                    :if={@uploads.attachments.entries == []}
-                    class="text-center py-8 text-base-content/40"
-                  >
-                    <span class="hero-cloud-arrow-up size-12 mx-auto mb-2"></span>
-                    <p class="text-sm">No files selected yet</p>
-                  </div>
-
-                  <%!-- Upload errors --%>
+                <%!-- Upload errors --%>
+                <div :if={upload_errors(@uploads.attachments) != []} style="padding:0 20px">
                   <p
                     :for={error <- upload_errors(@uploads.attachments)}
-                    class="text-xs text-error mb-2"
+                    class="text-xs"
+                    style="color:var(--danger);margin-bottom:4px"
                   >
                     {upload_error_to_string(error)}
                   </p>
-
-                  <div :for={entry <- @uploads.attachments.entries}>
-                    <p
-                      :for={error <- upload_errors(@uploads.attachments, entry)}
-                      class="text-xs text-error mb-1"
-                    >
-                      {entry.client_name}: {upload_error_to_string(error)}
-                    </p>
-                  </div>
-
-                  <%!-- Add more files — triggers the hidden live_file_input in compose area --%>
-                  <button
-                    type="button"
-                    onclick="document.getElementById('chat-drop-zone').querySelector('input[type=file]').click()"
-                    class="flex items-center gap-2 text-sm text-primary cursor-pointer hover:underline mt-2"
+                </div>
+                <div :for={entry <- @uploads.attachments.entries} style="padding:0 20px">
+                  <p
+                    :for={error <- upload_errors(@uploads.attachments, entry)}
+                    class="text-xs"
+                    style="color:var(--danger);margin-bottom:4px"
                   >
-                    <span class="hero-plus size-4"></span>
-                    <span>Add more files</span>
-                  </button>
+                    {entry.client_name}: {upload_error_to_string(error)}
+                  </p>
                 </div>
 
-                <%!-- Caption --%>
-                <div class="px-5 pb-4">
+                <%!-- Agent Tag Section --%>
+                <div :if={@uploads.attachments.entries != []} class="upload-agent-section">
+                  <div class="upload-agent-label">Tag an agent</div>
+                  <div class="upload-agent-chips">
+                    <button
+                      :for={
+                        {slug, label} <- [
+                          {"beacon", "Beacon"},
+                          {"pixel", "Pixel"},
+                          {"builder", "Builder"},
+                          {"higgins", "Higgins"}
+                        ]
+                      }
+                      type="button"
+                      class={"agent-chip #{slug}#{if MapSet.member?(@upload_tagged_agents, slug), do: " selected", else: ""}"}
+                      phx-click="toggle_upload_agent_tag"
+                      phx-value-agent={slug}
+                    >
+                      <span class="chip-dot"></span> {label}
+                    </button>
+                  </div>
+                </div>
+
+                <%!-- Comment --%>
+                <div :if={@uploads.attachments.entries != []} class="upload-comment">
                   <form phx-change="upload_caption_changed" phx-submit="send_upload">
                     <textarea
                       name="caption"
-                      placeholder="Add a caption (optional)..."
-                      rows="2"
+                      class="upload-comment-input"
+                      placeholder="Add a comment about these images..."
                       phx-debounce="200"
-                      class="w-full rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors px-3 py-2"
                     >{@upload_caption}</textarea>
                   </form>
                 </div>
 
                 <%!-- Footer --%>
-                <div class="flex items-center justify-end gap-2 border-t border-base-300 px-5 py-3">
-                  <button
-                    type="button"
-                    phx-click="hide_upload_dialog"
-                    class="btn btn-ghost btn-sm"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    phx-click="send_upload"
-                    class="btn btn-primary btn-sm"
-                    disabled={@uploads.attachments.entries == []}
-                  >
-                    Send
-                  </button>
+                <div :if={@uploads.attachments.entries != []} class="upload-footer">
+                  <div class="upload-count">
+                    <strong>{length(@uploads.attachments.entries)}</strong>
+                    {if length(@uploads.attachments.entries) == 1, do: "image", else: "images"} selected
+                  </div>
+                  <div class="upload-footer-actions">
+                    <button type="button" class="upload-btn-cancel" phx-click="hide_upload_dialog">
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      class="upload-btn-send"
+                      phx-click="send_upload"
+                      disabled={@uploads.attachments.entries == []}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+                      </svg>
+                      Send to {"##{(@active_space && @active_space.name) || ""}"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
+            <%!-- Upload file input is in the compose area above (single instance to avoid duplicate IDs) --%>
           <% end %>
         </div>
 
@@ -2792,7 +3223,7 @@ defmodule PlatformWeb.ChatLive do
           </div>
 
           <div class="flex-1 overflow-y-auto px-4 py-4">
-            <.canvas_document canvas={@active_canvas} />
+            <.canvas_document canvas={@active_canvas} dom_id_base="chat-live-canvas-panel" />
           </div>
         </div>
 
@@ -2813,150 +3244,12 @@ defmodule PlatformWeb.ChatLive do
             </header>
 
             <div class="flex-1 overflow-y-auto px-4 py-4">
-              <.canvas_document canvas={@active_canvas} />
+              <.canvas_document canvas={@active_canvas} dom_id_base="chat-live-canvas-overlay" />
             </div>
           </div>
         <% end %>
 
-        <div
-          :if={@active_thread}
-          class="hidden lg:flex w-80 flex-shrink-0 flex-col border-l border-base-300 bg-base-100"
-        >
-          <div class="flex h-12 flex-shrink-0 items-center justify-between border-b border-base-300 px-4">
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-semibold">Thread</span>
-              <span :if={@active_thread.title} class="text-xs text-base-content/50 truncate">
-                {@active_thread.title}
-              </span>
-            </div>
-            <button
-              phx-click="close_thread"
-              class="btn btn-ghost btn-xs"
-              title="Close thread"
-            >
-              <span class="hero-x-mark size-4"></span>
-            </button>
-          </div>
-
-          <div
-            id="thread-messages"
-            class="flex-1 overflow-y-auto px-4 py-3 space-y-3"
-          >
-            <div
-              :for={msg <- @thread_messages}
-              class={[
-                "flex flex-col gap-0.5 rounded-xl px-2 py-1 transition-colors",
-                @highlighted_thread_message_id == msg.id && "bg-primary/5 ring-1 ring-primary/20"
-              ]}
-            >
-              <div class="flex items-baseline gap-2">
-                <span class="text-xs font-semibold text-primary">
-                  {sender_name(@participants_map, msg.participant_id)}
-                </span>
-                <.local_time
-                  id={"thread-message-time-#{msg.id}"}
-                  timestamp={msg.inserted_at}
-                  class="text-[10px] text-base-content/40"
-                />
-              </div>
-
-              <p :if={present?(msg.content)} class="text-sm leading-6 text-base-content break-words">
-                {msg.content}
-              </p>
-
-              <div
-                :if={Map.get(@thread_attachments_map, msg.id, []) != []}
-                class="mt-1 flex flex-col gap-1"
-              >
-                <a
-                  :for={attachment <- Map.get(@thread_attachments_map, msg.id, [])}
-                  href={attachment_url(attachment)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="inline-flex w-fit items-center gap-2 rounded bg-base-200 px-2 py-1 text-sm text-primary hover:bg-base-300 hover:no-underline"
-                >
-                  <span class="hero-paper-clip size-4"></span>
-                  <span>{attachment.filename}</span>
-                  <span class="text-xs text-base-content/40">
-                    ({format_bytes(attachment.byte_size)})
-                  </span>
-                </a>
-              </div>
-            </div>
-
-            <div :if={@thread_messages == []} class="text-xs text-base-content/40">
-              No replies yet — be the first!
-            </div>
-          </div>
-
-          <div class="flex-shrink-0 border-t border-base-300 px-4 py-3">
-            <.form
-              for={@thread_compose_form}
-              id="thread-compose-form"
-              phx-submit="send_thread_message"
-              class="flex flex-col gap-2"
-            >
-              <div
-                :if={@uploads.thread_attachments.entries != []}
-                class="flex flex-wrap gap-1"
-              >
-                <span
-                  :for={entry <- @uploads.thread_attachments.entries}
-                  class="inline-flex items-center gap-1 rounded-full bg-base-200 px-2 py-0.5 text-xs text-base-content/70"
-                >
-                  <span class="hero-paper-clip size-3"></span>
-                  <span>{entry.client_name}</span>
-                </span>
-              </div>
-
-              <div class="flex items-end gap-2">
-                <label
-                  class="flex-shrink-0 cursor-pointer rounded-full w-8 h-8 flex items-center justify-center text-base-content/50 hover:bg-base-300 transition-colors"
-                  title="Attach files"
-                >
-                  <span class="hero-paper-clip size-5"></span>
-                  <.live_file_input upload={@uploads.thread_attachments} class="hidden" />
-                </label>
-
-                <div class="flex-1 relative">
-                  <textarea
-                    name="thread_compose[text]"
-                    id={@thread_compose_form[:text].id}
-                    rows="2"
-                    placeholder="Reply in thread…"
-                    autocomplete="off"
-                    class="textarea textarea-bordered w-full resize-none rounded-xl pr-10 text-sm leading-relaxed"
-                    phx-hook="ComposeInput"
-                  >{Phoenix.HTML.Form.normalize_value("textarea", @thread_compose_form[:text].value)}</textarea>
-                  <button
-                    type="submit"
-                    class="absolute right-2 bottom-2 w-7 h-7 rounded-full btn btn-primary btn-xs flex items-center justify-center p-0"
-                    disabled={is_nil(@current_participant)}
-                    title="Reply"
-                  >
-                    <span class="hero-paper-airplane size-4 -rotate-45"></span>
-                  </button>
-                </div>
-              </div>
-
-              <p
-                :for={error <- upload_errors(@uploads.thread_attachments)}
-                class="text-xs text-error"
-              >
-                {upload_error_to_string(error)}
-              </p>
-
-              <div :for={entry <- @uploads.thread_attachments.entries}>
-                <p
-                  :for={error <- upload_errors(@uploads.thread_attachments, entry)}
-                  class="text-xs text-error"
-                >
-                  {entry.client_name}: {upload_error_to_string(error)}
-                </p>
-              </div>
-            </.form>
-          </div>
-        </div>
+        <%!-- Side thread panel removed — all thread interaction is inline --%>
       </div>
     </div>
 
@@ -3168,9 +3461,13 @@ defmodule PlatformWeb.ChatLive do
                   if(is_selected, do: "bg-primary/10 text-primary", else: "hover:bg-base-200")
                 ]}
               >
-                <span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs font-bold">
-                  {String.first(user.name || "U") |> String.upcase()}
-                </span>
+                <.human_avatar
+                  name={user.name || user.email || "User"}
+                  avatar_url={user.avatar_url}
+                  seed={user.oidc_sub || user.email || user.id}
+                  size="sm"
+                  class="flex-shrink-0"
+                />
                 <span class="truncate">{user.name || user.email}</span>
                 <span :if={is_selected} class="ml-auto text-xs">selected</span>
               </button>
@@ -3225,6 +3522,26 @@ defmodule PlatformWeb.ChatLive do
         </div>
       </div>
     <% end %>
+
+    <%!-- Image lightbox modal --%>
+    <div
+      :if={@lightbox_url}
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+      phx-click="close_lightbox"
+    >
+      <button
+        class="absolute top-4 right-4 z-10 rounded-full bg-black/50 p-2 text-white hover:bg-black/70 transition-colors safe-area-top"
+        phx-click="close_lightbox"
+        aria-label="Close"
+      >
+        <span class="hero-x-mark size-6"></span>
+      </button>
+      <img
+        src={@lightbox_url}
+        class="max-h-[90vh] max-w-[95vw] rounded-lg object-contain shadow-2xl"
+        phx-click="close_lightbox"
+      />
+    </div>
     """
   end
 
@@ -3317,7 +3634,51 @@ defmodule PlatformWeb.ChatLive do
   end
 
   defp find_canvas(socket, canvas_id) do
-    Enum.find(socket.assigns.canvases, &(&1.id == canvas_id))
+    Chat.get_canvas(canvas_id) || Enum.find(socket.assigns.canvases, &(&1.id == canvas_id))
+  end
+
+  defp dispatch_canvas_action_to_agent(canvas, value) do
+    require Logger
+
+    with %{participant_type: "agent", participant_id: agent_id} <-
+           Chat.get_participant(canvas.created_by),
+         %Platform.Agents.Agent{} = agent <- Platform.Agents.get_agent(agent_id),
+         runtime_id when is_binary(runtime_id) <- agent.runtime_id,
+         topic = "runtime:#{runtime_id}",
+         bundle = Platform.Chat.ContextPlane.build_context_bundle(canvas.space_id),
+         tools = PlatformWeb.Channels.ToolSurface.tool_definitions() do
+      payload = %{
+        signal: %{
+          reason: :canvas_action,
+          space_id: canvas.space_id,
+          canvas_id: canvas.id,
+          canvas_title: canvas.title,
+          action_value: value
+        },
+        message: %{
+          content: "Action button pressed on canvas \"#{canvas.title || canvas.id}\": #{value}",
+          author: "system"
+        },
+        history: [],
+        context: bundle,
+        tools: tools
+      }
+
+      case PlatformWeb.Endpoint.broadcast(topic, "attention", payload) do
+        :ok ->
+          Logger.info(
+            "canvas_action dispatched to agent #{agent_id} (runtime: #{runtime_id}) value=#{value}"
+          )
+
+        {:error, reason} ->
+          Logger.warning("canvas_action dispatch failed: #{inspect(reason)}")
+      end
+    else
+      _ ->
+        Logger.debug(
+          "canvas_action: creator is not an agent or runtime not found, skipping dispatch"
+        )
+    end
   end
 
   defp default_canvas_state("table") do
@@ -3560,6 +3921,16 @@ defmodule PlatformWeb.ChatLive do
     |> Enum.reverse()
   end
 
+  # Re-insert a message into the stream to force LiveView to re-render the
+  # stream item after assign changes (e.g. expanded_threads, thread_previews).
+  # Stream items only re-render on explicit stream_insert, not on assign changes.
+  defp reinsert_stream_message(socket, msg_id) do
+    case Chat.get_message(msg_id) do
+      nil -> socket
+      msg -> stream_insert(socket, :messages, msg)
+    end
+  end
+
   defp load_thread_messages(space_id, thread_id) do
     space_id
     |> Chat.list_messages(thread_id: thread_id, limit: 100)
@@ -3591,6 +3962,7 @@ defmodule PlatformWeb.ChatLive do
           %{preview | reply_count: preview.reply_count + 1, last_reply_at: msg.inserted_at}
         end)
       end)
+      |> reinsert_stream_message(msg_id)
     end
   end
 
@@ -3709,22 +4081,33 @@ defmodule PlatformWeb.ChatLive do
     )
   end
 
-  defp bootstrap_space(slug) when is_binary(slug) do
-    # Only bootstrap for slug-like strings, not UUIDs
-    if valid_uuid?(slug) do
-      nil
-    else
-      name =
-        slug
-        |> String.replace("-", " ")
-        |> String.split()
-        |> Enum.map(&String.capitalize/1)
-        |> Enum.join(" ")
+  # Valid slug pattern: lowercase alphanumerics separated by hyphens (1–64 chars).
+  # This intentionally excludes anything with underscores, uppercase, special chars,
+  # or tool-artifact strings like "__from_file__" that should never create real spaces.
+  @slug_pattern ~r/^[a-z0-9][a-z0-9\-]{0,62}[a-z0-9]$/
 
-      case Chat.create_space(%{name: name, slug: slug, kind: "channel"}) do
-        {:ok, space} -> space
-        {:error, _} -> Chat.get_space_by_slug(slug)
-      end
+  defp bootstrap_space(slug) when is_binary(slug) do
+    cond do
+      # Never bootstrap for UUIDs — those are fetched directly
+      valid_uuid?(slug) ->
+        nil
+
+      # Only bootstrap slugs that look like real channel slugs
+      not String.match?(slug, @slug_pattern) ->
+        nil
+
+      true ->
+        name =
+          slug
+          |> String.replace("-", " ")
+          |> String.split()
+          |> Enum.map(&String.capitalize/1)
+          |> Enum.join(" ")
+
+        case Chat.create_space(%{name: name, slug: slug, kind: "channel"}) do
+          {:ok, space} -> space
+          {:error, _} -> Chat.get_space_by_slug(slug)
+        end
     end
   end
 
@@ -3914,14 +4297,121 @@ defmodule PlatformWeb.ChatLive do
     _ -> false
   end
 
+  defp build_participant_identity_map(participants, users_by_id) do
+    Map.new(participants, fn participant ->
+      {participant.id,
+       participant_identity(participant, Map.get(users_by_id, participant.participant_id))}
+    end)
+  end
+
+  defp participant_identity(participant, user \\ nil)
+
+  defp participant_identity(%{participant_type: "agent"} = participant, _user) do
+    name = participant.display_name || "Agent"
+
+    %{
+      participant_type: "agent",
+      name: name,
+      display_name: name,
+      avatar_url: participant.avatar_url,
+      avatar_seed: participant.participant_id || participant.id
+    }
+  end
+
+  defp participant_identity(participant, user) do
+    name = participant_name(participant, user)
+
+    %{
+      participant_type: "user",
+      name: name,
+      display_name: name,
+      avatar_url: participant.avatar_url || (user && user.avatar_url),
+      avatar_seed: participant_avatar_seed(participant, user)
+    }
+  end
+
+  defp participant_name(participant), do: participant_name(participant, nil)
+
+  defp participant_name(%{name: name}, _user) when is_binary(name) and name != "", do: name
+
+  defp participant_name(%{resolved_name: name}, _user) when is_binary(name) and name != "",
+    do: name
+
+  defp participant_name(%{display_name: name}, _user) when is_binary(name) and name != "",
+    do: name
+
+  defp participant_name(_participant, %{name: name}) when is_binary(name) and name != "", do: name
+
+  defp participant_name(_participant, %{email: email}) when is_binary(email) and email != "",
+    do: email
+
+  defp participant_name(_participant, _user), do: "User"
+
+  defp participant_avatar_url(%{avatar_url: avatar_url}) when is_binary(avatar_url),
+    do: avatar_url
+
+  defp participant_avatar_url(_participant), do: nil
+
+  defp participant_avatar_seed(%{avatar_seed: seed}) when not is_nil(seed), do: seed
+
+  defp participant_avatar_seed(participant, user \\ nil) do
+    cond do
+      user && is_binary(user.oidc_sub) && user.oidc_sub != "" ->
+        user.oidc_sub
+
+      user && is_binary(user.email) && user.email != "" ->
+        user.email
+
+      is_binary(participant.participant_id) && participant.participant_id != "" ->
+        participant.participant_id
+
+      is_binary(participant.id) && participant.id != "" ->
+        participant.id
+
+      true ->
+        "user"
+    end
+  end
+
   defp sender_name(participants_map, participant_id) do
-    Map.get(participants_map, participant_id, "User")
+    case Map.get(participants_map, participant_id) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      name when is_binary(name) and name != "" -> name
+      _ -> "User"
+    end
+  end
+
+  defp sender_avatar_url(participants_map, participant_id) do
+    case Map.get(participants_map, participant_id) do
+      %{avatar_url: avatar_url} when is_binary(avatar_url) -> avatar_url
+      _ -> nil
+    end
+  end
+
+  defp sender_avatar_seed(participants_map, participant_id) do
+    case Map.get(participants_map, participant_id) do
+      %{avatar_seed: avatar_seed} when not is_nil(avatar_seed) -> avatar_seed
+      %{name: name} when is_binary(name) and name != "" -> name
+      name when is_binary(name) and name != "" -> name
+      _ -> participant_id || "user"
+    end
+  end
+
+  defp relative_time(nil), do: ""
+
+  defp relative_time(datetime) do
+    diff = DateTime.diff(DateTime.utc_now(), datetime, :second)
+
+    cond do
+      diff < 60 -> "just now"
+      diff < 3600 -> "#{div(diff, 60)}m ago"
+      diff < 86400 -> "#{div(diff, 3600)}h ago"
+      true -> "#{div(diff, 86400)}d ago"
+    end
   end
 
   defp avatar_initial(participants_map, participant_id) do
-    name = Map.get(participants_map, participant_id, "U")
-
-    name
+    sender_name(participants_map, participant_id)
     |> String.trim()
     |> String.first()
     |> case do

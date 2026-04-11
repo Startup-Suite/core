@@ -11,6 +11,26 @@ defmodule PlatformWeb.TasksLiveTest do
   alias Platform.{Repo, Tasks}
   alias Platform.Tasks.{Epic, Plan, ReviewRequests}
 
+  setup do
+    previous_root = Application.get_env(:platform, :chat_attachments_root)
+
+    upload_root =
+      Path.join(
+        System.tmp_dir!(),
+        "platform_tasks_live_test_uploads_#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(upload_root)
+    Application.put_env(:platform, :chat_attachments_root, upload_root)
+
+    on_exit(fn ->
+      Application.put_env(:platform, :chat_attachments_root, previous_root)
+      File.rm_rf(upload_root)
+    end)
+
+    :ok
+  end
+
   defp authenticated_conn(conn) do
     {conn, _user} = authenticated_conn_with_user(conn)
     conn
@@ -59,6 +79,25 @@ defmodule PlatformWeb.TasksLiveTest do
       slug: "agent-#{System.unique_integer([:positive])}",
       name: name || "Agent #{System.unique_integer([:positive])}",
       status: "active"
+    })
+  end
+
+  defp create_user(attrs \\ %{}) do
+    Repo.insert!(%User{
+      email:
+        Map.get(
+          attrs,
+          :email,
+          "tasks-user-#{System.unique_integer([:positive, :monotonic])}@example.com"
+        ),
+      name: Map.get(attrs, :name, "Tasks User"),
+      oidc_sub:
+        Map.get(
+          attrs,
+          :oidc_sub,
+          "oidc-tasks-user-#{System.unique_integer([:positive, :monotonic])}"
+        ),
+      avatar_url: Map.get(attrs, :avatar_url)
     })
   end
 
@@ -195,6 +234,65 @@ defmodule PlatformWeb.TasksLiveTest do
 
     # Should show progress 1/2
     assert html =~ "1/2"
+  end
+
+  test "task cards render image avatars, varied human fallback palettes, and distinct agent chips",
+       %{
+         conn: conn
+       } do
+    project = create_project()
+
+    user_with_avatar =
+      create_user(%{
+        name: "Avatar Owner",
+        avatar_url: "https://issuer.example.com/tasks-user.png"
+      })
+
+    fallback_user_one = create_user(%{name: "Amber Atlas", oidc_sub: "seed-a"})
+    fallback_user_two = create_user(%{name: "Basil Brook", oidc_sub: "seed-b"})
+    agent = create_agent("Task Bot")
+
+    _avatar_task =
+      create_task(project, %{
+        title: "Avatar Task",
+        assignee_type: "user",
+        assignee_id: user_with_avatar.id
+      })
+
+    _fallback_task_one =
+      create_task(project, %{
+        title: "Fallback Task One",
+        assignee_type: "user",
+        assignee_id: fallback_user_one.id
+      })
+
+    _fallback_task_two =
+      create_task(project, %{
+        title: "Fallback Task Two",
+        assignee_type: "user",
+        assignee_id: fallback_user_two.id
+      })
+
+    _agent_task =
+      create_task(project, %{
+        title: "Agent Task",
+        assignee_type: "agent",
+        assignee_id: agent.id
+      })
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks")
+
+    palette_classes =
+      Regex.scan(~r/avatar-fallback-\d+/, html)
+      |> List.flatten()
+      |> Enum.uniq()
+
+    assert html =~ "https://issuer.example.com/tasks-user.png"
+    assert html =~ "data-avatar-kind=\"human\""
+    assert "avatar-fallback-5" in palette_classes
+    assert "avatar-fallback-4" in palette_classes
+    assert html =~ "data-avatar-kind=\"agent\""
   end
 
   test "GET /tasks redirects unauthenticated users to login", %{conn: conn} do
@@ -503,6 +601,135 @@ defmodule PlatformWeb.TasksLiveTest do
     assert html =~ "Please verify the submitted screenshot."
   end
 
+  # ── Soft delete tests ─────────────────────────────────────────────────
+
+  test "delete button appears in detail panel for deletable task", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Deletable Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    assert html =~ "hero-trash"
+    assert html =~ "Delete task"
+  end
+
+  test "delete button does not appear for in_progress task", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Active Task", status: "in_progress"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refute html =~ "Delete task"
+  end
+
+  test "delete button does not appear for in_review task", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Review Task", status: "in_review"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refute html =~ "Delete task"
+  end
+
+  test "delete button does not appear for deploying task", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Deploy Task", status: "deploying"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refute html =~ "Delete task"
+  end
+
+  test "request_delete_task shows confirmation dialog", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Confirm Delete Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
+
+    html = render_click(view, "request_delete_task")
+
+    assert html =~ "Are you sure you want to delete this task?"
+    assert html =~ "Yes, Delete"
+    assert html =~ "Cancel"
+  end
+
+  test "cancel_delete_task hides confirmation dialog", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Cancel Delete Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
+
+    render_click(view, "request_delete_task")
+    html = render_click(view, "cancel_delete_task")
+
+    refute html =~ "Are you sure you want to delete this task?"
+  end
+
+  test "confirm_delete_task soft-deletes the task and removes it from the board", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Doomed Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+    # Task is visible
+    assert html =~ "Doomed Task"
+
+    # Request then confirm delete
+    render_click(view, "request_delete_task")
+    render_click(view, "confirm_delete_task")
+
+    # Task should be gone from the board
+    html = render(view)
+    refute html =~ "Doomed Task"
+
+    # Task still exists in DB but has deleted_at set
+    deleted = Platform.Repo.get(Platform.Tasks.Task, task.id)
+    assert deleted.deleted_at != nil
+  end
+
+  test "deleted task no longer appears on kanban board", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Ghost Task", status: "backlog"})
+
+    # Soft-delete via context
+    {:ok, _} = Tasks.soft_delete_task(task)
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks")
+
+    refute html =~ "Ghost Task"
+  end
+
+  test "three-dot menu appears on deletable task cards", %{conn: conn} do
+    project = create_project()
+    _task = create_task(project, %{title: "Menu Task", status: "backlog"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks")
+
+    assert html =~ "hero-ellipsis-vertical"
+    assert html =~ "Task actions"
+  end
+
+  test "three-dot menu does not appear on in_progress task cards", %{conn: conn} do
+    project = create_project()
+    _task = create_task(project, %{title: "No Menu Task", status: "in_progress"})
+
+    conn = authenticated_conn(conn)
+    {:ok, _view, html} = live(conn, ~p"/tasks")
+
+    # The in_progress task card should not have the three-dot menu
+    # (only deletable tasks get it)
+    refute html =~ "select_task_and_delete"
+  end
+
   test "pending plan count badge appears in board header", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Badge Task", status: "planning"})
@@ -528,31 +755,35 @@ defmodule PlatformWeb.TasksLiveTest do
 
   # ── Steering input tests ──────────────────────────────────────────────
 
-  test "send_steering_message posts to execution space and clears form", %{conn: conn} do
+  test "send_steering_message posts engagement metadata and shows success feedback", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Steerable Task", status: "in_progress"})
 
-    # Create an execution space for this task
     {:ok, space} = ExecutionSpace.find_or_create(task.id)
 
     {conn, _user} = authenticated_conn_with_user(conn)
     {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
 
-    # Send a steering message
-    render_submit(view, "send_steering_message", %{
-      "steering" => %{"text" => "Focus on the error handling first"}
-    })
+    html =
+      render_submit(view, "send_steering_message", %{
+        "steering" => %{"text" => "Focus on the error handling first"}
+      })
 
-    # Verify message was posted to the execution space
     messages = ExecutionSpace.list_messages_with_participants(space.id)
     steering_msg = Enum.find(messages, &(&1.content == "Focus on the error handling first"))
     assert steering_msg
     assert steering_msg.sender_type == "user"
     assert steering_msg.content_type == "text"
     assert steering_msg.log_only == false
+    assert steering_msg.metadata["kind"] == "steering"
+    assert steering_msg.metadata["source"] == "tasks_live"
+    assert steering_msg.metadata["delivery"] == "engagement"
+
+    assert html =~ "steering-feedback"
+    assert html =~ "Steering sent to the execution log."
   end
 
-  test "send_steering_message is a no-op when content is empty", %{conn: conn} do
+  test "send_steering_message reports actionable error when content is empty", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "Empty Steering Task", status: "in_progress"})
 
@@ -561,28 +792,29 @@ defmodule PlatformWeb.TasksLiveTest do
     {conn, _user} = authenticated_conn_with_user(conn)
     {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
 
-    # Send empty message
-    render_submit(view, "send_steering_message", %{
-      "steering" => %{"text" => "   "}
-    })
+    html =
+      render_submit(view, "send_steering_message", %{
+        "steering" => %{"text" => "   "}
+      })
 
-    # No messages should have been created
     messages = ExecutionSpace.list_messages_with_participants(space.id)
     assert Enum.empty?(messages)
+    assert html =~ "Enter a message or attach a file before sending."
   end
 
-  test "send_steering_message is a no-op without an execution space", %{conn: conn} do
+  test "send_steering_message reports actionable error without an execution space", %{conn: conn} do
     project = create_project()
     task = create_task(project, %{title: "No Space Task", status: "backlog"})
 
-    # No execution space created — steering should be a no-op
     {conn, _user} = authenticated_conn_with_user(conn)
     {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
 
-    # Should not crash
-    render_submit(view, "send_steering_message", %{
-      "steering" => %{"text" => "This should do nothing"}
-    })
+    html =
+      render_submit(view, "send_steering_message", %{
+        "steering" => %{"text" => "This should do nothing"}
+      })
+
+    assert html =~ "This task does not have an execution log yet"
   end
 
   test "steering_changed tracks form input", %{conn: conn} do
@@ -684,16 +916,85 @@ defmodule PlatformWeb.TasksLiveTest do
     {conn, user} = authenticated_conn_with_user(conn)
     {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
 
-    # Send a message to trigger participant creation
     render_submit(view, "send_steering_message", %{
       "steering" => %{"text" => "Hello agent"}
     })
 
-    # Verify user participant was created in the execution space
     participants = Chat.list_participants(space.id)
     user_participant = Enum.find(participants, &(&1.participant_id == user.id))
     assert user_participant
     assert user_participant.participant_type == "user"
     assert user_participant.display_name == "Tasks Test User"
+  end
+
+  test "left execution participant is rejoined when the task detail opens", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Rejoin Task", status: "in_progress"})
+    {:ok, space} = ExecutionSpace.find_or_create(task.id)
+
+    {conn, user} = authenticated_conn_with_user(conn)
+
+    {:ok, participant} =
+      Chat.add_participant(space.id, %{
+        participant_type: "user",
+        participant_id: user.id,
+        display_name: "Tasks Test User",
+        joined_at: DateTime.utc_now(),
+        left_at: DateTime.utc_now()
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
+
+    refreshed = Chat.get_participant(participant.id)
+    assert refreshed.left_at == nil
+
+    html =
+      render_submit(view, "send_steering_message", %{
+        "steering" => %{"text" => "Back in the loop"}
+      })
+
+    assert html =~ "Steering sent to the execution log."
+  end
+
+  test "send_steering_message surfaces attachment storage failures", %{conn: conn} do
+    project = create_project()
+    task = create_task(project, %{title: "Attachment Steering Task", status: "in_progress"})
+    {:ok, space} = ExecutionSpace.find_or_create(task.id)
+
+    broken_root =
+      Path.join(
+        System.tmp_dir!(),
+        "platform_tasks_live_test_broken_root_#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(broken_root, "not a directory")
+    Application.put_env(:platform, :chat_attachments_root, broken_root)
+
+    on_exit(fn -> File.rm_rf(broken_root) end)
+
+    {conn, _user} = authenticated_conn_with_user(conn)
+    {:ok, view, _html} = live(conn, ~p"/tasks/#{task.id}")
+
+    upload =
+      file_input(view, "#steering-compose-form", :steering_attachments, [
+        %{
+          name: "notes.txt",
+          content: "steering attachment",
+          type: "text/plain"
+        }
+      ])
+
+    assert render_upload(upload, "notes.txt") =~ "notes.txt"
+
+    html =
+      view
+      |> form("#steering-compose-form", steering: %{text: "See attached"})
+      |> render_submit()
+
+    assert Chat.list_messages(space.id) == []
+    assert html =~ "notes.txt"
+
+    assert html =~
+             "The attachment upload could not be stored in the execution log. Please try again."
   end
 end

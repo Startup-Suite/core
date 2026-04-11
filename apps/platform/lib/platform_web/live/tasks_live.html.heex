@@ -154,7 +154,7 @@
             id={"task-card-#{task.id}"}
             data-task-id={task.id}
             draggable="true"
-            class="card card-compact cursor-grab border border-base-300 bg-base-100 shadow-sm transition-all hover:shadow-md active:cursor-grabbing"
+            class="group card card-compact cursor-grab border border-base-300 bg-base-100 shadow-sm transition-all hover:shadow-md active:cursor-grabbing"
             phx-click="select_task"
             phx-value-id={task.id}
           >
@@ -178,14 +178,79 @@
                     title="Active run"
                   />
                   <%!-- Assignee --%>
-                  <span
-                    :if={assignee_initials(task)}
-                    class="flex size-5 items-center justify-center rounded-full bg-base-300 text-[10px] font-bold text-base-content/60"
-                    title={"#{task.assignee_type}: #{task.assignee_id}"}
-                  >
-                    {assignee_initials(task)}
-                  </span>
+                  <% assignee = assignee_identity(task, @users_by_id, @agents_by_id) %>
+                  <%= if assignee do %>
+                    <%= if assignee.type == :user do %>
+                      <.human_avatar
+                        name={assignee.name}
+                        avatar_url={assignee.avatar_url}
+                        seed={assignee.seed}
+                        size="xs"
+                        class="shrink-0"
+                        title={assignee.name}
+                      />
+                    <% else %>
+                      <span
+                        class="flex size-5 items-center justify-center rounded-full bg-accent/15 text-[10px] font-bold text-accent ring-1 ring-accent/20"
+                        title={assignee.name}
+                        data-avatar-kind="agent"
+                      >
+                        {agent_initials(assignee.name)}
+                      </span>
+                    <% end %>
+                  <% end %>
+                  <%!-- Three-dot menu --%>
+                  <div :if={deletable_task?(task)} class="dropdown dropdown-end" phx-click="noop">
+                    <div
+                      tabindex="0"
+                      role="button"
+                      class="btn btn-ghost btn-xs btn-square opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Task actions"
+                    >
+                      <span class="hero-ellipsis-vertical size-4"></span>
+                    </div>
+                    <ul
+                      tabindex="0"
+                      class="dropdown-content z-50 menu menu-sm p-1 shadow-lg bg-base-100 rounded-box w-36 border border-base-300"
+                    >
+                      <li>
+                        <button
+                          phx-click="select_task_and_delete"
+                          phx-value-id={task.id}
+                          class="text-error"
+                        >
+                          <span class="hero-trash size-4"></span> Delete
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
                 </div>
+              </div>
+
+              <%!-- Author + assignee + date --%>
+              <div
+                :if={task.reported_by || assignee_name(task, @agent_names) || task.inserted_at}
+                class="mt-1 flex items-center gap-1.5 text-[10px] text-base-content/40"
+              >
+                <span
+                  :if={task.reported_by}
+                  class="truncate max-w-[100px]"
+                  title={"Reported by " <> (task.reported_by || "")}
+                >
+                  {task.reported_by}
+                </span>
+                <span :if={
+                  task.reported_by && (assignee_name(task, @agent_names) || task.inserted_at)
+                }>
+                  ·
+                </span>
+                <span :if={assignee_name(task, @agent_names)} class="truncate max-w-[100px]">
+                  → {assignee_name(task, @agent_names)}
+                </span>
+                <span :if={assignee_name(task, @agent_names) && task.inserted_at}>·</span>
+                <span :if={task.inserted_at} class="whitespace-nowrap">
+                  {relative_time(task.inserted_at)}
+                </span>
               </div>
 
               <%!-- Bottom row: priority + progress --%>
@@ -261,12 +326,40 @@
   >
     <div class="flex items-center justify-between border-b border-base-300 px-4 py-3">
       <h2 class="text-sm font-semibold truncate">{@selected_task.title}</h2>
-      <button class="btn btn-sm btn-ghost btn-square" phx-click="close_detail">
-        <span class="hero-x-mark size-4"></span>
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          :if={deletable_task?(@selected_task)}
+          class="btn btn-sm btn-ghost btn-square text-error"
+          phx-click="request_delete_task"
+          title="Delete task"
+        >
+          <span class="hero-trash size-4"></span>
+        </button>
+        <button class="btn btn-sm btn-ghost btn-square" phx-click="close_detail">
+          <span class="hero-x-mark size-4"></span>
+        </button>
+      </div>
     </div>
 
     <div class="flex-1 overflow-y-auto p-4 space-y-5">
+      <%!-- Delete confirmation --%>
+      <div
+        :if={@confirm_delete}
+        class="rounded-box border border-error bg-error/10 p-4 space-y-3"
+      >
+        <p class="text-sm font-medium text-error">
+          Are you sure you want to delete this task?
+        </p>
+        <div class="flex gap-2">
+          <button phx-click="confirm_delete_task" class="btn btn-error btn-sm">
+            Yes, Delete
+          </button>
+          <button phx-click="cancel_delete_task" class="btn btn-ghost btn-sm">
+            Cancel
+          </button>
+        </div>
+      </div>
+
       <%!-- Status + Priority --%>
       <div class="flex flex-wrap items-center gap-2">
         <span class="badge badge-outline">{status_label(@selected_task.status)}</span>
@@ -278,6 +371,30 @@
         </span>
         <span :if={@selected_task.epic} class="text-xs text-base-content/50">
           / {(@selected_task.epic && @selected_task.epic.name) || "—"}
+        </span>
+      </div>
+
+      <%!-- Reporter + Dates + Assignee name --%>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-base-content/50">
+        <span :if={@selected_task.reported_by}>
+          <span class="text-base-content/40">Reporter:</span> {@selected_task.reported_by}
+        </span>
+        <span :if={assignee_name(@selected_task, @agent_names)}>
+          <span class="text-base-content/40">Assigned:</span> {assignee_name(
+            @selected_task,
+            @agent_names
+          )}
+        </span>
+        <span :if={@selected_task.inserted_at}>
+          <span class="text-base-content/40">Created:</span> {Calendar.strftime(
+            @selected_task.inserted_at,
+            "%b %d, %Y"
+          )}
+        </span>
+        <span :if={@selected_task.updated_at}>
+          <span class="text-base-content/40">Updated:</span> {relative_time(
+            @selected_task.updated_at
+          )}
         </span>
       </div>
 
@@ -479,6 +596,24 @@
       </div>
 
       <%!-- Execution Log --%>
+      <div
+        :if={!@execution_space_id and @steering_feedback}
+        id="steering-feedback-empty"
+        class={[
+          "flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
+          @steering_feedback.kind == :success && "border-success/30 bg-success/10 text-success",
+          @steering_feedback.kind == :error && "border-error/30 bg-error/10 text-error"
+        ]}
+      >
+        <span class={[
+          "mt-0.5 size-4 shrink-0",
+          @steering_feedback.kind == :success && "hero-check-circle",
+          @steering_feedback.kind == :error && "hero-exclamation-circle"
+        ]}>
+        </span>
+        <span>{@steering_feedback.message}</span>
+      </div>
+
       <div :if={@execution_space_id} class="space-y-2">
         <div class="flex items-center justify-between">
           <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
@@ -567,11 +702,12 @@
           >
             <%!-- Upload previews --%>
             <div
-              :if={@uploads.steering_attachments.entries != []}
+              :if={@uploads.steering_attachments.entries != [] or @steering_upload_previews != []}
               class="flex flex-wrap gap-2 mb-2"
             >
               <div
                 :for={entry <- @uploads.steering_attachments.entries}
+                :if={@uploads.steering_attachments.entries != []}
                 class="relative group"
               >
                 <%= if String.starts_with?(entry.client_type, "image/") do %>
@@ -611,6 +747,34 @@
                   </div>
                 </div>
               </div>
+
+              <div
+                :for={entry <- @steering_upload_previews}
+                :if={@uploads.steering_attachments.entries == []}
+                class="relative group"
+              >
+                <div class="w-16 h-16 rounded-lg border border-base-300 bg-base-200 flex flex-col items-center justify-center gap-0.5 px-1">
+                  <span class={[
+                    "size-5 text-base-content/40",
+                    String.starts_with?(entry.client_type, "image/") && "hero-photo",
+                    !String.starts_with?(entry.client_type, "image/") && "hero-document"
+                  ]}>
+                  </span>
+                  <span class="text-[8px] text-base-content/60 truncate w-full text-center">
+                    {entry.client_name}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  phx-click="cancel_steering_upload"
+                  phx-value-ref={entry.ref}
+                  class="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-error text-error-content flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                  title="Remove"
+                >
+                  <span class="hero-x-mark size-3"></span>
+                </button>
+              </div>
             </div>
 
             <%!-- Upload errors --%>
@@ -637,7 +801,7 @@
                 onclick="this.closest('form').querySelector('input[type=file]').click()"
                 class="flex-shrink-0 cursor-pointer rounded-full w-9 h-9 flex items-center justify-center text-base-content/50 hover:bg-base-300 transition-colors"
                 title="Attach files"
-                disabled={is_nil(@execution_participant)}
+                disabled={is_nil(@execution_space_id)}
               >
                 <span class="hero-plus size-5"></span>
               </button>
@@ -653,17 +817,36 @@
                 class="min-w-0 flex-1 rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors"
                 style="line-height:1.5;padding:6px 12px;min-height:33px;max-height:200px;overflow-y:auto;field-sizing:content"
                 phx-hook="ComposeInput"
-                disabled={is_nil(@execution_participant)}
+                disabled={is_nil(@execution_space_id)}
               >{Phoenix.HTML.Form.normalize_value("text", @steering_compose_form[:text].value)}</textarea>
 
               <button
                 type="submit"
                 class="flex-shrink-0 w-9 h-9 rounded-full btn btn-primary btn-sm flex items-center justify-center p-0"
-                disabled={is_nil(@execution_participant)}
+                disabled={is_nil(@execution_space_id)}
                 title="Send steering message"
               >
                 <span class="hero-paper-airplane size-4 -rotate-45"></span>
               </button>
+            </div>
+
+            <div
+              :if={@steering_feedback}
+              id="steering-feedback"
+              class={[
+                "mt-2 flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
+                @steering_feedback.kind == :success &&
+                  "border-success/30 bg-success/10 text-success",
+                @steering_feedback.kind == :error && "border-error/30 bg-error/10 text-error"
+              ]}
+            >
+              <span class={[
+                "mt-0.5 size-4 shrink-0",
+                @steering_feedback.kind == :success && "hero-check-circle",
+                @steering_feedback.kind == :error && "hero-exclamation-circle"
+              ]}>
+              </span>
+              <span>{@steering_feedback.message}</span>
             </div>
           </.form>
         </div>
@@ -721,6 +904,7 @@
                 canvas={canvas}
                 inline={true}
                 show_header={false}
+                dom_id_base="tasks-output-inline"
               />
             </div>
           </div>
@@ -864,6 +1048,7 @@
         <PlatformWeb.Chat.CanvasRenderer.canvas_document
           canvas={@active_review_canvas}
           show_header={false}
+          dom_id_base="tasks-review-modal"
         />
       </div>
     </div>

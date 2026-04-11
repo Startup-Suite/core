@@ -1,9 +1,13 @@
+import ChatState from "./chat_state"
 import CodeBlock from "./code_block"
 import ComposeInput from "./compose_input"
 import CopyToClipboard from "./copy_to_clipboard"
 import DragDropUpload from "./drag_drop_upload"
 import ExecutionLogScroll from "./execution_log_scroll"
+import InlineFocus from "./inline_focus"
+import InlineThread from "./inline_thread"
 import KanbanDragDrop from "./kanban_drag_drop"
+import LastChatLink from "./last_chat_link"
 import LocalTime from "./local_time"
 import MeetingRoom from "./meeting_room"
 import MermaidDiagram from "./mermaid_diagram"
@@ -14,12 +18,16 @@ import SwipeDrawer from "./swipe_drawer"
 import ThemeToggle from "./theme_toggle"
 
 export default {
+  ChatState,
   CodeBlock,
   ComposeInput,
   CopyToClipboard,
   DragDropUpload,
   ExecutionLogScroll,
+  InlineFocus,
+  InlineThread,
   KanbanDragDrop,
+  LastChatLink,
   LocalTime,
   MeetingRoom,
   MermaidDiagram,

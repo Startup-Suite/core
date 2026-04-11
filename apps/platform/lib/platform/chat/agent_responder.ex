@@ -24,6 +24,7 @@ defmodule Platform.Chat.AgentResponder do
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Federation.{DeadLetterBuffer, RuntimePresence, ToolSurface}
   alias Platform.Repo
+  alias Platform.Tasks.Task, as: TaskRecord
 
   @history_limit 12
 
@@ -222,7 +223,7 @@ defmodule Platform.Chat.AgentResponder do
             if author_participant, do: author_participant.display_name, else: "unknown"
 
           payload = %{
-            signal: %{reason: signal.reason, space_id: space_id},
+            signal: build_external_signal(signal, space_id),
             message: %{content: context.user_message, author: author_name},
             history: context.history,
             context: bundle,
@@ -299,7 +300,7 @@ defmodule Platform.Chat.AgentResponder do
            Chat.get_participant(participant_id),
          %Message{} = message <- Chat.get_message(message_id),
          %Participant{} = author <- Chat.get_participant(message.participant_id),
-         false <- author.participant_type == "agent",
+         :ok <- check_agent_loop(author, participant_id, space_id),
          %Agent{} = agent <- Repo.get(Agent, participant.participant_id),
          {:ok, active_agent_participant} <-
            Chat.ensure_agent_participant(space_id, agent, display_name: agent.name),
@@ -394,6 +395,66 @@ defmodule Platform.Chat.AgentResponder do
   end
 
   defp history_content(content, _participant, _role), do: content
+
+  defp build_external_signal(signal, space_id) do
+    {task_id, task_status} = execution_task_context(space_id)
+
+    %{}
+    |> Map.put(:reason, signal.reason)
+    |> Map.put(:space_id, space_id)
+    |> maybe_put(:task_id, task_id)
+    |> maybe_put(:task_status, task_status)
+  end
+
+  defp execution_task_context(space_id) do
+    with %Platform.Chat.Space{kind: "execution", metadata: metadata} <- Chat.get_space(space_id),
+         task_id when is_binary(task_id) <-
+           Map.get(metadata || %{}, "task_id") || Map.get(metadata || %{}, :task_id) do
+      case Repo.get(TaskRecord, task_id) do
+        %TaskRecord{status: status} -> {task_id, status}
+        _ -> {task_id, nil}
+      end
+    else
+      _ -> {nil, nil}
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # Agent-to-agent loop breaker: allow agent→agent mentions but prevent rapid
+  # back-and-forth loops. If the author is an agent, we check a cooldown — the
+  # receiving agent can only be triggered by another agent in the same space
+  # once per @agent_cooldown_ms window. Human-authored messages always pass.
+  @agent_cooldown_ms 30_000
+
+  defp check_agent_loop(%Participant{participant_type: "agent"}, recipient_id, space_id) do
+    table = agent_loop_table()
+    key = {space_id, recipient_id}
+    now = System.monotonic_time(:millisecond)
+
+    case :ets.lookup(table, key) do
+      [{^key, last_at}] when now - last_at < @agent_cooldown_ms ->
+        Logger.info(
+          "[AgentResponder] agent-to-agent cooldown active for #{recipient_id} in #{space_id}, skipping"
+        )
+
+        {:error, :agent_loop_cooldown}
+
+      _ ->
+        :ets.insert(table, {key, now})
+        :ok
+    end
+  end
+
+  defp check_agent_loop(_human_author, _recipient_id, _space_id), do: :ok
+
+  defp agent_loop_table do
+    case :ets.whereis(:agent_loop_cooldown) do
+      :undefined -> :ets.new(:agent_loop_cooldown, [:named_table, :public, :set])
+      ref -> ref
+    end
+  end
 
   defp chat_module do
     Application.get_env(:platform, :chat_agent_module, Platform.Agents.QuickAgent)

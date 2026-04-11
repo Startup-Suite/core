@@ -10,17 +10,20 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
   ## Supported node types
 
-  - `stack`    — vertical flex container with optional `gap` prop
-  - `row`      — horizontal flex container with optional `gap` prop
-  - `card`     — bordered card with optional `title` prop
-  - `text`     — plain text with optional `size`/`weight` props
-  - `markdown` — renders `content` prop as pre-formatted text
-  - `mermaid`  — renders `source` prop as an interactive Mermaid diagram via client-side JS
-  - `table`    — renders `columns` + `rows` props as an HTML table
-  - `code`     — renders `source` prop inside `<pre><code>`
-  - `badge`    — small rounded label from `value` prop
-  - `heading`  — h1–h4 heading from `value` + `level` props
-  - `image`    — renders `src` prop as an `<img>` tag with optional `alt`, `caption`, `border`, `rounded` props
+  - `stack`          — vertical flex container with optional `gap` prop
+  - `row`            — horizontal flex container with optional `gap` prop
+  - `card`           — bordered card with optional `title` prop
+  - `text`           — plain text with optional `size`/`weight` props
+  - `markdown`       — renders `content` prop as pre-formatted text
+  - `mermaid`        — renders `source` prop as an interactive Mermaid diagram via client-side JS
+  - `table`          — renders `columns` + `rows` props as an HTML table
+  - `code`           — renders `source` prop inside `<pre><code>`
+  - `badge`          — small rounded label from `value` prop
+  - `heading`        — h1–h4 heading from `value` + `level` props
+  - `image`          — renders `src` prop as an `<img>` tag with optional `alt`, `caption`, `border`, `rounded` props
+  - `checklist`      — ordered list of checklist items with optional `title` prop; children must be `checklist_item` nodes
+  - `checklist_item` — single checklist row with `label` prop and optional `checked` (boolean) and `note` props
+  - `action_row`     — horizontal strip of labelled action buttons; each child button has `label`, `event`, and optional `payload` + `variant` props
   """
 
   use PlatformWeb, :html
@@ -43,12 +46,17 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
   def canvas_document(assigns) do
     state = assigns.canvas.state || %{}
+    # Build an id suffix so inline and expanded copies of the same canvas
+    # never share the same DOM id — duplicate ids confuse LiveView's morphdom
+    # reconciliation and can cause click handlers to disappear after close.
+    mode_suffix = if assigns.inline, do: "inline", else: "expanded"
+    assigns = assign(assigns, :mode_suffix, mode_suffix)
 
     cond do
       url_canvas?(state) ->
         ~H"""
         <div
-          id={"canvas-url-#{@canvas.id}"}
+          id={"canvas-url-#{@canvas.id}-#{@mode_suffix}"}
           class={[
             "rounded-2xl border border-base-300 bg-base-100 shadow-sm overflow-hidden",
             @inline && "cursor-pointer"
@@ -92,7 +100,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
         ~H"""
         <div
-          id={"canvas-a2ui-#{@canvas.id}"}
+          id={"canvas-a2ui-#{@canvas.id}-#{@mode_suffix}"}
           class={[
             "rounded-2xl border border-base-300 bg-base-100 shadow-sm overflow-hidden",
             @inline && "cursor-pointer"
@@ -189,7 +197,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       canonical_document?(state) ->
         ~H"""
         <div
-          id={"canvas-doc-#{@canvas.id}"}
+          id={"canvas-doc-#{@canvas.id}-#{@mode_suffix}"}
           class={[
             "overflow-x-auto",
             @inline && "cursor-pointer"
@@ -198,6 +206,23 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
           phx-value-canvas-id={if(@inline, do: @canvas.id)}
         >
           <.render_node node={@canvas.state["root"]} />
+        </div>
+        """
+
+      flat_nodes_array?(state) ->
+        assigns = assign(assigns, :synthetic_root, normalize_flat_nodes(state))
+
+        ~H"""
+        <div
+          id={"canvas-flat-#{@canvas.id}-#{@mode_suffix}"}
+          class={[
+            "overflow-x-auto",
+            @inline && "cursor-pointer"
+          ]}
+          phx-click={if(@inline, do: "open_canvas")}
+          phx-value-canvas-id={if(@inline, do: @canvas.id)}
+        >
+          <.render_node node={@synthetic_root} />
         </div>
         """
 
@@ -400,6 +425,105 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
     """
   end
 
+  def render_node(%{node: %{"type" => "checklist"} = node} = assigns) do
+    children = node["children"] || []
+    total = length(children)
+    complete = Enum.count(children, fn c -> get_in(c, ["props", "state"]) == "complete" end)
+
+    assigns =
+      assigns
+      |> assign(:node, node)
+      |> assign(:total, total)
+      |> assign(:complete, complete)
+
+    ~H"""
+    <div class="card-checklist flex flex-col gap-1 rounded-xl border border-base-300 bg-base-200 p-3">
+      <div class="flex items-center justify-between mb-1">
+        <p
+          :if={@node["props"]["title"]}
+          class="text-xs font-semibold uppercase tracking-widest text-base-content/50"
+        >
+          {@node["props"]["title"]}
+        </p>
+        <span :if={@total > 0} class="text-xs text-base-content/40">
+          {@complete} / {@total} tasks
+        </span>
+      </div>
+      <.render_node :for={child <- @node["children"] || []} node={child} />
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "checklist_item"} = node} = assigns) do
+    state = get_in(node, ["props", "state"]) || "pending"
+
+    assigns =
+      assigns
+      |> assign(:node, node)
+      |> assign(:state, state)
+
+    ~H"""
+    <div class="flex items-start gap-2 py-0.5" data-state={@state}>
+      <span class={[
+        "mt-0.5 size-4 shrink-0",
+        @state == "complete" && "hero-check-circle text-success",
+        @state == "active" && "hero-bolt text-primary",
+        @state not in ["complete", "active"] && "hero-stop-circle text-base-content/25"
+      ]}>
+      </span>
+      <div class="min-w-0">
+        <p class={[
+          "text-sm leading-5",
+          @state == "complete" && "line-through text-base-content/40",
+          @state != "complete" && "text-base-content"
+        ]}>
+          {@node["props"]["label"] || ""}
+        </p>
+        <p
+          :if={@node["props"]["note"]}
+          class="text-xs text-base-content/50 leading-4 mt-0.5"
+        >
+          {@node["props"]["note"]}
+        </p>
+      </div>
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "action_row"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <div class="flex flex-row flex-wrap gap-2 mt-1">
+      <p
+        :if={@node["props"]["label"]}
+        class="w-full text-xs font-semibold uppercase tracking-widest text-base-content/50 mb-0.5"
+      >
+        {@node["props"]["label"]}
+      </p>
+      <.render_node :for={child <- @node["children"] || []} node={child} />
+    </div>
+    """
+  end
+
+  def render_node(%{node: %{"type" => "action_button"} = node} = assigns) do
+    assigns = assign(assigns, :node, node)
+
+    ~H"""
+    <button
+      class={[
+        "btn btn-sm",
+        action_button_class(@node["props"]["variant"])
+      ]}
+      phx-click="canvas_action"
+      phx-value-value={@node["props"]["value"] || ""}
+      phx-value-canvas-id={@node["props"]["canvas_id"] || ""}
+    >
+      {@node["props"]["label"] || "Action"}
+    </button>
+    """
+  end
+
   # Fallback for unknown / nil node types
   def render_node(%{node: node} = assigns) when is_map(node) do
     assigns = assign(assigns, :node, node)
@@ -464,6 +588,49 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
       do: true
 
   def canonical_document?(_), do: false
+
+  @doc """
+  Returns true if the canvas state contains a flat `nodes` array without canonical
+  document wrapping. This is a backward-compatible fallback for agents that emit
+  the simpler `%{"nodes" => [...]}` format instead of `%{"version" => 1, "root" => ...}`.
+  """
+  @spec flat_nodes_array?(map()) :: boolean()
+  def flat_nodes_array?(%{"nodes" => nodes}) when is_list(nodes) and nodes != [], do: true
+  def flat_nodes_array?(_), do: false
+
+  @doc """
+  Converts a flat `%{"nodes" => [...]}` state into a canonical document root node.
+  Each node in the array is normalized: if props are inlined at the top level
+  (e.g. `%{"type" => "text", "value" => "hi"}`), they are moved under a `"props"` key.
+  The result is a `stack` node wrapping all normalized children.
+  """
+  @spec normalize_flat_nodes(map()) :: map()
+  def normalize_flat_nodes(%{"nodes" => nodes}) when is_list(nodes) do
+    children = Enum.map(nodes, &normalize_flat_node/1)
+    %{"type" => "stack", "props" => %{"gap" => 8}, "children" => children}
+  end
+
+  def normalize_flat_nodes(_), do: %{"type" => "stack", "children" => []}
+
+  defp normalize_flat_node(%{"type" => type, "props" => props} = node) when is_map(props) do
+    children = normalize_flat_children(node)
+    %{"type" => type, "props" => props, "children" => children}
+  end
+
+  defp normalize_flat_node(%{"type" => type} = node) do
+    reserved = ~w(type children)
+    props = Map.drop(node, reserved)
+    children = normalize_flat_children(node)
+    %{"type" => type, "props" => props, "children" => children}
+  end
+
+  defp normalize_flat_node(node), do: node
+
+  defp normalize_flat_children(%{"children" => children}) when is_list(children) do
+    Enum.map(children, &normalize_flat_node/1)
+  end
+
+  defp normalize_flat_children(_), do: []
 
   defp review_evidence_manifest?(%{"summary" => summary, "artifacts" => artifacts})
        when is_binary(summary) and is_list(artifacts),
@@ -549,4 +716,10 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
   end
 
   defp cell_value(_row, _col), do: "—"
+
+  defp action_button_class("primary"), do: "btn-primary"
+  defp action_button_class("danger"), do: "btn-error"
+  defp action_button_class("ghost"), do: "btn-ghost"
+  defp action_button_class("outline"), do: "btn-outline"
+  defp action_button_class(_), do: "btn-outline"
 end
