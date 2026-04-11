@@ -102,13 +102,14 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "finalizes an active transcript", %{conn: conn} do
       room_id = unique_room_id()
       {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
+      transcript_id = transcript.id
 
       payload = room_finished_payload(room_id)
       conn = post(conn, @livekit_webhook_path, payload)
 
       assert %{
                "status" => "finalized",
-               "transcript_id" => ^transcript.id,
+               "transcript_id" => ^transcript_id,
                "segment_count" => 0
              } = json_response(conn, 200)
 
@@ -185,6 +186,7 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
     test "appends segments to an existing transcript", %{conn: conn} do
       room_id = unique_room_id()
       {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
+      transcript_id = transcript.id
 
       segments = [
         sample_segment(%{"text" => "First segment", "participant_identity" => "user-1"}),
@@ -196,7 +198,7 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
 
       assert %{
                "status" => "appended",
-               "transcript_id" => ^transcript.id,
+               "transcript_id" => ^transcript_id,
                "segments_appended" => 2
              } = json_response(conn, 200)
 
