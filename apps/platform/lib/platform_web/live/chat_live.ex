@@ -1810,19 +1810,17 @@ defmodule PlatformWeb.ChatLive do
                   title={p.name || p.identity}
                 >
                   <%!-- Speaking ring --%>
-                  <span
-                    class={[
-                      "inline-flex items-center justify-center size-5 rounded-full text-[0.6rem] font-bold ring-1 transition-all",
-                      if(String.starts_with?(p.identity || "", "agent:"),
-                        do: "bg-primary/20 text-primary ring-primary/30",
-                        else: "bg-success/20 text-success ring-success/30"
-                      ),
-                      if(MapSet.member?(@meeting_speaking_identities, p.identity),
-                        do: "ring-2 ring-success animate-pulse",
-                        else: ""
-                      )
-                    ]}
-                  >
+                  <span class={[
+                    "inline-flex items-center justify-center size-5 rounded-full text-[0.6rem] font-bold ring-1 transition-all",
+                    if(String.starts_with?(p.identity || "", "agent:"),
+                      do: "bg-primary/20 text-primary ring-primary/30",
+                      else: "bg-success/20 text-success ring-success/30"
+                    ),
+                    if(MapSet.member?(@meeting_speaking_identities, p.identity),
+                      do: "ring-2 ring-success animate-pulse",
+                      else: ""
+                    )
+                  ]}>
                     {String.first(p.name || p.identity || "?")}
                   </span>
                   <%!-- AI badge for agent participants --%>
