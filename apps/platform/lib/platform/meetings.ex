@@ -93,23 +93,18 @@ defmodule Platform.Meetings do
   """
   @spec append_segment(String.t(), map()) :: {:ok, Transcript.t()} | {:error, term()}
   def append_segment(transcript_id, segment) when is_map(segment) do
-    segment_json = Jason.encode!([segment])
+    # Use Ecto's jsonb_array_elements approach: load, append, save
+    # Raw SQL concatenation has encoding issues with Postgrex parameter binding
+    case get_transcript(transcript_id) do
+      nil ->
+        {:error, :not_found}
 
-    result =
-      Repo.query(
-        """
-        UPDATE meeting_transcripts
-        SET segments = COALESCE(segments, '[]'::jsonb) || $1::jsonb,
-            updated_at = NOW()
-        WHERE id = $2
-        """,
-        [segment_json, Ecto.UUID.dump!(transcript_id)]
-      )
+      transcript ->
+        updated_segments = (transcript.segments || []) ++ [segment]
 
-    case result do
-      {:ok, %{num_rows: 1}} -> {:ok, get_transcript(transcript_id)}
-      {:ok, %{num_rows: 0}} -> {:error, :not_found}
-      {:error, reason} -> {:error, reason}
+        transcript
+        |> Ecto.Changeset.change(segments: updated_segments)
+        |> Repo.update()
     end
   end
 
