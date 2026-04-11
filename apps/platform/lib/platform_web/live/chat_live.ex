@@ -1817,7 +1817,11 @@ defmodule PlatformWeb.ChatLive do
                       else: "bg-success/20 text-success ring-success/30"
                     ),
                     if(MapSet.member?(@meeting_speaking_identities, p.identity),
-                      do: "ring-2 ring-success animate-pulse",
+                      do:
+                        if(String.starts_with?(p.identity || "", "agent:"),
+                          do: "ring-2 ring-primary animate-pulse",
+                          else: "ring-2 ring-success animate-pulse"
+                        ),
                       else: ""
                     )
                   ]}>

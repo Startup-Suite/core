@@ -63,6 +63,7 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:meeting_room_id, nil)
       |> assign(:meeting_space_slug, nil)
       |> assign(:meeting_space_name, nil)
+      |> assign(:meeting_space_id, nil)
       |> assign(:meeting_mic_enabled, true)
       |> assign(:meeting_camera_enabled, false)
       |> assign(:recording_active, false)
@@ -186,6 +187,7 @@ defmodule PlatformWeb.ShellLive do
             |> assign(:meeting_room_id, room && room.id)
             |> assign(:meeting_space_slug, space_slug)
             |> assign(:meeting_space_name, space_name)
+            |> assign(:meeting_space_id, room && room.space_id)
             |> assign(:meeting_mic_enabled, true)
             |> assign(:meeting_camera_enabled, false)
             |> assign(:recording_active, rec_active)
@@ -222,12 +224,12 @@ defmodule PlatformWeb.ShellLive do
           {:halt, push_event(socket, "toggle-camera", %{})}
 
         "meeting-active-speakers-changed", %{"identities" => identities}, socket ->
-          # Broadcast to room PubSub so chat_live can update speaking indicators
-          room_id = socket.assigns[:meeting_room_id]
+          # Broadcast on presence topic so chat_live can update speaking indicators
+          space_id = socket.assigns[:meeting_space_id]
 
-          if room_id do
-            MeetingsPubSub.broadcast_room(
-              room_id,
+          if space_id do
+            MeetingsPubSub.broadcast_presence(
+              space_id,
               {:active_speakers_changed, identities}
             )
           end
@@ -459,6 +461,7 @@ defmodule PlatformWeb.ShellLive do
     |> assign(:meeting_room_id, nil)
     |> assign(:meeting_space_slug, nil)
     |> assign(:meeting_space_name, nil)
+    |> assign(:meeting_space_id, nil)
     |> assign(:meeting_mic_enabled, true)
     |> assign(:meeting_camera_enabled, false)
     |> assign(:recording_active, false)
