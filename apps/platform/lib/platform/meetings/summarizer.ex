@@ -93,7 +93,12 @@ defmodule Platform.Meetings.Summarizer do
 
         case Meetings.complete_transcript(id, summary_text) do
           {:ok, _transcript} ->
-            Meetings.post_summary_to_space(space_id, id, summary_text)
+            if is_binary(space_id) do
+              Meetings.post_summary_to_space(space_id, id, summary_text)
+            else
+              Logger.info("[Summarizer] No space_id for transcript #{id}, skipping summary post")
+            end
+
             :ok
 
           {:error, reason} ->

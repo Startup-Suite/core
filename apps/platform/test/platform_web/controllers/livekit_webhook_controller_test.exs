@@ -114,7 +114,9 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
              } = json_response(conn, 200)
 
       updated = Meetings.get_transcript(transcript.id)
-      assert updated.status == "processing"
+      # Zero-segment transcripts are completed synchronously by the summarizer
+      # (no LLM call needed), so status transitions directly to "complete"
+      assert updated.status == "complete"
     end
 
     test "finalizes transcript with accumulated segments", %{conn: conn} do
