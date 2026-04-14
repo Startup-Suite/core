@@ -20,7 +20,6 @@ defmodule PlatformWeb.ChatLive do
   use PlatformWeb, :live_view
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
-  import PlatformWeb.MeetingComponents, only: [meeting_participant_tile: 1]
 
   alias Platform.Accounts
   alias Platform.Agents.WorkspaceBootstrap
