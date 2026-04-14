@@ -36,14 +36,14 @@ defmodule PlatformWeb.MeetingBarLiveTest do
       assigns = Map.put(@meeting_assigns, :on_meeting_page, true)
       html = render_component(MeetingBarLive, assigns)
 
-      refute html =~ "meeting-mini-bar"
+      assert html =~ "hidden"
     end
 
     test "hides mini-bar when no active meeting" do
       assigns = Map.put(@meeting_assigns, :meeting_active, false)
       html = render_component(MeetingBarLive, assigns)
 
-      refute html =~ "meeting-mini-bar"
+      assert html =~ "hidden"
     end
 
     test "return-to-call link uses space slug" do

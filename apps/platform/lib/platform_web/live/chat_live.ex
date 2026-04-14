@@ -119,6 +119,10 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_active, false)
       |> assign(:meeting_room_name, nil)
       |> assign(:meetings_enabled, Platform.Meetings.enabled?())
+      |> assign(:in_meeting, false)
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
       |> assign_compose("")
       |> assign_thread_compose("")
       |> assign_search_form("")
@@ -668,13 +672,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:mic_enabled, !socket.assigns.mic_enabled)
       |> push_event("toggle-mic", %{})
 
-    with {:ok, room} <- Platform.Meetings.ensure_room(space.id),
-         {:ok, _participant} <- Platform.Meetings.dismiss_agent(room, agent_id) do
-      {:noreply, socket}
-    else
-      _ ->
-        {:noreply, put_flash(socket, :error, "Failed to dismiss agent")}
-    end
+    {:noreply, socket}
   end
 
   def handle_event("noop", _params, socket), do: {:noreply, socket}
