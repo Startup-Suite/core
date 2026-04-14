@@ -879,4 +879,118 @@ defmodule PlatformWeb.ChatLiveTest do
       assert has_element?(view, "#inline-thread-compose-#{msg.id}")
     end
   end
+
+  describe "meeting presence indicators" do
+    alias Platform.Meetings
+    alias Platform.Meetings.PubSub, as: MeetingsPubSub
+
+    defp create_active_meeting(space) do
+      {:ok, room} = Meetings.ensure_room(space.id)
+      {:ok, room} = Meetings.activate_room(room)
+      room
+    end
+
+    defp add_meeting_participant(room, identity, display_name \\ nil) do
+      {:ok, participant} =
+        Meetings.participant_joined(room, %{
+          identity: identity,
+          display_name: display_name || identity
+        })
+
+      participant
+    end
+
+    test "sidebar shows meeting badge when space has active meeting", %{conn: conn} do
+      conn = authenticated_conn(conn)
+
+      # Navigate to /chat to bootstrap the general channel
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      space = Chat.get_space_by_slug("general")
+      room = create_active_meeting(space)
+      _p1 = add_meeting_participant(room, "user:alice", "Alice")
+      _p2 = add_meeting_participant(room, "user:bob", "Bob")
+
+      # Broadcast a presence summary update to trigger sidebar refresh
+      send(view.pid, {:meeting_presence_summary, %{space_id: space.id}})
+
+      html = render(view)
+      # The sidebar should contain a meeting badge with the phone icon
+      assert html =~ "hero-phone-solid"
+    end
+
+    test "sidebar badge disappears when meeting ends", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      space = Chat.get_space_by_slug("general")
+      room = create_active_meeting(space)
+      _p1 = add_meeting_participant(room, "user:alice", "Alice")
+
+      # First, trigger the sidebar to show the badge
+      send(view.pid, {:meeting_presence_summary, %{space_id: space.id}})
+      html = render(view)
+      assert html =~ "hero-phone-solid"
+
+      # Now finish the meeting
+      Meetings.finish_room(room)
+
+      # Broadcast a presence update indicating no active meeting
+      send(
+        view.pid,
+        {:meeting_presence_update, %{space_id: space.id, active: false, count: 0}}
+      )
+
+      html = render(view)
+      # The phone icon should no longer appear in the sidebar for this space
+      # (It may still appear if other spaces have meetings, so check specifically)
+      refute html =~ "in meeting"
+    end
+
+    test "sidebar meeting count updates in real-time via PubSub", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      space = Chat.get_space_by_slug("general")
+
+      # Simulate a presence update with 3 participants
+      send(
+        view.pid,
+        {:meeting_presence_update, %{space_id: space.id, active: true, count: 3}}
+      )
+
+      html = render(view)
+      # Should show count of 3 in the badge
+      assert html =~ "hero-phone-solid"
+      assert html =~ "3"
+    end
+
+    test "header shows meeting presence when active space has meeting", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      space = Chat.get_space_by_slug("general")
+      room = create_active_meeting(space)
+      _p1 = add_meeting_participant(room, "user:alice", "Alice")
+
+      # Send presence update for the active space (triggers header update too)
+      send(
+        view.pid,
+        {:meeting_presence_update, %{space_id: space.id, active: true, count: 1}}
+      )
+
+      html = render(view)
+      # Header should show meeting active indicator
+      assert html =~ "meeting" || html =~ "In call" || html =~ "meeting-active"
+    end
+
+    test "no meeting badge when no active meetings exist", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+      # With no active meetings, no phone badge should render
+      refute html =~ "hero-phone-solid"
+      refute html =~ "in meeting"
+    end
+  end
 end

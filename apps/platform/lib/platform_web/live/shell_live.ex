@@ -11,11 +11,14 @@ defmodule PlatformWeb.ShellLive do
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Chat.SpaceAgentPresence
+  alias Platform.Meetings.State, as: MeetingState
   alias Platform.Repo
 
   def on_mount(:default, _params, session, socket) do
+    raw_user_id = session["current_user_id"]
+
     current_user =
-      case session["current_user_id"] do
+      case raw_user_id do
         user_id when is_binary(user_id) ->
           case Accounts.get_user(user_id) do
             %{name: name} when is_binary(name) and name != "" -> name
@@ -38,11 +41,17 @@ defmodule PlatformWeb.ShellLive do
       ChatPubSub.subscribe(roster_space_id)
     end
 
+    # Subscribe to user-level meeting state for the persistent mini-bar
+    if connected?(socket) && is_binary(raw_user_id) do
+      MeetingState.subscribe(raw_user_id)
+    end
+
     presence_list = if roster_space_id, do: build_presence_list(roster_space_id), else: []
 
     socket =
       roster_socket
       |> assign(:current_user, current_user)
+      |> assign(:current_user_id, raw_user_id)
       |> assign(:current_path, "/")
       |> assign(:agent_status, default_agent_status())
       |> assign(:drawer_open, false)
@@ -53,9 +62,25 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:show_presence_panel, false)
       |> assign(:presence_list, presence_list)
       |> assign(:captions_enabled, false)
+      |> assign(:meeting_active, false)
+      |> assign(:meeting_space_id, nil)
+      |> assign(:meeting_space_name, nil)
+      |> assign(:meeting_space_slug, nil)
+      |> assign(:meeting_started_at, nil)
+      |> assign(:on_meeting_page, false)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
         uri = URI.parse(url)
-        {:cont, assign(socket, :current_path, uri.path)}
+
+        on_meeting_page =
+          case socket.assigns[:meeting_space_slug] do
+            nil -> false
+            slug -> uri.path == "/chat/#{slug}"
+          end
+
+        {:cont,
+         socket
+         |> assign(:current_path, uri.path)
+         |> assign(:on_meeting_page, on_meeting_page)}
       end)
       |> attach_hook(:roster_updates, :handle_info, fn
         {:roster_changed, space_id}, socket ->
@@ -74,6 +99,51 @@ defmodule PlatformWeb.ShellLive do
             end
 
           {:halt, assign(socket, :presence_list, list)}
+
+        {:meeting_joined, %{space_id: space_id, space_name: space_name}}, socket ->
+          path = socket.assigns[:current_path] || "/"
+          space = Chat.get_space(space_id)
+          slug = if space, do: space.slug || space_id, else: space_id
+
+          socket =
+            socket
+            |> assign(:meeting_active, true)
+            |> assign(:meeting_space_id, space_id)
+            |> assign(:meeting_space_name, space_name)
+            |> assign(:meeting_space_slug, slug)
+            |> assign(:meeting_started_at, DateTime.utc_now())
+            |> assign(:on_meeting_page, path == "/chat/#{slug}")
+
+          {:halt, socket}
+
+        {:meeting_left, _payload}, socket ->
+          socket =
+            socket
+            |> assign(:meeting_active, false)
+            |> assign(:meeting_space_id, nil)
+            |> assign(:meeting_space_name, nil)
+            |> assign(:meeting_space_slug, nil)
+            |> assign(:meeting_started_at, nil)
+            |> assign(:on_meeting_page, false)
+
+          {:halt, socket}
+
+        :meeting_bar_leave, socket ->
+          # The mini-bar "Leave" button sends this — broadcast the leave event
+          if uid = socket.assigns[:current_user_id] do
+            MeetingState.broadcast_left(uid)
+          end
+
+          socket =
+            socket
+            |> assign(:meeting_active, false)
+            |> assign(:meeting_space_id, nil)
+            |> assign(:meeting_space_name, nil)
+            |> assign(:meeting_space_slug, nil)
+            |> assign(:meeting_started_at, nil)
+            |> assign(:on_meeting_page, false)
+
+          {:halt, socket}
 
         _msg, socket ->
           {:cont, socket}
