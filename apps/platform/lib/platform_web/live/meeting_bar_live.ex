@@ -44,21 +44,18 @@ defmodule PlatformWeb.MeetingBarLive do
   def render(assigns) do
     ~H"""
     <div
-      :if={@meeting_active}
+      :if={@meeting_active && !@on_meeting_page}
       id="meeting-mini-bar"
       phx-hook="MeetingTimer"
       data-started-at={@started_at && DateTime.to_iso8601(@started_at)}
-      class={[
-        "flex items-center gap-3 px-4 py-1.5 border-b border-success/30 bg-success/10 text-sm",
-        if(@on_meeting_page, do: "hidden", else: "")
-      ]}
+      class="fixed bottom-0 inset-x-0 z-40 h-12 bg-base-200 border-t border-base-300 shadow-lg flex items-center gap-3 px-4 lg:left-14"
     >
       <%!-- Pulsing indicator + space name --%>
       <div class="flex items-center gap-2 min-w-0">
         <span class="bg-success rounded-full w-2 h-2 animate-pulse flex-shrink-0"></span>
         <.link
           navigate={"/chat/#{@space_slug || @space_id}"}
-          class="truncate font-medium text-success hover:text-success/80 transition-colors"
+          class="truncate font-medium text-success hover:text-success/80 transition-colors text-sm"
         >
           {@space_name || "Meeting"}
         </.link>
@@ -76,10 +73,10 @@ defmodule PlatformWeb.MeetingBarLive do
         phx-click="toggle_meeting_mic"
         phx-target={@myself}
         class={[
-          "rounded-lg p-1 transition-colors",
+          "rounded-lg p-1.5 transition-colors",
           if(@mic_on,
             do: "text-base-content/70 hover:bg-base-300",
-            else: "text-error hover:bg-error/10"
+            else: "text-error bg-error/10 hover:bg-error/20"
           )
         ]}
         title={if @mic_on, do: "Mute mic", else: "Unmute mic"}
@@ -92,7 +89,7 @@ defmodule PlatformWeb.MeetingBarLive do
         phx-click="toggle_meeting_camera"
         phx-target={@myself}
         class={[
-          "rounded-lg p-1 transition-colors",
+          "rounded-lg p-1.5 transition-colors",
           if(@camera_on,
             do: "text-base-content/70 hover:bg-base-300",
             else: "text-base-content/40 hover:bg-base-300"
@@ -100,14 +97,25 @@ defmodule PlatformWeb.MeetingBarLive do
         ]}
         title={if @camera_on, do: "Turn off camera", else: "Turn on camera"}
       >
-        <span class={["size-4", if(@camera_on, do: "hero-video-camera", else: "hero-video-camera-slash")]} />
+        <span class={[
+          "size-4",
+          if(@camera_on, do: "hero-video-camera", else: "hero-video-camera-slash")
+        ]} />
       </button>
+
+      <%!-- Return to call --%>
+      <.link
+        navigate={"/chat/#{@space_slug || @space_id}"}
+        class="rounded-lg px-2.5 py-1 text-xs font-medium text-success hover:bg-success/10 transition-colors hidden sm:inline-flex"
+      >
+        Return to call
+      </.link>
 
       <%!-- Leave meeting --%>
       <button
         phx-click="leave_meeting"
         phx-target={@myself}
-        class="rounded-lg px-2 py-1 text-xs font-medium text-error hover:bg-error/10 transition-colors"
+        class="rounded-lg px-2.5 py-1 text-xs font-medium text-error hover:bg-error/10 transition-colors"
         title="Leave meeting"
       >
         Leave

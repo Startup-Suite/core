@@ -308,5 +308,16 @@
     <main class="flex-1 overflow-hidden">
       {@inner_content}
     </main>
+    <%!-- Meeting mini-bar (persistent across navigation) --%>
+    <.live_component
+      module={PlatformWeb.MeetingBarLive}
+      id="meeting-bar"
+      meeting_active={@meeting_active}
+      meeting_space_id={@meeting_space_id}
+      meeting_space_name={@meeting_space_name}
+      meeting_space_slug={@meeting_space_slug}
+      meeting_started_at={@meeting_started_at}
+      on_meeting_page={@on_meeting_page}
+    />
   </div>
 </div>

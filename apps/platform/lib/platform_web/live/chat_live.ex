@@ -551,7 +551,8 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, assign(socket, :upload_tagged_agents, tagged)}
   end
 
-  def handle_event("join-meeting-click", _params, socket), do: handle_event("join_meeting", %{}, socket)
+  def handle_event("join-meeting-click", _params, socket),
+    do: handle_event("join_meeting", %{}, socket)
 
   def handle_event("join_meeting", _params, socket) do
     space = socket.assigns.active_space
@@ -654,7 +655,11 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
-  def handle_event("meeting-participant-connected", %{"identity" => identity, "name" => name}, socket) do
+  def handle_event(
+        "meeting-participant-connected",
+        %{"identity" => identity, "name" => name},
+        socket
+      ) do
     participant_entry = %{identity: identity, name: name, has_video: false, is_speaking: false}
 
     participants =

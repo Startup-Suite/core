@@ -70,6 +70,7 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:on_meeting_page, false)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
         uri = URI.parse(url)
+
         on_meeting_page =
           case socket.assigns[:meeting_space_slug] do
             nil -> false
