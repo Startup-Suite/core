@@ -12,6 +12,7 @@ import MarkdownEditor from "./markdown_editor"
 import LocalTime from "./local_time"
 import MeetingCaptions from "./meeting_captions"
 import MeetingRoom from "./meeting_room"
+import MeetingTimer from "./meeting_timer"
 import MermaidDiagram from "./mermaid_diagram"
 import PushSubscribe from "./push_subscribe"
 import ResizableSidebar from "./resizable_sidebar"
@@ -34,6 +35,7 @@ export default {
   MarkdownEditor,
   MeetingCaptions,
   MeetingRoom,
+  MeetingTimer,
   MermaidDiagram,
   PushSubscribe,
   ResizableSidebar,
