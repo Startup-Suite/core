@@ -20,6 +20,7 @@ defmodule PlatformWeb.ChatLive do
   use PlatformWeb, :live_view
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
+  import PlatformWeb.Meeting.RecordingControls, only: [recording_button: 1, recording_banner: 1]
 
   alias Platform.Accounts
   alias Platform.Agents.Agent
@@ -2024,6 +2025,25 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               <% end %>
 
+              <%!-- Recording controls --%>
+              <.recording_button
+                recording_active={@recording_active}
+                can_record={true}
+                in_meeting={@in_meeting && @meeting_space_slug == @active_space.slug}
+              />
+
+              <%!-- Recording indicator (visible to all when someone else is recording) --%>
+              <%= if !@in_meeting && @recording_active do %>
+                <span class="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-error/10 text-error">
+                  <span class="relative flex items-center">
+                    <span class="absolute inline-flex size-2 rounded-full bg-error animate-ping opacity-75">
+                    </span>
+                    <span class="relative inline-flex size-2 rounded-full bg-error"></span>
+                  </span>
+                  <span>REC</span>
+                </span>
+              <% end %>
+
               <%!-- Promote to channel button for groups --%>
               <form
                 :if={@active_space.kind == "group" && !@active_space.is_direct}
@@ -2390,6 +2410,9 @@ defmodule PlatformWeb.ChatLive do
               />
             </div>
           </div>
+
+          <%!-- Recording banner --%>
+          <.recording_banner recording_active={@recording_active} />
 
           <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>
           <div
