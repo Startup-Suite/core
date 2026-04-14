@@ -2,14 +2,14 @@ defmodule Platform.Meetings do
   @moduledoc """
   Context for the Meetings domain.
 
-  Manages meeting rooms, participant presence, and recordings tracked via
-  LiveKit webhooks. Broadcasts presence and recording changes via
+  Manages meeting rooms, participant presence, recordings, and transcripts
+  tracked via LiveKit webhooks. Broadcasts presence and recording changes via
   `Platform.Meetings.PubSub`.
   """
 
   import Ecto.Query
 
-  alias Platform.Meetings.{Egress, Participant, Recording, Room}
+  alias Platform.Meetings.{Egress, Participant, Recording, Room, Transcript}
   alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
@@ -591,5 +591,138 @@ defmodule Platform.Meetings do
       where: r.room_id == ^room_id and r.status in ["starting", "active"]
     )
     |> Repo.exists?()
+  end
+
+  # ── Transcripts ──────────────────────────────────────────────────────────
+
+  @doc "Create a new transcript record for a meeting room."
+  @spec create_transcript(map()) :: {:ok, Transcript.t()} | {:error, Ecto.Changeset.t()}
+  def create_transcript(attrs) do
+    %Transcript{}
+    |> Transcript.changeset(Map.put_new(attrs, :started_at, DateTime.utc_now()))
+    |> Repo.insert()
+  end
+
+  @doc "Get a transcript by ID."
+  @spec get_transcript(String.t()) :: Transcript.t() | nil
+  def get_transcript(id), do: Repo.get(Transcript, id)
+
+  @doc "Get the active (recording-status) transcript for a room."
+  @spec get_transcript_for_room(String.t()) :: Transcript.t() | nil
+  def get_transcript_for_room(room_id) do
+    Transcript
+    |> where([t], t.room_id == ^room_id and t.status == "recording")
+    |> order_by([t], desc: t.inserted_at)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc "Get a transcript with its segments."
+  @spec get_transcript_with_segments(String.t()) :: Transcript.t() | nil
+  def get_transcript_with_segments(id), do: Repo.get(Transcript, id)
+
+  @doc "Find the active transcript for a room, or create one if none exists."
+  @spec ensure_transcript(map()) :: {:ok, Transcript.t()} | {:error, Ecto.Changeset.t()}
+  def ensure_transcript(%{room_id: room_id} = attrs) do
+    case get_transcript_for_room(room_id) do
+      nil -> create_transcript(attrs)
+      transcript -> {:ok, transcript}
+    end
+  end
+
+  @doc "List completed or processing transcripts for a space."
+  @spec list_transcripts_for_space(String.t()) :: [Transcript.t()]
+  def list_transcripts_for_space(space_id) do
+    from(t in Transcript,
+      where: t.space_id == ^space_id and t.status in ["complete", "processing"],
+      order_by: [desc: t.started_at]
+    )
+    |> Repo.all()
+  end
+
+  @doc "Append a segment to the transcript's segments array."
+  @spec append_segment(String.t(), map()) :: {:ok, Transcript.t()} | {:error, term()}
+  def append_segment(transcript_id, segment) when is_map(segment) do
+    case get_transcript(transcript_id) do
+      nil ->
+        {:error, :not_found}
+
+      transcript ->
+        updated_segments = (transcript.segments || []) ++ [segment]
+
+        transcript
+        |> Ecto.Changeset.change(segments: updated_segments)
+        |> Repo.update()
+    end
+  end
+
+  @doc "Transition a transcript to 'processing' status."
+  @spec finalize_transcript(String.t()) :: {:ok, Transcript.t()} | {:error, term()}
+  def finalize_transcript(transcript_id) do
+    case get_transcript(transcript_id) do
+      nil -> {:error, :not_found}
+      transcript -> transcript |> Transcript.changeset(%{status: "processing"}) |> Repo.update()
+    end
+  end
+
+  @doc "Mark a transcript as complete with the generated summary."
+  @spec complete_transcript(String.t(), String.t()) :: {:ok, Transcript.t()} | {:error, term()}
+  def complete_transcript(transcript_id, summary) when is_binary(summary) do
+    case get_transcript(transcript_id) do
+      nil ->
+        {:error, :not_found}
+
+      transcript ->
+        transcript
+        |> Transcript.changeset(%{
+          status: "complete",
+          summary: summary,
+          completed_at: DateTime.utc_now()
+        })
+        |> Repo.update()
+    end
+  end
+
+  @doc "Mark a transcript as failed."
+  @spec fail_transcript(String.t()) :: {:ok, Transcript.t()} | {:error, term()}
+  def fail_transcript(transcript_id) do
+    case get_transcript(transcript_id) do
+      nil ->
+        {:error, :not_found}
+
+      transcript ->
+        transcript
+        |> Transcript.changeset(%{status: "failed", completed_at: DateTime.utc_now()})
+        |> Repo.update()
+    end
+  end
+
+  @doc "Post a meeting summary as a system message to the space."
+  @spec post_summary_to_space(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def post_summary_to_space(space_id, transcript_id, summary)
+      when is_binary(space_id) and is_binary(transcript_id) and is_binary(summary) do
+    content = """
+    \U0001f4dd **Meeting Summary**
+
+    #{summary}
+
+    [\U0001f4c4 Full transcript](/api/transcripts/#{transcript_id}/download)
+    """
+
+    with {:ok, participant} <-
+           Platform.Orchestration.ExecutionSpace.ensure_system_participant(space_id) do
+      attrs = %{
+        space_id: space_id,
+        participant_id: participant.id,
+        content_type: "system",
+        content: String.trim(content),
+        metadata: %{"source" => "meeting_summarizer", "transcript_id" => transcript_id}
+      }
+
+      case Platform.Chat.post_message(attrs) do
+        {:ok, _message} -> :ok
+        {:error, reason} -> {:error, {:post_failed, reason}}
+      end
+    end
   end
 end

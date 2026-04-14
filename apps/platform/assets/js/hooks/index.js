@@ -8,7 +8,9 @@ import InlineFocus from "./inline_focus"
 import InlineThread from "./inline_thread"
 import KanbanDragDrop from "./kanban_drag_drop"
 import LastChatLink from "./last_chat_link"
+import MarkdownEditor from "./markdown_editor"
 import LocalTime from "./local_time"
+import MeetingCaptions from "./meeting_captions"
 import MeetingRoom from "./meeting_room"
 import MermaidDiagram from "./mermaid_diagram"
 import PushSubscribe from "./push_subscribe"
@@ -30,6 +32,8 @@ export default {
   KanbanDragDrop,
   LastChatLink,
   LocalTime,
+  MarkdownEditor,
+  MeetingCaptions,
   MeetingRoom,
   MermaidDiagram,
   PushSubscribe,

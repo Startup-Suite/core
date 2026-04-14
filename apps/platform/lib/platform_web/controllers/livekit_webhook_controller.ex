@@ -40,6 +40,7 @@ defmodule PlatformWeb.LivekitWebhookController do
       "room_finished" -> handle_room_finished(conn, params)
       "egress_started" -> handle_egress_started(conn, params)
       "egress_ended" -> handle_egress_ended(conn, params)
+      "transcription" -> handle_transcription(conn, params)
       _ -> conn |> put_status(:ok) |> json(%{status: "ignored", reason: "unhandled event"})
     end
   end
@@ -121,6 +122,19 @@ defmodule PlatformWeb.LivekitWebhookController do
          {:ok, room} <- Meetings.activate_room(room) do
       Logger.info("[LiveKit Webhook] Room started: #{room_name}")
 
+      # Auto-create transcript for the new room
+      case Meetings.ensure_transcript(%{room_id: room.id, space_id: room.space_id}) do
+        {:ok, transcript} ->
+          Logger.info(
+            "[LiveKit Webhook] Created transcript #{transcript.id} for room #{room_name}"
+          )
+
+        {:error, reason} ->
+          Logger.warning(
+            "[LiveKit Webhook] Failed to create transcript for room #{room_name}: #{inspect(reason)}"
+          )
+      end
+
       conn
       |> put_status(:ok)
       |> json(%{status: "recorded", event: "room_started", room_id: room.id})
@@ -148,6 +162,24 @@ defmodule PlatformWeb.LivekitWebhookController do
         case Meetings.finish_room(room) do
           {:ok, room} ->
             Logger.info("[LiveKit Webhook] Room finished: #{room_name}")
+
+            # Finalize any active transcript and trigger summary
+            case Meetings.get_transcript_for_room(room.id) do
+              nil ->
+                :ok
+
+              transcript ->
+                case Meetings.finalize_transcript(transcript.id) do
+                  {:ok, finalized} ->
+                    Logger.info("[LiveKit Webhook] Finalized transcript #{finalized.id}")
+                    maybe_trigger_summary(finalized)
+
+                  {:error, reason} ->
+                    Logger.warning(
+                      "[LiveKit Webhook] Failed to finalize transcript: #{inspect(reason)}"
+                    )
+                end
+            end
 
             conn
             |> put_status(:ok)
@@ -372,5 +404,91 @@ defmodule PlatformWeb.LivekitWebhookController do
     end
   rescue
     _ -> false
+  end
+
+  # ── Transcription handler ────────────────────────────────────────────────────
+
+  defp handle_transcription(conn, params) do
+    room_name = get_in(params, ["room", "name"])
+    room_id = get_in(params, ["room", "sid"]) || room_name
+    raw_segments = params["segments"] || []
+
+    if room_id && raw_segments != [] do
+      case Meetings.get_transcript_for_room(room_id) do
+        nil ->
+          case Meetings.ensure_transcript(%{room_id: room_id}) do
+            {:ok, transcript} ->
+              append_segments(conn, transcript.id, raw_segments, room_id)
+
+            {:error, reason} ->
+              Logger.warning(
+                "[LiveKit Webhook] Failed to ensure transcript for room #{room_id}: #{inspect(reason)}"
+              )
+
+              conn
+              |> put_status(:unprocessable_entity)
+              |> json(%{status: "error", reason: inspect(reason)})
+          end
+
+        transcript ->
+          append_segments(conn, transcript.id, raw_segments, room_id)
+      end
+    else
+      conn |> put_status(:ok) |> json(%{status: "ignored", reason: "no room or empty segments"})
+    end
+  end
+
+  defp append_segments(conn, transcript_id, raw_segments, room_id) do
+    results =
+      Enum.map(raw_segments, fn seg ->
+        segment = %{
+          "participant_identity" => seg["participant_identity"] || seg["identity"],
+          "speaker_name" => seg["speaker_name"] || seg["name"],
+          "text" => seg["text"] || "",
+          "start_time" => seg["start_time"] || 0,
+          "end_time" => seg["end_time"] || 0,
+          "language" => seg["language"],
+          "final" => seg["final"] != false
+        }
+
+        Meetings.append_segment(transcript_id, segment)
+      end)
+
+    errors = Enum.filter(results, &match?({:error, _}, &1))
+
+    if errors == [] do
+      Logger.debug(
+        "[LiveKit Webhook] Appended #{length(raw_segments)} segments for room #{room_id}"
+      )
+
+      conn
+      |> put_status(:ok)
+      |> json(%{
+        status: "appended",
+        transcript_id: transcript_id,
+        segments_appended: length(raw_segments)
+      })
+    else
+      Logger.warning("[LiveKit Webhook] #{length(errors)} segment(s) failed for room #{room_id}")
+
+      conn
+      |> put_status(:ok)
+      |> json(%{
+        status: "partial",
+        transcript_id: transcript_id,
+        segments_appended: length(raw_segments) - length(errors),
+        segments_failed: length(errors)
+      })
+    end
+  end
+
+  defp maybe_trigger_summary(transcript) do
+    if Code.ensure_loaded?(Platform.Meetings.Summarizer) do
+      Platform.Meetings.Summarizer.summarize_async(transcript)
+    else
+      Logger.debug(
+        "[LiveKit Webhook] Summarizer not available, skipping summary for transcript #{transcript.id}"
+      )
+    end
   end
 end

@@ -21,6 +21,7 @@ defmodule PlatformWeb.ChatLive do
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
   import PlatformWeb.Meeting.RecordingControls, only: [recording_button: 1, recording_banner: 1]
+  import PlatformWeb.Components.Meeting.TranscriptView, only: [transcript_panel: 1]
 
   alias Platform.Accounts
   alias Platform.Agents.Agent
@@ -311,6 +312,9 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:show_recordings, false)
        |> assign(:playing_recording_id, nil)
        |> assign(:playing_recording, nil)
+       |> assign(:transcripts, Meetings.list_transcripts_for_space(space.id))
+       |> assign(:active_transcript, nil)
+       |> assign(:show_transcript_panel, false)
        |> assign(:active_agent_participant_id, active_agent_participant_id)
        |> assign(:active_agent_name, active_agent_name)
        |> assign(:mobile_browser_open, false)
@@ -847,6 +851,22 @@ defmodule PlatformWeb.ChatLive do
      socket
      |> assign(:playing_recording_id, nil)
      |> assign(:playing_recording, nil)}
+  end
+
+  def handle_event("view-transcript", %{"transcript-id" => transcript_id}, socket) do
+    transcript = Meetings.get_transcript_with_segments(transcript_id)
+
+    {:noreply,
+     socket
+     |> assign(:active_transcript, transcript)
+     |> assign(:show_transcript_panel, true)}
+  end
+
+  def handle_event("close-transcript-panel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_transcript, nil)
+     |> assign(:show_transcript_panel, false)}
   end
 
   def handle_event("toggle_watch", _params, socket) do
@@ -2128,6 +2148,23 @@ defmodule PlatformWeb.ChatLive do
                 <span class="hidden md:inline">{length(@recordings)}</span>
               </button>
 
+              <button
+                :if={@transcripts != []}
+                phx-click={
+                  if @show_transcript_panel, do: "close-transcript-panel", else: "view-transcript"
+                }
+                phx-value-transcript-id={
+                  if !@show_transcript_panel && @transcripts != [], do: List.first(@transcripts).id
+                }
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_transcript_panel && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-document-text-solid size-4"></span>
+                <span class="hidden md:inline">{length(@transcripts)}</span>
+              </button>
+
               <%!-- Active agent indicator --%>
               <span
                 :if={@active_agent_participant_id != nil}
@@ -2413,6 +2450,17 @@ defmodule PlatformWeb.ChatLive do
 
           <%!-- Recording banner --%>
           <.recording_banner recording_active={@recording_active} />
+
+          <%!-- Transcript panel --%>
+          <div
+            :if={@show_transcript_panel && @active_transcript}
+            class="border-b border-base-300 bg-base-200 max-h-96 overflow-hidden"
+          >
+            <.transcript_panel
+              transcript={@active_transcript}
+              on_close="close-transcript-panel"
+            />
+          </div>
 
           <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>
           <div

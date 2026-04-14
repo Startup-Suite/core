@@ -83,8 +83,29 @@ const MeetingRoom = {
         })
       })
 
+      // Transcription — forward captions to MeetingCaptions hook via DOM event
+      this.room.on(RoomEvent.TranscriptionReceived, (segments, participant) => {
+        if (!segments || segments.length === 0) return
+        const speakerName = participant?.name || participant?.identity || "Unknown"
+        for (const seg of segments) {
+          document.dispatchEvent(new CustomEvent("meeting:caption", {
+            detail: {
+              id: seg.id || crypto.randomUUID(),
+              speaker: speakerName,
+              text: seg.text || "",
+              final: seg.final !== false,
+              timestamp: seg.startTime || Date.now(),
+            },
+          }))
+        }
+      })
+
       // Connect
       await this.room.connect(url, token)
+
+      // Expose room reference for MeetingCaptions hook
+      window.__livekitRoom = this.room
+      window.dispatchEvent(new Event("livekit:room-connected"))
 
       // Enable mic by default
       await this.room.localParticipant.setMicrophoneEnabled(true)
@@ -116,6 +137,11 @@ const MeetingRoom = {
         console.warn("[MeetingRoom] Error during disconnect:", e)
       }
       this.room = null
+    }
+
+    // Clean up global reference
+    if (window.__livekitRoom === this.room) {
+      window.__livekitRoom = null
     }
 
     this.joinedAt = null
