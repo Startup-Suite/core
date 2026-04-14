@@ -86,6 +86,12 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_participants, [])
       |> assign(:meeting_participant_count, 0)
       |> assign(:meeting_counts, %{})
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+      |> assign(:meetings_enabled, Meetings.enabled?())
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -313,6 +319,12 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:meeting_active, meeting_active)
        |> assign(:meeting_participants, meeting_participants)
        |> assign(:meeting_participant_count, meeting_participant_count)
+       |> assign(:in_meeting, false)
+       |> assign(:active_speakers, [])
+       |> assign(:mic_enabled, true)
+       |> assign(:camera_enabled, false)
+       |> assign(:screen_share_enabled, false)
+       |> assign(:meetings_enabled, Meetings.enabled?())
        |> assign_new_canvas_form()
        |> stream(:messages, messages, reset: true)
        |> schedule_agent_presence_refresh()
@@ -539,9 +551,145 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, assign(socket, :upload_tagged_agents, tagged)}
   end
 
-  def handle_event("join-meeting-click", _params, socket) do
-    # Placeholder — full join flow handled by the Join Meeting UI task
+  def handle_event("join-meeting-click", _params, socket), do: handle_event("join_meeting", %{}, socket)
+
+  def handle_event("join_meeting", _params, socket) do
+    space = socket.assigns.active_space
+    participant = socket.assigns.current_participant
+
+    if is_nil(space) or is_nil(participant) do
+      {:noreply, socket}
+    else
+      with {:ok, room} <- Meetings.ensure_room(space.id),
+           identity = "user:#{socket.assigns.user_id}",
+           name = participant.display_name || "User",
+           {:ok, token} <- Meetings.generate_token(room, %{identity: identity, name: name}) do
+        socket =
+          socket
+          |> assign(:in_meeting, true)
+          |> push_event("join-meeting", %{
+            token: token,
+            url: Meetings.livekit_url(),
+            room_name: room.livekit_room_name,
+            space_slug: space.slug
+          })
+
+        {:noreply, socket}
+      else
+        {:error, reason} ->
+          require Logger
+          Logger.warning("[ChatLive] Failed to join meeting: #{inspect(reason)}")
+          {:noreply, socket}
+      end
+    end
+  end
+
+  def handle_event("leave_meeting", _params, socket) do
+    socket =
+      socket
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+      |> push_event("leave-meeting", %{})
+
     {:noreply, socket}
+  end
+
+  def handle_event("toggle_mic", _params, socket) do
+    socket =
+      socket
+      |> assign(:mic_enabled, !socket.assigns.mic_enabled)
+      |> push_event("toggle-mic", %{})
+
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_camera", _params, socket) do
+    socket =
+      socket
+      |> assign(:camera_enabled, !socket.assigns.camera_enabled)
+      |> push_event("toggle-camera", %{})
+
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_screen_share", _params, socket) do
+    socket =
+      socket
+      |> assign(:screen_share_enabled, !socket.assigns.screen_share_enabled)
+      |> push_event("toggle-screen-share", %{})
+
+    {:noreply, socket}
+  end
+
+  # ── Client → Server meeting state sync events ──────────────────────────
+
+  def handle_event("meeting-joined", _params, socket) do
+    {:noreply, assign(socket, :in_meeting, true)}
+  end
+
+  def handle_event("meeting-left", _params, socket) do
+    socket =
+      socket
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("meeting-disconnected", _params, socket) do
+    socket =
+      socket
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("meeting-participant-connected", %{"identity" => identity, "name" => name}, socket) do
+    participant_entry = %{identity: identity, name: name, has_video: false, is_speaking: false}
+
+    participants =
+      socket.assigns.meeting_participants
+      |> Enum.reject(&(&1.identity == identity))
+      |> then(&[participant_entry | &1])
+
+    {:noreply, assign(socket, :meeting_participants, participants)}
+  end
+
+  def handle_event("meeting-participant-disconnected", %{"identity" => identity}, socket) do
+    participants = Enum.reject(socket.assigns.meeting_participants, &(&1.identity == identity))
+    {:noreply, assign(socket, :meeting_participants, participants)}
+  end
+
+  def handle_event("meeting-active-speakers-changed", %{"identities" => identities}, socket) do
+    {:noreply, assign(socket, :active_speakers, identities)}
+  end
+
+  def handle_event("meeting-mic-toggled", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :mic_enabled, enabled)}
+  end
+
+  def handle_event("meeting-camera-toggled", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :camera_enabled, enabled)}
+  end
+
+  def handle_event("meeting-screen-share-toggled", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :screen_share_enabled, enabled)}
+  end
+
+  def handle_event("meeting-error", %{"message" => message}, socket) do
+    require Logger
+    Logger.warning("[ChatLive] Meeting error from client: #{message}")
+    {:noreply, assign(socket, :in_meeting, false)}
   end
 
   def handle_event("noop", _params, socket), do: {:noreply, socket}
@@ -1620,6 +1768,14 @@ defmodule PlatformWeb.ChatLive do
           >
             <span class="text-base-content/40">#</span>
             <span class="truncate flex-1">{space.name}</span>
+            <span
+              :if={Map.get(@meeting_counts, space.id)}
+              class="ml-1 flex-shrink-0 inline-flex items-center gap-0.5 rounded-full bg-success/15 text-success text-[0.6rem] font-semibold px-1.5 py-0.5 leading-none"
+              title={"#{Map.get(@meeting_counts, space.id)} in meeting"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              {Map.get(@meeting_counts, space.id)}
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1658,6 +1814,14 @@ defmodule PlatformWeb.ChatLive do
             ]}
           >
             <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+            <span
+              :if={Map.get(@meeting_counts, space.id)}
+              class="ml-1 flex-shrink-0 inline-flex items-center gap-0.5 rounded-full bg-success/15 text-success text-[0.6rem] font-semibold px-1.5 py-0.5 leading-none"
+              title={"#{Map.get(@meeting_counts, space.id)} in call"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              {Map.get(@meeting_counts, space.id)}
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1708,6 +1872,14 @@ defmodule PlatformWeb.ChatLive do
             >
               <span class="text-base-content/40 text-lg">#</span>
               <span class="truncate flex-1">{space.name}</span>
+              <span
+                :if={Map.get(@meeting_counts, space.id)}
+                class="ml-1 flex-shrink-0 inline-flex items-center gap-0.5 rounded-full bg-success/15 text-success text-[0.6rem] font-semibold px-1.5 py-0.5 leading-none"
+                title={"#{Map.get(@meeting_counts, space.id)} in meeting"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                {Map.get(@meeting_counts, space.id)}
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1730,6 +1902,14 @@ defmodule PlatformWeb.ChatLive do
               ]}
             >
               <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+              <span
+                :if={Map.get(@meeting_counts, space.id)}
+                class="ml-1 flex-shrink-0 inline-flex items-center gap-0.5 rounded-full bg-success/15 text-success text-[0.6rem] font-semibold px-1.5 py-0.5 leading-none"
+                title={"#{Map.get(@meeting_counts, space.id)} in call"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                {Map.get(@meeting_counts, space.id)}
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
