@@ -19,6 +19,7 @@ import ResizableSidebar from "./resizable_sidebar"
 import ScrollToBottom from "./scroll_to_bottom"
 import SwipeDrawer from "./swipe_drawer"
 import ThemeToggle from "./theme_toggle"
+import UploadButton from "./upload_button"
 
 export default {
   ChatState,
@@ -42,4 +43,5 @@ export default {
   ScrollToBottom,
   SwipeDrawer,
   ThemeToggle,
+  UploadButton,
 }

@@ -3027,6 +3027,8 @@ defmodule PlatformWeb.ChatLive do
               <div class="compose-pill-bar">
                 <button
                   type="button"
+                  id="compose-upload-btn"
+                  phx-hook="UploadButton"
                   phx-click="show_upload_dialog"
                   class="compose-pill-attach cursor-pointer text-base-content/50 hover:bg-base-300/50 transition-colors"
                   title="Attach files"
