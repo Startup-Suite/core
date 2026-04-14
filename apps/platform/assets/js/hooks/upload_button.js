@@ -20,6 +20,15 @@ const UploadButton = {
       this._onClick = (e) => {
         // Look up the file input fresh each time (LiveView may re-render it)
         const fileInput = document.getElementById("upload-file-trigger");
+        if (!fileInput) {
+          console.warn("[UploadButton] #upload-file-trigger not found in DOM");
+          return; // Let phx-click fire as fallback
+        }
+        // Guard: iOS won't open picker if the input is display:none or zero-size
+        const style = window.getComputedStyle(fileInput);
+        if (style.display === "none") {
+          console.warn("[UploadButton] file input has display:none — iOS will ignore .click()");
+        }
         if (fileInput) {
           // Synchronous .click() within the user tap gesture — iOS allows this
           fileInput.click();
