@@ -10,6 +10,7 @@ import KanbanDragDrop from "./kanban_drag_drop"
 import LastChatLink from "./last_chat_link"
 import MarkdownEditor from "./markdown_editor"
 import LocalTime from "./local_time"
+import MeetingBar from "./meeting_bar"
 import MeetingCaptions from "./meeting_captions"
 import MeetingRoom from "./meeting_room"
 import MeetingTimer from "./meeting_timer"
@@ -33,6 +34,7 @@ export default {
   LastChatLink,
   LocalTime,
   MarkdownEditor,
+  MeetingBar,
   MeetingCaptions,
   MeetingRoom,
   MeetingTimer,

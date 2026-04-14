@@ -47,7 +47,7 @@ defmodule PlatformWeb.MeetingBarLive do
     <div
       :if={@meeting_active && !@on_meeting_page}
       id="meeting-mini-bar"
-      phx-hook="MeetingTimer"
+      phx-hook="MeetingBar"
       data-started-at={@started_at && DateTime.to_iso8601(@started_at)}
       class={[
         "fixed bottom-0 inset-x-0 z-40 h-12 bg-base-200 border-t border-base-300 shadow-lg flex items-center gap-3 px-4",
@@ -76,6 +76,7 @@ defmodule PlatformWeb.MeetingBarLive do
       <button
         phx-click="toggle_meeting_mic"
         phx-target={@myself}
+        data-bar-mic
         class={[
           "rounded-lg p-1.5 transition-colors",
           if(@mic_on,
@@ -92,6 +93,7 @@ defmodule PlatformWeb.MeetingBarLive do
       <button
         phx-click="toggle_meeting_camera"
         phx-target={@myself}
+        data-bar-camera
         class={[
           "rounded-lg p-1.5 transition-colors",
           if(@camera_on,
@@ -119,6 +121,7 @@ defmodule PlatformWeb.MeetingBarLive do
       <button
         phx-click="leave_meeting"
         phx-target={@myself}
+        data-bar-leave
         class="rounded-lg px-2.5 py-1 text-xs font-medium text-error hover:bg-error/10 transition-colors"
         title="Leave meeting"
       >
@@ -130,11 +133,29 @@ defmodule PlatformWeb.MeetingBarLive do
 
   @impl true
   def handle_event("toggle_meeting_mic", _params, socket) do
-    {:noreply, assign(socket, :mic_on, !socket.assigns.mic_on)}
+    new_mic = !socket.assigns.mic_on
+    {:noreply, assign(socket, :mic_on, new_mic)}
   end
 
   def handle_event("toggle_meeting_camera", _params, socket) do
-    {:noreply, assign(socket, :camera_on, !socket.assigns.camera_on)}
+    new_camera = !socket.assigns.camera_on
+    {:noreply, assign(socket, :camera_on, new_camera)}
+  end
+
+  def handle_event("meeting_bar_state", %{"mic" => mic, "camera" => camera} = _params, socket) do
+    # Sync state pushed from JS hook reading LiveKit room
+    {:noreply,
+     socket
+     |> assign(:mic_on, mic)
+     |> assign(:camera_on, camera)}
+  end
+
+  def handle_event("mic_toggled", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :mic_on, enabled)}
+  end
+
+  def handle_event("camera_toggled", %{"enabled" => enabled}, socket) do
+    {:noreply, assign(socket, :camera_on, enabled)}
   end
 
   def handle_event("leave_meeting", _params, socket) do
