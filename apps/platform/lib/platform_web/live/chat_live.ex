@@ -20,6 +20,7 @@ defmodule PlatformWeb.ChatLive do
   use PlatformWeb, :live_view
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
+  import PlatformWeb.MeetingComponents, only: [meeting_participant_tile: 1]
 
   alias Platform.Accounts
   alias Platform.Agents.WorkspaceBootstrap
@@ -87,6 +88,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_participant_count, 0)
       |> assign(:meeting_counts, %{})
       |> assign(:meeting_room, nil)
+      |> assign(:active_speakers, MapSet.new())
       |> assign(:show_agent_picker, false)
       |> assign(:available_agents, [])
       |> assign(:active_agent_participant_id, nil)
@@ -580,6 +582,22 @@ defmodule PlatformWeb.ChatLive do
     else
       _ ->
         {:noreply, put_flash(socket, :error, "Failed to invite agent")}
+    end
+  end
+
+  def handle_event("meeting_active_speaker", %{"identities" => identities}, socket) do
+    {:noreply, assign(socket, :active_speakers, MapSet.new(identities))}
+  end
+
+  def handle_event("dismiss_meeting_agent", %{"agent-id" => agent_id}, socket) do
+    space = socket.assigns.active_space
+
+    with {:ok, room} <- Platform.Meetings.ensure_room(space.id),
+         {:ok, _participant} <- Platform.Meetings.dismiss_agent(room, agent_id) do
+      {:noreply, socket}
+    else
+      _ ->
+        {:noreply, put_flash(socket, :error, "Failed to dismiss agent")}
     end
   end
 
@@ -1934,6 +1952,8 @@ defmodule PlatformWeb.ChatLive do
             <%!-- Meeting presence indicator --%>
             <button
               :if={@meeting_active}
+              id="meeting-presence"
+              phx-hook="MeetingRoom"
               phx-click="join-meeting-click"
               class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-base-200 transition-colors group"
               title={"#{@meeting_participant_count} in meeting — click to join"}
@@ -1944,9 +1964,69 @@ defmodule PlatformWeb.ChatLive do
               <span class="hidden lg:flex items-center -space-x-2">
                 <span
                   :for={p <- Enum.take(@meeting_participants, 3)}
-                  class="ring-2 ring-base-100 rounded-full"
+                  class={[
+                    "ring-2 rounded-full",
+                    cond do
+                      MapSet.member?(@active_speakers, p.identity) && p.agent_id ->
+                        "ring-primary meeting-avatar-speaking"
+
+                      MapSet.member?(@active_speakers, p.identity) ->
+                        "ring-success meeting-avatar-speaking"
+
+                      p.agent_id ->
+                        "ring-primary"
+
+                      true ->
+                        "ring-base-100"
+                    end
+                  ]}
+                  style={
+                    if MapSet.member?(@active_speakers, p.identity) && p.agent_id,
+                      do:
+                        "--speak-color: #{Platform.Agents.ColorPalette.accent_for(p.agent && p.agent.color)}80",
+                      else: ""
+                  }
                 >
+                  <%!-- Agent participant --%>
+                  <span
+                    :if={p.agent_id}
+                    class="relative flex items-center justify-center size-5 rounded-full text-white cursor-pointer group/agent"
+                    style={"background-color: #{Platform.Agents.ColorPalette.accent_for(p.agent && p.agent.color)}"}
+                    phx-click="dismiss_meeting_agent"
+                    phx-value-agent-id={p.agent_id}
+                    title={"Dismiss #{meeting_participant_name(p)}"}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="size-3 group-hover/agent:hidden"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      class="size-3 hidden group-hover/agent:block"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                    <span class="absolute -bottom-0.5 -right-0.5 flex items-center justify-center size-2.5 rounded-full bg-primary text-[5px] font-bold text-primary-content ring-1 ring-base-100">
+                      AI
+                    </span>
+                  </span>
+                  <%!-- Human participant --%>
                   <.human_avatar
+                    :if={!p.agent_id}
                     name={meeting_participant_name(p)}
                     avatar_url={meeting_participant_avatar(p)}
                     seed={p.id}
