@@ -2001,8 +2001,8 @@ defmodule PlatformWeb.ChatLive do
 
             <%!-- Meeting presence indicator --%>
             <button
-              :if={@meeting_active}
-              phx-click="join-meeting-click"
+              :if={@meeting_active && !@in_meeting}
+              phx-click="join_meeting"
               class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-base-200 transition-colors group"
               title={"#{@meeting_participant_count} in meeting — click to join"}
             >
