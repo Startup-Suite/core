@@ -14,6 +14,7 @@ import MeetingCaptions from "./meeting_captions"
 import MeetingRoom from "./meeting_room"
 import MermaidDiagram from "./mermaid_diagram"
 import PushSubscribe from "./push_subscribe"
+import RecordingPlayer from "./recording_player"
 import ResizableSidebar from "./resizable_sidebar"
 import ScrollToBottom from "./scroll_to_bottom"
 import SwipeDrawer from "./swipe_drawer"
@@ -36,6 +37,7 @@ export default {
   MeetingRoom,
   MermaidDiagram,
   PushSubscribe,
+  RecordingPlayer,
   ResizableSidebar,
   ScrollToBottom,
   SwipeDrawer,

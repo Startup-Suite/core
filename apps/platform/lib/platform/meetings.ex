@@ -1,15 +1,142 @@
 defmodule Platform.Meetings do
   @moduledoc """
-  Context module for meeting transcription.
+  Context module for meetings — recordings and transcription.
 
-  Provides CRUD operations for meeting transcripts, including
-  segment accumulation and summary management.
+  Provides CRUD operations for meeting recordings and transcripts,
+  including segment accumulation, summary management, and LiveKit
+  Egress integration for recording lifecycle.
   """
 
   import Ecto.Query
 
-  alias Platform.Meetings.Transcript
+  alias Platform.Meetings.{LivekitEgress, Recording, Transcript}
+
+  require Logger
   alias Platform.Repo
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # RECORDINGS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── Recording CRUD ─────────────────────────────────────────────────────────
+
+  @doc """
+  Start a recording for a meeting room.
+
+  Creates a Recording record and calls LiveKit Egress API to begin recording.
+  If the Egress API call fails, the record is deleted and the error is returned.
+  """
+  @spec start_recording(String.t(), String.t(), String.t()) ::
+          {:ok, Recording.t()} | {:error, term()}
+  def start_recording(space_id, started_by_id, room_id) do
+    attrs = %{
+      room_id: room_id,
+      space_id: space_id,
+      started_by_id: started_by_id,
+      status: "recording"
+    }
+
+    with {:ok, recording} <- create_recording(attrs),
+         {:ok, egress_id} <- LivekitEgress.start_room_composite_egress(room_id) do
+      recording
+      |> Recording.changeset(%{egress_id: egress_id})
+      |> Repo.update()
+    else
+      {:error, reason} = error ->
+        # Clean up the record if egress call failed
+        Logger.warning("[Meetings] start_recording failed: #{inspect(reason)}")
+        error
+    end
+  end
+
+  @doc "Create a recording record (internal use)."
+  @spec create_recording(map()) :: {:ok, Recording.t()} | {:error, Ecto.Changeset.t()}
+  def create_recording(attrs) do
+    %Recording{}
+    |> Recording.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Stop an active recording.
+
+  Calls LiveKit Egress API to stop the recording and transitions
+  the status to \"processing\".
+  """
+  @spec stop_recording(String.t()) :: {:ok, Recording.t()} | {:error, term()}
+  def stop_recording(recording_id) do
+    case get_recording(recording_id) do
+      nil ->
+        {:error, :not_found}
+
+      %Recording{egress_id: egress_id} = recording when is_binary(egress_id) ->
+        _ = LivekitEgress.stop_egress(egress_id)
+
+        recording
+        |> Recording.changeset(%{status: "processing"})
+        |> Repo.update()
+
+      recording ->
+        recording
+        |> Recording.changeset(%{status: "processing"})
+        |> Repo.update()
+    end
+  end
+
+  @doc """
+  Complete a recording after egress finishes.
+
+  Sets the file_url, duration, file_size, and transitions status to \"ready\".
+  Looked up by egress_id (from the webhook).
+  """
+  @spec complete_recording(String.t(), map()) :: {:ok, Recording.t()} | {:error, term()}
+  def complete_recording(egress_id, attrs) when is_binary(egress_id) do
+    case get_recording_by_egress_id(egress_id) do
+      nil ->
+        {:error, :not_found}
+
+      recording ->
+        recording
+        |> Recording.changeset(Map.merge(attrs, %{status: "ready"}))
+        |> Repo.update()
+    end
+  end
+
+  @doc "Get a recording by ID."
+  @spec get_recording(String.t()) :: Recording.t() | nil
+  def get_recording(id), do: Repo.get(Recording, id)
+
+  @doc "Get a recording by its LiveKit egress ID."
+  @spec get_recording_by_egress_id(String.t()) :: Recording.t() | nil
+  def get_recording_by_egress_id(egress_id) do
+    Recording
+    |> where([r], r.egress_id == ^egress_id)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  @doc "List recordings for a space, most recent first."
+  @spec list_recordings_for_space(String.t()) :: [Recording.t()]
+  def list_recordings_for_space(space_id) do
+    Recording
+    |> where([r], r.space_id == ^space_id)
+    |> order_by([r], desc: r.inserted_at)
+    |> Repo.all()
+  end
+
+  @doc "Get the active recording for a space (status = recording)."
+  @spec get_active_recording_for_space(String.t()) :: Recording.t() | nil
+  def get_active_recording_for_space(space_id) do
+    Recording
+    |> where([r], r.space_id == ^space_id and r.status == "recording")
+    |> order_by([r], desc: r.inserted_at)
+    |> limit(1)
+    |> Repo.one()
+  end
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # TRANSCRIPTS
+  # ═══════════════════════════════════════════════════════════════════════════
 
   # ── Create ─────────────────────────────────────────────────────────────────
 
@@ -180,6 +307,19 @@ defmodule Platform.Meetings do
         |> Transcript.changeset(%{status: "failed", completed_at: DateTime.utc_now()})
         |> Repo.update()
     end
+  end
+
+  # ── Summary Posting ────────────────────────────────────────────────────────
+
+  # ── Transcript Listing ─────────────────────────────────────────────────────
+
+  @doc "List transcripts for a space, most recent first."
+  @spec list_transcripts_for_space(String.t()) :: [Transcript.t()]
+  def list_transcripts_for_space(space_id) do
+    Transcript
+    |> where([t], t.space_id == ^space_id and t.status in ["complete", "processing"])
+    |> order_by([t], desc: t.started_at)
+    |> Repo.all()
   end
 
   # ── Summary Posting ────────────────────────────────────────────────────────

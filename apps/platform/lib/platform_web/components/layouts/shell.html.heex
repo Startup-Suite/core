@@ -255,6 +255,19 @@
           </div>
         </div>
 
+        <%!-- Recording indicator (visible when recording active) --%>
+        <div
+          :if={@recording_active}
+          class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-error"
+        >
+          <span class="relative flex size-2">
+            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-error opacity-75">
+            </span>
+            <span class="relative inline-flex size-2 rounded-full bg-error"></span>
+          </span>
+          <span class="font-medium hidden md:inline">Recording</span>
+        </div>
+
         <%!-- Caption toggle (visible when in a meeting) --%>
         <button
           :if={@captions_enabled != nil}

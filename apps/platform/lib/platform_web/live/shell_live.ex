@@ -53,6 +53,7 @@ defmodule PlatformWeb.ShellLive do
       |> assign(:show_presence_panel, false)
       |> assign(:presence_list, presence_list)
       |> assign(:captions_enabled, false)
+      |> assign(:recording_active, false)
       |> attach_hook(:track_path, :handle_params, fn _params, url, socket ->
         uri = URI.parse(url)
         {:cont, assign(socket, :current_path, uri.path)}
