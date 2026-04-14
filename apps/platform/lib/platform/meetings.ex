@@ -697,6 +697,21 @@ defmodule Platform.Meetings do
     end
   end
 
+  @doc "Update the transcript summary text."
+  @spec update_transcript_summary(String.t(), String.t()) ::
+          {:ok, Transcript.t()} | {:error, term()}
+  def update_transcript_summary(transcript_id, summary) when is_binary(summary) do
+    case get_transcript(transcript_id) do
+      nil ->
+        {:error, :not_found}
+
+      transcript ->
+        transcript
+        |> Transcript.changeset(%{summary: summary})
+        |> Repo.update()
+    end
+  end
+
   @doc "Post a meeting summary as a system message to the space."
   @spec post_summary_to_space(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
   def post_summary_to_space(space_id, transcript_id, summary)
