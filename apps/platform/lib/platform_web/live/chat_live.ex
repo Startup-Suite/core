@@ -2364,56 +2364,58 @@ defmodule PlatformWeb.ChatLive do
                     </div>
 
                     <%!-- Thread composer --%>
-                    <div class="thread-composer">
-                      <%!-- @mention autocomplete dropdown (inline thread) --%>
-                      <div
-                        :if={
-                          @mention_suggestions != [] &&
-                            @mention_source == "inline-thread-compose-form-#{msg.id}"
-                        }
-                        class="relative mb-1"
-                      >
-                        <div class="absolute bottom-full left-0 z-50 w-64 rounded-xl border border-base-300 bg-base-100 shadow-lg overflow-hidden mb-1">
-                          <div class="py-1">
-                            <button
-                              :for={{suggestion, idx} <- Enum.with_index(@mention_suggestions)}
-                              type="button"
-                              data-mention-suggestion={if idx == 0, do: "first"}
-                              phx-click={
-                                JS.dispatch("chat:insert-mention",
-                                  to: "#inline-thread-compose-#{msg.id}",
-                                  detail: %{name: suggestion.display_name || "User"}
-                                )
-                              }
-                              class="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-base-200 text-left transition-colors"
-                            >
-                              <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
-                                {(suggestion.display_name || "U")
-                                |> String.trim()
-                                |> String.first()
-                                |> String.upcase()}
-                              </div>
-                              <span class="flex-1 truncate font-medium">
-                                {suggestion.display_name || "User"}
-                              </span>
-                              <span class={[
-                                "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
-                                suggestion.participant_type == "agent" && "bg-primary/10 text-primary",
-                                suggestion.participant_type != "agent" &&
-                                  "bg-base-300 text-base-content/50"
-                              ]}>
-                                {suggestion.participant_type}
-                              </span>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
+                    <div class="thread-composer" style="flex-direction: column; align-items: stretch;">
                       <.form
                         for={%{}}
                         id={"inline-thread-compose-form-#{msg.id}"}
                         phx-submit="send_inline_thread_message"
                         class="thread-composer-form"
+                        style="position: relative;"
                       >
+                        <%!-- @mention autocomplete dropdown (inline thread) --%>
+                        <div
+                          :if={
+                            @mention_suggestions != [] &&
+                              @mention_source == "inline-thread-compose-form-#{msg.id}"
+                          }
+                          style="position: absolute; bottom: 100%; left: 0; z-index: 50; width: 16rem; margin-bottom: 4px;"
+                        >
+                          <div class="rounded-xl border border-base-300 bg-base-100 shadow-lg overflow-hidden">
+                            <div class="py-1">
+                              <button
+                                :for={{suggestion, idx} <- Enum.with_index(@mention_suggestions)}
+                                type="button"
+                                data-mention-suggestion={if idx == 0, do: "first"}
+                                phx-click={
+                                  JS.dispatch("chat:insert-mention",
+                                    to: "#inline-thread-compose-#{msg.id}",
+                                    detail: %{name: suggestion.display_name || "User"}
+                                  )
+                                }
+                                class="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-base-200 text-left transition-colors"
+                              >
+                                <div class="w-6 h-6 rounded-full bg-primary text-primary-content flex items-center justify-center text-xs font-bold flex-shrink-0">
+                                  {(suggestion.display_name || "U")
+                                  |> String.trim()
+                                  |> String.first()
+                                  |> String.upcase()}
+                                </div>
+                                <span class="flex-1 truncate font-medium">
+                                  {suggestion.display_name || "User"}
+                                </span>
+                                <span class={[
+                                  "rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wider",
+                                  suggestion.participant_type == "agent" &&
+                                    "bg-primary/10 text-primary",
+                                  suggestion.participant_type != "agent" &&
+                                    "bg-base-300 text-base-content/50"
+                                ]}>
+                                  {suggestion.participant_type}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
                         <input
                           type="hidden"
                           name="inline_thread_compose[message_id]"
@@ -2520,7 +2522,7 @@ defmodule PlatformWeb.ChatLive do
             <span>{thinking_label(@agent_typing_pids, @participants_map)} is thinking…</span>
           </div>
 
-          <div class="flex-shrink-0 border-t border-base-300 px-5 py-3 safe-area-bottom">
+          <div class="flex-shrink-0 compose-input-area safe-area-bottom">
             <.form
               :if={@active_space}
               for={@compose_form}
@@ -2580,22 +2582,23 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               </div>
 
-              <%!-- Compose row: [+] [input stretches] [send] --%>
-              <div class="flex items-center gap-2">
+              <%!-- Hidden file input — outside pill bar to avoid flex layout interference --%>
+              <.live_file_input
+                upload={@uploads.attachments}
+                class="hidden"
+                id="upload-file-trigger"
+              />
+
+              <%!-- Pill-shaped compose bar --%>
+              <div class="compose-pill-bar">
                 <button
                   type="button"
                   phx-click="show_upload_dialog"
-                  class="flex-shrink-0 cursor-pointer rounded-full w-9 h-9 flex items-center justify-center text-base-content/50 hover:bg-base-300 transition-colors"
+                  class="compose-pill-attach cursor-pointer text-base-content/50 hover:bg-base-300/50 transition-colors"
                   title="Attach files"
                 >
                   <span class="hero-plus size-5"></span>
                 </button>
-                <%!-- Hidden file input — single instance, used by both compose attach button and upload panel --%>
-                <.live_file_input
-                  upload={@uploads.attachments}
-                  class="hidden"
-                  id="upload-file-trigger"
-                />
 
                 <textarea
                   name="compose[text]"
@@ -2604,14 +2607,14 @@ defmodule PlatformWeb.ChatLive do
                   placeholder={"Message ##{(@active_space && @active_space.name) || ""}"}
                   autocomplete="off"
                   rows="1"
-                  class="min-w-0 flex-1 rounded-xl text-sm resize-none bg-base-100 border border-base-300 focus:border-primary focus:outline-none transition-colors"
-                  style="line-height:1.5;padding:6px 12px;min-height:33px;max-height:200px;overflow-y:auto;field-sizing:content"
+                  class="min-w-0 flex-1 text-sm resize-none"
+                  style="line-height:1.5;padding:4px 0;min-height:28px;max-height:200px;overflow-y:auto;field-sizing:content"
                   phx-hook="ComposeInput"
                 >{Phoenix.HTML.Form.normalize_value("text", @compose_form[:text].value)}</textarea>
 
                 <button
                   type="submit"
-                  class="flex-shrink-0 w-9 h-9 rounded-full btn btn-primary btn-sm flex items-center justify-center p-0"
+                  class="compose-pill-send"
                   disabled={is_nil(@current_participant)}
                   title="Send"
                 >
@@ -3599,6 +3602,7 @@ defmodule PlatformWeb.ChatLive do
           %{preview | reply_count: preview.reply_count + 1, last_reply_at: msg.inserted_at}
         end)
       end)
+      |> reinsert_stream_message(msg_id)
     end
   end
 
