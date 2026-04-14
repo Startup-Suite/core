@@ -3112,7 +3112,9 @@ defmodule PlatformWeb.ChatLive do
                 <%!-- Empty: Drop Zone --%>
                 <div
                   :if={@uploads.attachments.entries == []}
+                  id="upload-dropzone-trigger"
                   class="upload-dropzone"
+                  phx-hook="FilePickerTrigger"
                   phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -3127,7 +3129,9 @@ defmodule PlatformWeb.ChatLive do
                   <div class="upload-dropzone-or">or</div>
                   <button
                     type="button"
+                    id="upload-browse-btn-trigger"
                     class="upload-browse-btn"
+                    phx-hook="FilePickerTrigger"
                     phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                   >
                     Browse files
@@ -3185,7 +3189,9 @@ defmodule PlatformWeb.ChatLive do
                     <%!-- Add more tile --%>
                     <button
                       type="button"
+                      id="upload-add-more-trigger"
                       class="upload-add-tile"
+                      phx-hook="FilePickerTrigger"
                       phx-click={JS.dispatch("click", to: "#upload-file-trigger")}
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

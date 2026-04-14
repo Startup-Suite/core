@@ -20,6 +20,7 @@ import ScrollToBottom from "./scroll_to_bottom"
 import SwipeDrawer from "./swipe_drawer"
 import ThemeToggle from "./theme_toggle"
 import UploadButton from "./upload_button"
+import FilePickerTrigger from "./file_picker_trigger"
 
 export default {
   ChatState,
@@ -44,4 +45,5 @@ export default {
   SwipeDrawer,
   ThemeToggle,
   UploadButton,
+  FilePickerTrigger,
 }
