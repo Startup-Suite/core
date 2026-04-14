@@ -3019,7 +3019,7 @@ defmodule PlatformWeb.ChatLive do
               <%!-- Hidden file input — outside pill bar to avoid flex layout interference --%>
               <.live_file_input
                 upload={@uploads.attachments}
-                class="hidden"
+                class="sr-only"
                 id="upload-file-trigger"
               />
 

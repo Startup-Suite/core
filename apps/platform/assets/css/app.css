@@ -1077,14 +1077,18 @@ body, .font-kobo, * {
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-/* Hide file input from flex layout */
-.compose-pill-bar .hidden,
-.compose-pill-bar [type="file"] {
-  display: none !important;
+/* Hide file input from flex layout — use sr-only approach instead of display:none
+   so iOS Safari still allows programmatic .click() on file inputs */
+.compose-pill-bar .hidden {
   position: absolute !important;
-  width: 0 !important;
-  height: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
   overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 .compose-pill-bar:focus-within {
