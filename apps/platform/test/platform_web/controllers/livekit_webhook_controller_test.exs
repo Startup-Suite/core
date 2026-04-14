@@ -5,324 +5,481 @@ defmodule PlatformWeb.LivekitWebhookControllerTest do
 
   @livekit_webhook_path "/api/webhooks/livekit"
 
-  defp unique_room_id, do: Platform.Types.UUIDv7.generate()
+  # ── Test helpers ─────────────────────────────────────────────────────────
 
-  defp room_started_payload(room_id) do
+  defp webhook_secret, do: "test-livekit-secret"
+
+  defp sign_request(secret) do
+    # Create a minimal valid HS256 JWT signed with the secret
+    header = %{"alg" => "HS256", "typ" => "JWT"}
+    payload = %{"iss" => "livekit", "nbf" => System.system_time(:second)}
+
+    header_b64 = header |> Jason.encode!() |> Base.url_encode64(padding: false)
+    payload_b64 = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
+
+    signing_input = header_b64 <> "." <> payload_b64
+    signature = :crypto.mac(:hmac, :sha256, secret, signing_input)
+    sig_b64 = Base.url_encode64(signature, padding: false)
+
+    header_b64 <> "." <> payload_b64 <> "." <> sig_b64
+  end
+
+  defp post_webhook(conn, payload, opts \\ []) do
+    secret = Keyword.get(opts, :secret, webhook_secret())
+    token = sign_request(secret)
+
+    conn
+    |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", token)
+    |> post(@livekit_webhook_path, payload)
+  end
+
+  defp participant_joined_payload(room_name, identity, name \\ nil) do
+    %{
+      "event" => "participant_joined",
+      "room" => %{"name" => room_name, "sid" => "RM_test123"},
+      "participant" => %{
+        "identity" => identity,
+        "name" => name || identity,
+        "sid" => "PA_#{identity}",
+        "metadata" => ""
+      }
+    }
+  end
+
+  defp participant_left_payload(room_name, identity) do
+    %{
+      "event" => "participant_left",
+      "room" => %{"name" => room_name, "sid" => "RM_test123"},
+      "participant" => %{
+        "identity" => identity,
+        "sid" => "PA_#{identity}"
+      }
+    }
+  end
+
+  defp room_started_payload(room_name) do
     %{
       "event" => "room_started",
-      "room" => %{
-        "sid" => room_id,
-        "name" => "meeting-#{room_id}"
-      }
+      "room" => %{"name" => room_name, "sid" => "RM_test123"}
     }
   end
 
-  defp room_finished_payload(room_id) do
+  defp room_finished_payload(room_name) do
     %{
       "event" => "room_finished",
-      "room" => %{
-        "sid" => room_id,
-        "name" => "meeting-#{room_id}"
+      "room" => %{"name" => room_name, "sid" => "RM_test123"}
+    }
+  end
+
+  defp egress_started_payload(egress_id, room_name) do
+    %{
+      "event" => "egress_started",
+      "room" => %{"name" => room_name, "sid" => "RM_test123"},
+      "egressInfo" => %{
+        "egressId" => egress_id,
+        "roomName" => room_name,
+        "status" => "EGRESS_STARTING"
       }
     }
   end
 
-  defp transcription_payload(room_id, segments) do
+  defp egress_ended_payload(room_name, egress_id, file_url) do
     %{
-      "event" => "transcription",
-      "room" => %{
-        "sid" => room_id,
-        "name" => "meeting-#{room_id}"
-      },
-      "segments" => segments
+      "event" => "egress_ended",
+      "room" => %{"name" => room_name, "sid" => "RM_test123"},
+      "egressInfo" => %{
+        "egressId" => egress_id,
+        "status" => "EGRESS_COMPLETE",
+        "file" => %{
+          "filename" => file_url,
+          "duration" => 120_000_000_000,
+          "size" => 5_242_880
+        }
+      }
     }
   end
 
-  defp sample_segment(overrides \\ %{}) do
-    Map.merge(
-      %{
-        "participant_identity" => "user-#{System.unique_integer([:positive])}",
-        "speaker_name" => "Alice",
-        "text" => "Hello, this is a test segment.",
-        "start_time" => 1000,
-        "end_time" => 2000,
-        "language" => "en",
-        "final" => true
-      },
-      overrides
-    )
+  defp egress_ended_failed_payload(egress_id) do
+    %{
+      "event" => "egress_ended",
+      "egressInfo" => %{
+        "egressId" => egress_id,
+        "status" => "EGRESS_FAILED"
+      }
+    }
   end
 
-  # ── room_started tests ──────────────────────────────────────────────────
+  defp create_recording_for_room(room, egress_id) do
+    {:ok, recording} =
+      Meetings.create_recording(%{
+        room_id: room.id,
+        egress_id: egress_id,
+        status: "starting",
+        started_at: DateTime.utc_now()
+      })
+
+    recording
+  end
+
+  # ── Setup ────────────────────────────────────────────────────────────────
+
+  setup do
+    System.put_env("LIVEKIT_WEBHOOK_SECRET", webhook_secret())
+    on_exit(fn -> System.delete_env("LIVEKIT_WEBHOOK_SECRET") end)
+    :ok
+  end
+
+  # ── Participant joined tests ─────────────────────────────────────────────
+
+  describe "POST #{@livekit_webhook_path} — participant_joined" do
+    test "records a new participant and creates room if needed", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      payload = participant_joined_payload(room_name, "user-alice", "Alice")
+
+      conn = post_webhook(conn, payload)
+
+      assert %{
+               "status" => "recorded",
+               "event" => "participant_joined",
+               "participant_id" => id
+             } = json_response(conn, 201)
+
+      assert is_binary(id)
+
+      room = Meetings.get_room_by_name(room_name)
+      assert room != nil
+
+      participants = Meetings.list_active_participants(room.id)
+      assert length(participants) == 1
+      assert hd(participants).identity == "user-alice"
+      assert hd(participants).name == "Alice"
+    end
+
+    test "records multiple participants in the same room", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      conn1 = post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
+      assert %{"status" => "recorded"} = json_response(conn1, 201)
+
+      conn2 = post_webhook(conn, participant_joined_payload(room_name, "user-bob"))
+      assert %{"status" => "recorded"} = json_response(conn2, 201)
+
+      room = Meetings.get_room_by_name(room_name)
+      participants = Meetings.list_active_participants(room.id)
+      assert length(participants) == 2
+    end
+  end
+
+  # ── Participant left tests ──────────────────────────────────────────────
+
+  describe "POST #{@livekit_webhook_path} — participant_left" do
+    test "marks participant as left", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      conn1 = post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
+      assert %{"status" => "recorded"} = json_response(conn1, 201)
+
+      conn2 = post_webhook(conn, participant_left_payload(room_name, "user-alice"))
+
+      assert %{
+               "status" => "recorded",
+               "event" => "participant_left"
+             } = json_response(conn2, 200)
+
+      room = Meetings.get_room_by_name(room_name)
+      active = Meetings.list_active_participants(room.id)
+      assert active == []
+    end
+
+    test "ignores leave for unknown room", %{conn: conn} do
+      payload = participant_left_payload("nonexistent-room", "user-alice")
+      conn = post_webhook(conn, payload)
+
+      assert %{"status" => "ignored", "reason" => "unknown room"} = json_response(conn, 200)
+    end
+
+    test "ignores leave for unknown participant", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      conn1 = post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
+      assert %{"status" => "recorded"} = json_response(conn1, 201)
+
+      conn2 = post_webhook(conn, participant_left_payload(room_name, "user-unknown"))
+
+      assert %{"status" => "ignored", "reason" => "participant not found"} =
+               json_response(conn2, 200)
+    end
+  end
+
+  # ── Room started tests ─────────────────────────────────────────────────
 
   describe "POST #{@livekit_webhook_path} — room_started" do
-    test "creates a transcript record for a new room", %{conn: conn} do
-      room_id = unique_room_id()
-      payload = room_started_payload(room_id)
+    test "creates room and sets status to active", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      payload = room_started_payload(room_name)
 
-      conn = post(conn, @livekit_webhook_path, payload)
+      conn = post_webhook(conn, payload)
 
-      assert %{"status" => "created", "transcript_id" => transcript_id} =
-               json_response(conn, 201)
+      assert %{
+               "status" => "recorded",
+               "event" => "room_started",
+               "room_id" => _id
+             } = json_response(conn, 200)
 
-      assert is_binary(transcript_id)
-
-      transcript = Meetings.get_transcript(transcript_id)
-      assert transcript != nil
-      assert transcript.room_id == room_id
-      assert transcript.status == "recording"
+      room = Meetings.get_room_by_name(room_name)
+      assert room.status == "active"
     end
 
-    test "returns existing transcript if one already exists", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, existing} = Meetings.create_transcript(%{room_id: room_id})
+    test "activates existing idle room", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      {:ok, _room} = Meetings.find_or_create_room(room_name)
 
-      payload = room_started_payload(room_id)
-      conn = post(conn, @livekit_webhook_path, payload)
+      conn = post_webhook(conn, room_started_payload(room_name))
 
-      assert %{"status" => "created", "transcript_id" => transcript_id} =
-               json_response(conn, 201)
+      assert %{"status" => "recorded"} = json_response(conn, 200)
 
-      assert transcript_id == existing.id
-    end
-
-    test "ignores event with no room identifier", %{conn: conn} do
-      payload = %{"event" => "room_started", "room" => %{}}
-
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "ignored", "reason" => "no room identifier"} =
-               json_response(conn, 200)
+      room = Meetings.get_room_by_name(room_name)
+      assert room.status == "active"
     end
   end
 
-  # ── room_finished tests ─────────────────────────────────────────────────
+  # ── Room finished tests ────────────────────────────────────────────────
 
   describe "POST #{@livekit_webhook_path} — room_finished" do
-    test "finalizes an active transcript", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
-      transcript_id = transcript.id
+    test "sets room to idle and cleans up participants", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
 
-      payload = room_finished_payload(room_id)
-      conn = post(conn, @livekit_webhook_path, payload)
+      post_webhook(conn, room_started_payload(room_name))
+      post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
+      post_webhook(conn, participant_joined_payload(room_name, "user-bob"))
 
-      assert %{
-               "status" => "finalized",
-               "transcript_id" => ^transcript_id,
-               "segment_count" => 0
-             } = json_response(conn, 200)
+      room = Meetings.get_room_by_name(room_name)
+      assert length(Meetings.list_active_participants(room.id)) == 2
 
-      updated = Meetings.get_transcript(transcript.id)
-      # Zero-segment transcripts are completed synchronously by the summarizer
-      # (no LLM call needed), so status transitions directly to "complete"
-      assert updated.status == "complete"
-    end
-
-    test "finalizes transcript with accumulated segments", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
-
-      # Add some segments first
-      {:ok, _} =
-        Meetings.append_segment(transcript.id, %{
-          "participant_identity" => "user-1",
-          "text" => "Hello",
-          "start_time" => 1000,
-          "end_time" => 2000
-        })
-
-      {:ok, _} =
-        Meetings.append_segment(transcript.id, %{
-          "participant_identity" => "user-2",
-          "text" => "World",
-          "start_time" => 2000,
-          "end_time" => 3000
-        })
-
-      payload = room_finished_payload(room_id)
-      conn = post(conn, @livekit_webhook_path, payload)
+      conn = post_webhook(conn, room_finished_payload(room_name))
 
       assert %{
-               "status" => "finalized",
-               "segment_count" => 2
+               "status" => "recorded",
+               "event" => "room_finished"
              } = json_response(conn, 200)
+
+      room = Meetings.get_room_by_name(room_name)
+      assert room.status == "idle"
+      assert Meetings.list_active_participants(room.id) == []
     end
 
-    test "ignores when no active transcript exists", %{conn: conn} do
-      room_id = unique_room_id()
-      payload = room_finished_payload(room_id)
+    test "ignores finish for unknown room", %{conn: conn} do
+      conn = post_webhook(conn, room_finished_payload("nonexistent-room"))
 
-      conn = post(conn, @livekit_webhook_path, payload)
+      assert %{"status" => "ignored", "reason" => "unknown room"} = json_response(conn, 200)
+    end
+  end
 
-      assert %{"status" => "ignored", "reason" => "no active transcript"} =
-               json_response(conn, 200)
+  # ── Egress started tests ─────────────────────────────────────────────
+
+  describe "POST #{@livekit_webhook_path} — egress_started" do
+    test "updates recording status to active", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_start_#{System.unique_integer([:positive])}"
+
+      post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
+
+      conn = post_webhook(conn, egress_started_payload(egress_id, room_name))
+
+      assert %{
+               "status" => "recorded",
+               "event" => "egress_started",
+               "egress_id" => ^egress_id
+             } = json_response(conn, 200)
+
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "active"
     end
 
-    test "ignores already-finalized transcripts", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
-      {:ok, _} = Meetings.finalize_transcript(transcript.id)
+    test "ignores egress_started for unknown recording", %{conn: conn} do
+      conn = post_webhook(conn, egress_started_payload("EG_unknown", "some-room"))
 
-      payload = room_finished_payload(room_id)
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      # get_transcript_for_room only finds "recording" status, so this is ignored
-      assert %{"status" => "ignored", "reason" => "no active transcript"} =
-               json_response(conn, 200)
-    end
-
-    test "ignores event with no room identifier", %{conn: conn} do
-      payload = %{"event" => "room_finished", "room" => %{}}
-
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "ignored", "reason" => "no room identifier"} =
+      assert %{"status" => "ignored", "reason" => "unknown recording"} =
                json_response(conn, 200)
     end
   end
 
-  # ── transcription tests ─────────────────────────────────────────────────
+  # ── Egress ended tests ─────────────────────────────────────────────────
 
-  describe "POST #{@livekit_webhook_path} — transcription" do
-    test "appends segments to an existing transcript", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
-      transcript_id = transcript.id
+  describe "POST #{@livekit_webhook_path} — egress_ended" do
+    test "updates recording with file info and marks completed", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_end_#{System.unique_integer([:positive])}"
 
-      segments = [
-        sample_segment(%{"text" => "First segment", "participant_identity" => "user-1"}),
-        sample_segment(%{"text" => "Second segment", "participant_identity" => "user-2"})
-      ]
+      post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
 
-      payload = transcription_payload(room_id, segments)
-      conn = post(conn, @livekit_webhook_path, payload)
+      payload = egress_ended_payload(room_name, egress_id, "recordings/meeting.webm")
+      conn = post_webhook(conn, payload)
 
       assert %{
-               "status" => "appended",
-               "transcript_id" => ^transcript_id,
-               "segments_appended" => 2
+               "status" => "recorded",
+               "event" => "egress_ended",
+               "egress_id" => ^egress_id,
+               "recording_status" => "completed"
              } = json_response(conn, 200)
 
-      updated = Meetings.get_transcript(transcript.id)
-      assert length(updated.segments) == 2
-      assert Enum.at(updated.segments, 0)["text"] == "First segment"
-      assert Enum.at(updated.segments, 1)["text"] == "Second segment"
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "completed"
+      assert updated.file_path == "recordings/meeting.webm"
+      assert updated.duration_seconds == 120
+      assert updated.file_size == 5_242_880
+      assert updated.ended_at != nil
     end
 
-    test "auto-creates transcript if none exists", %{conn: conn} do
-      room_id = unique_room_id()
+    test "marks recording as failed on egress failure", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+      egress_id = "EG_fail_#{System.unique_integer([:positive])}"
 
-      segments = [sample_segment(%{"text" => "Auto-created transcript"})]
-      payload = transcription_payload(room_id, segments)
+      post_webhook(conn, room_started_payload(room_name))
+      room = Meetings.get_room_by_name(room_name)
+      _recording = create_recording_for_room(room, egress_id)
 
-      conn = post(conn, @livekit_webhook_path, payload)
+      conn = post_webhook(conn, egress_ended_failed_payload(egress_id))
 
       assert %{
-               "status" => "appended",
-               "transcript_id" => transcript_id,
-               "segments_appended" => 1
+               "status" => "recorded",
+               "event" => "egress_ended",
+               "recording_status" => "failed"
              } = json_response(conn, 200)
 
-      transcript = Meetings.get_transcript(transcript_id)
-      assert transcript != nil
-      assert transcript.room_id == room_id
-      assert length(transcript.segments) == 1
+      updated = Meetings.get_recording_by_egress_id(egress_id)
+      assert updated.status == "failed"
     end
 
-    test "normalizes segment fields", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
+    test "ignores egress_ended for unknown recording", %{conn: conn} do
+      payload = egress_ended_payload("some-room", "EG_unknown", "file.webm")
+      conn = post_webhook(conn, payload)
 
-      # Use alternative field names that LiveKit might send
-      segments = [
-        %{
-          "identity" => "user-alt",
-          "name" => "Bob",
-          "text" => "Alternative fields",
-          "start_time" => 500,
-          "end_time" => 1500,
-          "language" => "en"
-        }
-      ]
-
-      payload = transcription_payload(room_id, segments)
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "appended"} = json_response(conn, 200)
-
-      updated = Meetings.get_transcript(transcript.id)
-      seg = hd(updated.segments)
-      assert seg["participant_identity"] == "user-alt"
-      assert seg["speaker_name"] == "Bob"
-    end
-
-    test "handles multiple sequential transcription events", %{conn: conn} do
-      room_id = unique_room_id()
-      {:ok, transcript} = Meetings.create_transcript(%{room_id: room_id})
-
-      # First batch
-      payload1 =
-        transcription_payload(room_id, [
-          sample_segment(%{"text" => "Batch 1, seg 1"}),
-          sample_segment(%{"text" => "Batch 1, seg 2"})
-        ])
-
-      conn1 = post(conn, @livekit_webhook_path, payload1)
-      assert %{"segments_appended" => 2} = json_response(conn1, 200)
-
-      # Second batch
-      payload2 =
-        transcription_payload(room_id, [
-          sample_segment(%{"text" => "Batch 2, seg 1"})
-        ])
-
-      conn2 = post(conn, @livekit_webhook_path, payload2)
-      assert %{"segments_appended" => 1} = json_response(conn2, 200)
-
-      updated = Meetings.get_transcript(transcript.id)
-      assert length(updated.segments) == 3
-    end
-
-    test "ignores event with empty segments", %{conn: conn} do
-      room_id = unique_room_id()
-      payload = transcription_payload(room_id, [])
-
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "ignored"} = json_response(conn, 200)
-    end
-
-    test "ignores event with no room identifier", %{conn: conn} do
-      payload = %{
-        "event" => "transcription",
-        "room" => %{},
-        "segments" => [sample_segment()]
-      }
-
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "ignored"} = json_response(conn, 200)
+      assert %{"status" => "ignored", "reason" => "unknown recording"} =
+               json_response(conn, 200)
     end
   end
 
-  # ── Unhandled events ────────────────────────────────────────────────────
+  # ── Unhandled events ───────────────────────────────────────────────────
 
   describe "POST #{@livekit_webhook_path} — unhandled events" do
     test "ignores unknown event types", %{conn: conn} do
-      payload = %{"event" => "participant_joined", "room" => %{"sid" => "room-1"}}
+      payload = %{"event" => "track_published", "room" => %{"name" => "test"}}
+      conn = post_webhook(conn, payload)
 
-      conn = post(conn, @livekit_webhook_path, payload)
-
-      assert %{"status" => "ignored", "reason" => "unhandled event: participant_joined"} =
-               json_response(conn, 200)
+      assert %{"status" => "ignored", "reason" => "unhandled event"} = json_response(conn, 200)
     end
 
     test "ignores payloads without event field", %{conn: conn} do
-      conn = post(conn, @livekit_webhook_path, %{"foo" => "bar"})
+      conn = post_webhook(conn, %{"something" => "else"})
 
-      assert %{"status" => "ignored", "reason" => "no event field"} =
-               json_response(conn, 200)
+      assert %{"status" => "ignored", "reason" => "no event field"} = json_response(conn, 200)
+    end
+  end
+
+  # ── Signature verification tests ───────────────────────────────────────
+
+  describe "signature verification" do
+    test "rejects requests without authorization header", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post(@livekit_webhook_path, %{"event" => "room_started"})
+
+      assert %{"status" => "error", "reason" => "missing authorization header"} =
+               json_response(conn, 401)
+    end
+
+    test "rejects requests with invalid signature", %{conn: conn} do
+      bad_token = sign_request("wrong-secret")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", bad_token)
+        |> post(@livekit_webhook_path, %{"event" => "room_started"})
+
+      assert %{"status" => "error", "reason" => "invalid signature"} =
+               json_response(conn, 401)
+    end
+
+    test "rejects when LIVEKIT_WEBHOOK_SECRET is not set", %{conn: conn} do
+      System.delete_env("LIVEKIT_WEBHOOK_SECRET")
+
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "some-token")
+        |> post(@livekit_webhook_path, %{"event" => "room_started"})
+
+      assert %{"status" => "error", "reason" => "webhook secret not configured"} =
+               json_response(conn, 401)
+    end
+
+    test "verify_jwt_signature/2 returns true for valid token" do
+      secret = "test-secret"
+      token = sign_request(secret)
+      assert PlatformWeb.LivekitWebhookController.verify_jwt_signature(token, secret)
+    end
+
+    test "verify_jwt_signature/2 returns false for wrong secret" do
+      token = sign_request("correct-secret")
+      refute PlatformWeb.LivekitWebhookController.verify_jwt_signature(token, "wrong-secret")
+    end
+
+    test "verify_jwt_signature/2 returns false for malformed token" do
+      refute PlatformWeb.LivekitWebhookController.verify_jwt_signature("not-a-jwt", "secret")
+    end
+  end
+
+  # ── PubSub broadcast tests ────────────────────────────────────────────
+
+  describe "PubSub broadcasts" do
+    test "participant_joined broadcasts on room topic", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      {:ok, room} = Meetings.find_or_create_room(room_name)
+      Meetings.subscribe_room(room.id)
+
+      post_webhook(conn, participant_joined_payload(room_name, "user-alice", "Alice"))
+
+      assert_receive {:participant_joined, participant}
+      assert participant.identity == "user-alice"
+      assert participant.name == "Alice"
+    end
+
+    test "participant_left broadcasts on room topic", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      post_webhook(conn, participant_joined_payload(room_name, "user-alice"))
+
+      room = Meetings.get_room_by_name(room_name)
+      Meetings.subscribe_room(room.id)
+
+      post_webhook(conn, participant_left_payload(room_name, "user-alice"))
+
+      assert_receive {:participant_left, participant}
+      assert participant.identity == "user-alice"
+      assert participant.left_at != nil
+    end
+
+    test "room_finished broadcasts on room topic", %{conn: conn} do
+      room_name = "room-#{System.unique_integer([:positive])}"
+
+      post_webhook(conn, room_started_payload(room_name))
+
+      room = Meetings.get_room_by_name(room_name)
+      Meetings.subscribe_room(room.id)
+
+      post_webhook(conn, room_finished_payload(room_name))
+
+      assert_receive {:room_finished, finished_room}
+      assert finished_room.status == "idle"
     end
   end
 end

@@ -20,8 +20,11 @@ defmodule PlatformWeb.ChatLive do
   use PlatformWeb, :live_view
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
+  import PlatformWeb.Meeting.RecordingControls, only: [recording_button: 1, recording_banner: 1]
+  import PlatformWeb.Components.Meeting.TranscriptView, only: [transcript_panel: 1]
 
   alias Platform.Accounts
+  alias Platform.Agents.Agent
   alias Platform.Agents.WorkspaceBootstrap
   alias Ecto.Adapters.SQL.Sandbox
   alias Platform.Chat
@@ -29,6 +32,8 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.AttachmentStorage
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
+  alias Platform.Meetings
+  alias Platform.Meetings.PubSub, as: MeetingsPubSub
   alias Platform.Repo
 
   @message_limit 50
@@ -80,6 +85,18 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:canvases_by_message_id, %{})
       |> assign(:active_canvas, nil)
       |> assign(:show_canvases, false)
+      |> assign(:meeting_active, false)
+      |> assign(:meeting_participants, [])
+      |> assign(:meeting_participant_count, 0)
+      |> assign(:meeting_speaking_identities, MapSet.new())
+      |> assign(:meeting_invitable_agents, [])
+      |> assign(:recordings, [])
+      |> assign(:show_recordings, false)
+      |> assign(:playing_recording_id, nil)
+      |> assign(:playing_recording, nil)
+      |> assign(:transcripts, [])
+      |> assign(:active_transcript, nil)
+      |> assign(:show_transcript_panel, false)
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -100,6 +117,7 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:mention_source, "compose-form")
       |> assign(:push_permission, "unknown")
       |> assign(:unread_counts, if(user_id, do: Chat.unread_counts_for_user(user_id), else: %{}))
+      |> assign(:meeting_counts, %{})
       |> assign(:upload_dialog_open, false)
       |> assign(:upload_caption, "")
       |> assign(:lightbox_url, nil)
@@ -127,11 +145,22 @@ defmodule PlatformWeb.ChatLive do
 
     # Subscribe to all spaces (channels + DMs) so we can count unread messages
     # in background conversations (active space subscription happens in handle_params)
-    if connected?(socket) do
-      Enum.each(channels ++ dm_conversations, fn space ->
-        ChatPubSub.subscribe(space.id)
-      end)
-    end
+    socket =
+      if connected?(socket) do
+        all_spaces = channels ++ dm_conversations
+
+        Enum.each(all_spaces, fn space ->
+          ChatPubSub.subscribe(space.id)
+          MeetingsPubSub.subscribe_presence(space.id)
+        end)
+
+        # Load initial meeting counts for sidebar indicators
+        space_ids = Enum.map(all_spaces, & &1.id)
+        meeting_counts = Meetings.spaces_with_active_meetings(space_ids)
+        assign(socket, :meeting_counts, meeting_counts)
+      else
+        socket
+      end
 
     {:ok, socket}
   end
@@ -143,6 +172,7 @@ defmodule PlatformWeb.ChatLive do
       if prev = socket.assigns.active_space do
         ChatPubSub.unsubscribe(prev.id)
         Phoenix.PubSub.unsubscribe(Platform.PubSub, "active_agent:#{prev.id}")
+        MeetingsPubSub.unsubscribe_presence(prev.id)
 
         if connected?(socket) do
           ChatPresence.untrack_in_space(self(), prev.id, socket.assigns.user_id)
@@ -166,6 +196,7 @@ defmodule PlatformWeb.ChatLive do
       if connected?(socket) do
         ChatPubSub.subscribe(space.id)
         Phoenix.PubSub.subscribe(Platform.PubSub, "active_agent:#{space.id}")
+        MeetingsPubSub.subscribe_presence(space.id)
       end
 
       participant = ensure_participant(space.id, socket.assigns.user_id)
@@ -204,6 +235,14 @@ defmodule PlatformWeb.ChatLive do
 
       has_agent_participant = Enum.any?(participants, &(&1.participant_type == "agent"))
 
+      # Build list of agents in this space that have runtimes (invitable to meetings)
+      meeting_invitable_agents =
+        participants
+        |> Enum.filter(&(&1.participant_type == "agent"))
+        |> Enum.map(fn p -> Repo.get(Agent, p.participant_id) end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(& &1.runtime_id)
+
       online_count =
         if connected?(socket), do: ChatPresence.online_count(space.id), else: 0
 
@@ -220,6 +259,11 @@ defmodule PlatformWeb.ChatLive do
       # Resolve active agent indicator
       {active_agent_participant_id, active_agent_name} =
         resolve_active_agent(space.id, participants)
+
+      # Load meeting presence for this space
+      meeting_participants = Meetings.list_active_participants_for_space(space.id)
+      meeting_active = meeting_participants != []
+      meeting_participant_count = length(meeting_participants)
 
       # Refresh sidebar lists
       channels = Chat.list_spaces(kind: "channel")
@@ -263,6 +307,17 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:canvases_by_message_id, canvases_by_message_id)
        |> assign(:active_canvas, nil)
        |> assign(:show_canvases, false)
+       |> assign(:meeting_active, meeting_active)
+       |> assign(:meeting_participants, meeting_participants)
+       |> assign(:meeting_participant_count, meeting_participant_count)
+       |> assign(:meeting_invitable_agents, meeting_invitable_agents)
+       |> assign(:recordings, Meetings.list_recordings_for_space(space.id))
+       |> assign(:show_recordings, false)
+       |> assign(:playing_recording_id, nil)
+       |> assign(:playing_recording, nil)
+       |> assign(:transcripts, Meetings.list_transcripts_for_space(space.id))
+       |> assign(:active_transcript, nil)
+       |> assign(:show_transcript_panel, false)
        |> assign(:active_agent_participant_id, active_agent_participant_id)
        |> assign(:active_agent_name, active_agent_name)
        |> assign(:mobile_browser_open, false)
@@ -771,6 +826,52 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, assign(socket, :show_canvases, !socket.assigns.show_canvases)}
   end
 
+  def handle_event("toggle_recordings_panel", _params, socket) do
+    show = !socket.assigns.show_recordings
+
+    socket =
+      if show && socket.assigns.active_space do
+        recordings = Meetings.list_recordings_for_space(socket.assigns.active_space.id)
+        assign(socket, recordings: recordings, show_recordings: true)
+      else
+        assign(socket, :show_recordings, show)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("play-recording", %{"recording-id" => recording_id}, socket) do
+    recording = Meetings.get_recording(recording_id)
+
+    {:noreply,
+     socket
+     |> assign(:playing_recording_id, recording_id)
+     |> assign(:playing_recording, recording)}
+  end
+
+  def handle_event("stop-playback", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:playing_recording_id, nil)
+     |> assign(:playing_recording, nil)}
+  end
+
+  def handle_event("view-transcript", %{"transcript-id" => transcript_id}, socket) do
+    transcript = Meetings.get_transcript_with_segments(transcript_id)
+
+    {:noreply,
+     socket
+     |> assign(:active_transcript, transcript)
+     |> assign(:show_transcript_panel, true)}
+  end
+
+  def handle_event("close-transcript-panel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_transcript, nil)
+     |> assign(:show_transcript_panel, false)}
+  end
+
   def handle_event("toggle_watch", _params, socket) do
     space = socket.assigns.active_space
     new_watch = !space.watch_enabled
@@ -1207,6 +1308,70 @@ defmodule PlatformWeb.ChatLive do
     end
   end
 
+  # ── Meeting join/leave from chat page ─────────────────────────────────────
+
+  def handle_event("join-meeting-click", _params, socket) do
+    space = socket.assigns.active_space
+
+    if space && Meetings.enabled?() do
+      case Meetings.ensure_room(space.id) do
+        {:ok, room} ->
+          user_id = socket.assigns.user_id
+          display_name = socket.assigns[:current_user] || user_id
+
+          case Meetings.generate_token(room, %{identity: user_id, name: display_name}) do
+            {:ok, token} ->
+              {:noreply,
+               push_event(socket, "join-meeting", %{
+                 token: token,
+                 url: Meetings.livekit_url(),
+                 room_name: room.livekit_room_name,
+                 space_slug: space.slug
+               })}
+
+            {:error, _reason} ->
+              {:noreply, put_flash(socket, :error, "Could not generate meeting token.")}
+          end
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Could not create meeting room.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("invite-agent-to-meeting", %{"agent_id" => agent_id}, socket) do
+    space = socket.assigns.active_space
+
+    if space && Meetings.enabled?() do
+      case {Repo.get(Agent, agent_id), Meetings.ensure_room(space.id)} do
+        {%Agent{runtime_id: rid} = agent, {:ok, room}} when not is_nil(rid) ->
+          case Meetings.dispatch_meeting_join(room, agent, space_id: space.id) do
+            {:ok, :dispatched} ->
+              {:noreply, put_flash(socket, :info, "Invited #{agent.name} to the meeting.")}
+
+            {:error, :runtime_offline} ->
+              {:noreply, put_flash(socket, :error, "#{agent.name}'s runtime is offline.")}
+
+            {:error, reason} ->
+              {:noreply, put_flash(socket, :error, "Could not invite agent: #{reason}")}
+          end
+
+        {nil, _} ->
+          {:noreply, put_flash(socket, :error, "Agent not found.")}
+
+        {%Agent{runtime_id: nil}, _} ->
+          {:noreply, put_flash(socket, :error, "Agent has no runtime configured.")}
+
+        {_, {:error, _}} ->
+          {:noreply, put_flash(socket, :error, "Could not create meeting room.")}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({:new_message, msg}, socket) do
     active_space = socket.assigns.active_space
@@ -1379,6 +1544,10 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, socket}
   end
 
+  def handle_info({:active_speakers_changed, identities}, socket) do
+    {:noreply, assign(socket, :meeting_speaking_identities, MapSet.new(identities))}
+  end
+
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
     online_count =
       if space = socket.assigns.active_space do
@@ -1469,6 +1638,42 @@ defmodule PlatformWeb.ChatLive do
      |> assign(:active_agent_name, name)}
   end
 
+  # Meeting presence updates from Meetings.PubSub
+  def handle_info(
+        {:meeting_presence_update, %{space_id: space_id, active: active, count: count}},
+        socket
+      ) do
+    # Always update sidebar meeting counts
+    meeting_counts =
+      if active and count > 0 do
+        Map.put(socket.assigns.meeting_counts, space_id, count)
+      else
+        Map.delete(socket.assigns.meeting_counts, space_id)
+      end
+
+    socket = assign(socket, :meeting_counts, meeting_counts)
+
+    # If this is the active space, also update detailed presence
+    socket =
+      if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
+        meeting_participants =
+          if active, do: Meetings.list_active_participants_for_space(space_id), else: []
+
+        speaking =
+          if active, do: socket.assigns.meeting_speaking_identities, else: MapSet.new()
+
+        socket
+        |> assign(:meeting_active, active)
+        |> assign(:meeting_participants, meeting_participants)
+        |> assign(:meeting_participant_count, count)
+        |> assign(:meeting_speaking_identities, speaking)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
@@ -1530,6 +1735,14 @@ defmodule PlatformWeb.ChatLive do
           >
             <span class="text-base-content/40">#</span>
             <span class="truncate flex-1">{space.name}</span>
+            <span
+              :if={Map.has_key?(@meeting_counts, space.id)}
+              class="flex-shrink-0 flex items-center gap-0.5 text-success"
+              title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1568,6 +1781,14 @@ defmodule PlatformWeb.ChatLive do
             ]}
           >
             <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+            <span
+              :if={Map.has_key?(@meeting_counts, space.id)}
+              class="flex-shrink-0 flex items-center gap-0.5 text-success"
+              title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+            >
+              <span class="hero-phone-solid size-3"></span>
+              <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+            </span>
             <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
               <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                 {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1618,6 +1839,14 @@ defmodule PlatformWeb.ChatLive do
             >
               <span class="text-base-content/40 text-lg">#</span>
               <span class="truncate flex-1">{space.name}</span>
+              <span
+                :if={Map.has_key?(@meeting_counts, space.id)}
+                class="flex-shrink-0 flex items-center gap-0.5 text-success"
+                title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1640,6 +1869,14 @@ defmodule PlatformWeb.ChatLive do
               ]}
             >
               <span class="truncate flex-1">{sidebar_display_name(space, @user_id)}</span>
+              <span
+                :if={Map.has_key?(@meeting_counts, space.id)}
+                class="flex-shrink-0 flex items-center gap-0.5 text-success"
+                title={"#{Map.get(@meeting_counts, space.id, 0)} in meeting"}
+              >
+                <span class="hero-phone-solid size-3"></span>
+                <span class="text-[0.6rem] font-bold">{Map.get(@meeting_counts, space.id, 0)}</span>
+              </span>
               <%= if unread_label(Map.get(@unread_counts, space.id, 0)) do %>
                 <span class="ml-1 flex-shrink-0 min-w-[1.125rem] h-[1.125rem] rounded-full bg-primary text-primary-content text-[0.6rem] font-bold flex items-center justify-center px-1 leading-none">
                   {unread_label(Map.get(@unread_counts, space.id, 0))}
@@ -1704,6 +1941,131 @@ defmodule PlatformWeb.ChatLive do
                   — {length(Enum.filter(@space_participants, &is_nil(&1.left_at)))} members
                 </span>
               </span>
+
+              <%!-- Meeting presence indicator --%>
+              <span
+                :if={@meeting_active}
+                class="flex items-center gap-1.5 ml-2 px-2 py-0.5 rounded-full bg-success/10 text-success text-xs font-medium cursor-pointer hover:bg-success/20 transition-colors"
+                title={"#{@meeting_participant_count} in meeting"}
+              >
+                <span class="relative flex h-2 w-2">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75">
+                  </span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
+                </span>
+                <%!-- Participant avatars (max 3) --%>
+                <span
+                  :for={p <- Enum.take(@meeting_participants, 3)}
+                  class="relative"
+                  title={p.name || p.identity}
+                >
+                  <%!-- Speaking ring --%>
+                  <span class={[
+                    "inline-flex items-center justify-center size-5 rounded-full text-[0.6rem] font-bold ring-1 transition-all",
+                    if(String.starts_with?(p.identity || "", "agent:"),
+                      do: "bg-primary/20 text-primary ring-primary/30",
+                      else: "bg-success/20 text-success ring-success/30"
+                    ),
+                    if(MapSet.member?(@meeting_speaking_identities, p.identity),
+                      do:
+                        if(String.starts_with?(p.identity || "", "agent:"),
+                          do: "ring-2 ring-primary animate-pulse",
+                          else: "ring-2 ring-success animate-pulse"
+                        ),
+                      else: ""
+                    )
+                  ]}>
+                    {String.first(p.name || p.identity || "?")}
+                  </span>
+                  <%!-- AI badge for agent participants --%>
+                  <span
+                    :if={String.starts_with?(p.identity || "", "agent:")}
+                    class="absolute -bottom-0.5 -right-0.5 flex items-center justify-center size-2.5 rounded-full bg-primary text-[0.35rem] font-bold text-primary-content"
+                    title="AI Agent"
+                  >
+                    AI
+                  </span>
+                </span>
+                <span :if={@meeting_participant_count > 3} class="text-[0.65rem]">
+                  +{@meeting_participant_count - 3}
+                </span>
+                <span class="text-[0.65rem]">In call</span>
+              </span>
+
+              <%!-- Join/Leave meeting button --%>
+              <%= if Meetings.enabled?() do %>
+                <%= if @in_meeting && @meeting_space_slug == @active_space.slug do %>
+                  <button
+                    phx-click="leave-meeting-click"
+                    class="ml-2 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-error/10 text-error hover:bg-error/20 transition-colors"
+                    title="Leave meeting"
+                  >
+                    <span class="hero-phone-x-mark size-3.5"></span>
+                    <span>Leave</span>
+                  </button>
+                <% else %>
+                  <button
+                    phx-click="join-meeting-click"
+                    class="ml-2 flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-success/10 text-success hover:bg-success/20 transition-colors"
+                    title="Join meeting"
+                  >
+                    <span class="hero-phone size-3.5"></span>
+                    <span>{if @meeting_active, do: "Join", else: "Start call"}</span>
+                  </button>
+                <% end %>
+              <% end %>
+
+              <%!-- Invite Agent to meeting dropdown --%>
+              <%= if @in_meeting && @meeting_space_slug == @active_space.slug && @meeting_invitable_agents != [] do %>
+                <div class="dropdown dropdown-end ml-1">
+                  <label
+                    tabindex="0"
+                    class="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
+                    title="Invite an agent to the meeting"
+                  >
+                    <span class="hero-cpu-chip size-3.5"></span>
+                    <span>Invite Agent</span>
+                  </label>
+                  <ul
+                    tabindex="0"
+                    class="dropdown-content z-[1] menu p-2 shadow-lg bg-base-200 rounded-box w-52 mt-2"
+                  >
+                    <%= for agent <- @meeting_invitable_agents do %>
+                      <li>
+                        <button
+                          phx-click="invite-agent-to-meeting"
+                          phx-value-agent_id={agent.id}
+                          class="flex items-center gap-2 text-sm"
+                        >
+                          <span class="inline-flex items-center justify-center size-6 rounded-full bg-primary/20 text-[0.6rem] font-bold">
+                            {String.first(agent.name || "?")}
+                          </span>
+                          <span>{agent.name}</span>
+                        </button>
+                      </li>
+                    <% end %>
+                  </ul>
+                </div>
+              <% end %>
+
+              <%!-- Recording controls --%>
+              <.recording_button
+                recording_active={@recording_active}
+                can_record={true}
+                in_meeting={@in_meeting && @meeting_space_slug == @active_space.slug}
+              />
+
+              <%!-- Recording indicator (visible to all when someone else is recording) --%>
+              <%= if !@in_meeting && @recording_active do %>
+                <span class="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-error/10 text-error">
+                  <span class="relative flex items-center">
+                    <span class="absolute inline-flex size-2 rounded-full bg-error animate-ping opacity-75">
+                    </span>
+                    <span class="relative inline-flex size-2 rounded-full bg-error"></span>
+                  </span>
+                  <span>REC</span>
+                </span>
+              <% end %>
 
               <%!-- Promote to channel button for groups --%>
               <form
@@ -1775,6 +2137,35 @@ defmodule PlatformWeb.ChatLive do
               >
                 <span class="hero-bookmark-solid size-4"></span>
                 <span>{length(@pins)} pinned</span>
+              </button>
+
+              <button
+                :if={@recordings != []}
+                phx-click="toggle_recordings_panel"
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_recordings && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-video-camera-solid size-4"></span>
+                <span class="hidden md:inline">{length(@recordings)}</span>
+              </button>
+
+              <button
+                :if={@transcripts != []}
+                phx-click={
+                  if @show_transcript_panel, do: "close-transcript-panel", else: "view-transcript"
+                }
+                phx-value-transcript-id={
+                  if !@show_transcript_panel && @transcripts != [], do: List.first(@transcripts).id
+                }
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_transcript_panel && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-document-text-solid size-4"></span>
+                <span class="hidden md:inline">{length(@transcripts)}</span>
               </button>
 
               <%!-- Active agent indicator --%>
@@ -2029,6 +2420,49 @@ defmodule PlatformWeb.ChatLive do
                 </button>
               </.form>
             </div>
+          </div>
+
+          <%!-- Recordings panel --%>
+          <div
+            :if={@show_recordings}
+            class="border-b border-base-300 bg-base-200 px-5 py-3"
+          >
+            <div class="space-y-2">
+              <div class="flex items-center justify-between">
+                <p class="text-xs font-semibold uppercase tracking-widest text-base-content/50">
+                  Recordings
+                </p>
+                <button
+                  phx-click="toggle_recordings_panel"
+                  class="text-base-content/40 hover:text-base-content transition-colors"
+                >
+                  <span class="hero-x-mark size-4"></span>
+                </button>
+              </div>
+
+              <%= if @playing_recording do %>
+                <PlatformWeb.RecordingComponents.recording_player recording={@playing_recording} />
+              <% end %>
+
+              <PlatformWeb.RecordingComponents.recording_list
+                recordings={@recordings}
+                playing_recording_id={@playing_recording_id}
+              />
+            </div>
+          </div>
+
+          <%!-- Recording banner --%>
+          <.recording_banner recording_active={@recording_active} />
+
+          <%!-- Transcript panel --%>
+          <div
+            :if={@show_transcript_panel && @active_transcript}
+            class="border-b border-base-300 bg-base-200 max-h-96 overflow-hidden"
+          >
+            <.transcript_panel
+              transcript={@active_transcript}
+              on_close="close-transcript-panel"
+            />
           </div>
 
           <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>

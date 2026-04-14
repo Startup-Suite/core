@@ -1,0 +1,96 @@
+defmodule Platform.Meetings.PubSub do
+  @moduledoc """
+  PubSub topic helpers for the Meetings domain.
+
+  ## Topics
+
+    * `"meetings:room:{room_id}"` — per-room event stream (participant join/leave,
+      room status changes). Used by the full meeting panel.
+    * `"meetings:presence:{space_id}"` — lightweight per-space presence topic.
+      Carries only participant counts for sidebar indicators.
+
+  ## Events
+
+  | Topic                              | Event                                    | Payload                                |
+  |------------------------------------|------------------------------------------|----------------------------------------|
+  | `meetings:room:{room_id}`          | `{:participant_joined, p}`               | `%Meetings.Participant{}`              |
+  | `meetings:room:{room_id}`          | `{:participant_left, p}`                 | `%Meetings.Participant{}`              |
+  | `meetings:room:{room_id}`          | `{:room_finished, room}`                 | `%Meetings.Room{}`                     |
+  | `meetings:room:{room_id}`          | `{:room_activated, room}`                | `%Meetings.Room{}`                     |
+  | `meetings:presence:{space_id}`     | `{:meeting_presence_update, data}`       | `%{space_id, active, count}`           |
+  | `meetings:room:{room_id}`          | `{:recording_started, rec}`              | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_stopped, rec}`              | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_completed, rec}`            | `%Meetings.Recording{}`               |
+  | `meetings:room:{room_id}`          | `{:recording_failed, rec}`               | `%Meetings.Recording{}`               |
+  """
+
+  @pubsub Platform.PubSub
+
+  # ── Topics ──────────────────────────────────────────────────────────────────
+
+  @doc "Returns the PubSub topic for a specific meeting room."
+  @spec room_topic(binary()) :: String.t()
+  def room_topic(room_id), do: "meetings:room:#{room_id}"
+
+  @doc "Returns the lightweight presence topic for a space."
+  @spec presence_topic(binary()) :: String.t()
+  def presence_topic(space_id), do: "meetings:presence:#{space_id}"
+
+  @doc "Returns the recording topic for a specific room."
+  @spec recording_topic(binary()) :: String.t()
+  def recording_topic(room_id), do: "meetings:recording:#{room_id}"
+
+  # ── Subscribe ────────────────────────────────────────────────────────────────
+
+  @doc "Subscribe to all events for a specific meeting room."
+  @spec subscribe_room(binary()) :: :ok | {:error, term()}
+  def subscribe_room(room_id) do
+    Phoenix.PubSub.subscribe(@pubsub, room_topic(room_id))
+  end
+
+  @doc "Subscribe to lightweight meeting presence for a space."
+  @spec subscribe_presence(binary()) :: :ok | {:error, term()}
+  def subscribe_presence(space_id) do
+    Phoenix.PubSub.subscribe(@pubsub, presence_topic(space_id))
+  end
+
+  @doc "Subscribe to recording events for a specific room."
+  @spec subscribe_recording(binary()) :: :ok | {:error, term()}
+  def subscribe_recording(room_id) do
+    Phoenix.PubSub.subscribe(@pubsub, recording_topic(room_id))
+  end
+
+  @doc "Unsubscribe from a meeting room topic."
+  @spec unsubscribe_room(binary()) :: :ok
+  def unsubscribe_room(room_id) do
+    Phoenix.PubSub.unsubscribe(@pubsub, room_topic(room_id))
+  end
+
+  @doc "Unsubscribe from a space's meeting presence topic."
+  @spec unsubscribe_presence(binary()) :: :ok
+  def unsubscribe_presence(space_id) do
+    Phoenix.PubSub.unsubscribe(@pubsub, presence_topic(space_id))
+  end
+
+  # ── Broadcast ────────────────────────────────────────────────────────────────
+
+  @doc "Broadcast an event to all subscribers of a meeting room."
+  @spec broadcast_room(binary(), term()) :: :ok
+  def broadcast_room(room_id, event) do
+    Phoenix.PubSub.broadcast(@pubsub, room_topic(room_id), event)
+  end
+
+  @doc "Broadcast a recording lifecycle event for a room."
+  @spec broadcast_recording_update(binary(), term()) :: :ok
+  def broadcast_recording_update(room_id, event) do
+    # Broadcast on both the room topic and the dedicated recording topic
+    Phoenix.PubSub.broadcast(@pubsub, room_topic(room_id), event)
+    Phoenix.PubSub.broadcast(@pubsub, recording_topic(room_id), event)
+  end
+
+  @doc "Broadcast a lightweight presence update for a space."
+  @spec broadcast_presence(binary(), term()) :: :ok
+  def broadcast_presence(space_id, event) do
+    Phoenix.PubSub.broadcast(@pubsub, presence_topic(space_id), event)
+  end
+end

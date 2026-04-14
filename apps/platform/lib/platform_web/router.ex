@@ -39,6 +39,7 @@ defmodule PlatformWeb.Router do
 
     get("/chat/attachments/:id", ChatAttachmentController, :show)
     get("/artifacts/preview", ArtifactPreviewController, :show)
+    get("/recordings/:id", RecordingController, :show)
     get("/api/transcripts/:id/download", TranscriptController, :show)
 
     live_session :authenticated,

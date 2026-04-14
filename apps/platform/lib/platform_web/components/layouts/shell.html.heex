@@ -317,5 +317,121 @@
     <main class="flex-1 overflow-hidden">
       {@inner_content}
     </main>
+
+    <%!-- Meeting bar — persistent across navigation --%>
+    <%= if @in_meeting do %>
+      <div
+        class={[
+          "fixed bottom-0 inset-x-0 z-50 flex items-center justify-between gap-3 border-t border-base-300 bg-base-200 px-4 py-2 shadow-lg",
+          if(String.starts_with?(@current_path, "/chat/#{@meeting_space_slug}"),
+            do: "hidden",
+            else: ""
+          )
+        ]}
+        id="meeting-bar"
+      >
+        <%!-- Left: meeting info --%>
+        <div class="flex items-center gap-3 min-w-0">
+          <span class="inline-block size-2 rounded-full bg-success animate-pulse flex-shrink-0">
+          </span>
+          <div class="min-w-0">
+            <span class="text-sm font-medium text-base-content truncate block">
+              {@meeting_space_name || "Meeting"}
+            </span>
+            <span id="meeting-duration" class="text-xs text-base-content/50">0:00</span>
+            <%= if @recording_active do %>
+              <span class="inline-flex items-center gap-1 text-xs text-error">
+                <span class="size-1.5 rounded-full bg-error animate-pulse"></span> REC
+              </span>
+            <% end %>
+          </div>
+        </div>
+
+        <%!-- Center: media controls --%>
+        <div class="flex items-center gap-2">
+          <button
+            phx-click="toggle-meeting-mic"
+            class={[
+              "rounded-full p-2 transition-colors",
+              if(@meeting_mic_enabled,
+                do: "bg-base-300 text-base-content hover:bg-base-content/20",
+                else: "bg-error/20 text-error hover:bg-error/30"
+              )
+            ]}
+            title={if @meeting_mic_enabled, do: "Mute microphone", else: "Unmute microphone"}
+          >
+            <span class={[
+              "size-4",
+              if(@meeting_mic_enabled, do: "hero-microphone", else: "hero-microphone-slash")
+            ]}>
+            </span>
+          </button>
+
+          <button
+            phx-click="toggle-meeting-camera"
+            class={[
+              "rounded-full p-2 transition-colors",
+              if(@meeting_camera_enabled,
+                do: "bg-base-300 text-base-content hover:bg-base-content/20",
+                else: "bg-base-300 text-base-content/50 hover:bg-base-content/20"
+              )
+            ]}
+            title={if @meeting_camera_enabled, do: "Turn off camera", else: "Turn on camera"}
+          >
+            <span class={[
+              "size-4",
+              if(@meeting_camera_enabled,
+                do: "hero-video-camera",
+                else: "hero-video-camera-slash"
+              )
+            ]}>
+            </span>
+          </button>
+
+          <%!-- Record button --%>
+          <%= if @recording_active do %>
+            <button
+              phx-click="stop-recording-click"
+              class="rounded-full p-2 transition-colors bg-error/20 text-error hover:bg-error/30 relative"
+              title="Stop recording"
+            >
+              <span class="size-4 hero-stop-circle"></span>
+              <span class="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-error animate-pulse">
+              </span>
+            </button>
+          <% else %>
+            <button
+              phx-click="start-recording-click"
+              class="rounded-full p-2 transition-colors bg-base-300 text-base-content hover:bg-base-content/20"
+              title="Start recording"
+            >
+              <span class="size-4 hero-stop-circle text-error/60"></span>
+            </button>
+          <% end %>
+        </div>
+
+        <%!-- Right: navigation + leave --%>
+        <div class="flex items-center gap-2">
+          <.link
+            navigate={"/chat/#{@meeting_space_slug}"}
+            class="rounded-lg px-3 py-1.5 text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+          >
+            Return to call
+          </.link>
+
+          <button
+            phx-click="leave-meeting-click"
+            class="rounded-lg px-3 py-1.5 text-xs font-medium bg-error/10 text-error hover:bg-error/20 transition-colors"
+          >
+            Leave
+          </button>
+        </div>
+      </div>
+    <% end %>
+  </div>
+
+  <%!-- Root-level meeting infrastructure (always present, outside layout flow) --%>
+  <div id="meeting-root" phx-hook="MeetingRoom" class="hidden">
+    <div id="meeting-media"></div>
   </div>
 </div>
