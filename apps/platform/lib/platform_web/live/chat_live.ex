@@ -2150,6 +2150,16 @@ defmodule PlatformWeb.ChatLive do
                 </div>
               </div>
             </div>
+            <%!-- Join Meeting button (meetings enabled, not in meeting, no active indicator) --%>
+            <button
+              :if={@meetings_enabled && !@in_meeting && !@meeting_active}
+              phx-click="join_meeting"
+              class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium text-base-content/60 hover:text-primary hover:bg-primary/10 transition-colors"
+              title="Start or join a meeting in this space"
+            >
+              <span class="hero-video-camera size-4"></span>
+              <span class="hidden md:inline">Meet</span>
+            </button>
 
             <div class="flex flex-shrink-0 items-center gap-3 text-xs text-base-content/50">
               <.form
@@ -3468,6 +3478,194 @@ defmodule PlatformWeb.ChatLive do
 
             <div class="flex-1 overflow-y-auto px-4 py-4">
               <.canvas_document canvas={@active_canvas} dom_id_base="chat-live-canvas-overlay" />
+            </div>
+          </div>
+        <% end %>
+
+        <%!-- Desktop: Meeting panel (side column) --%>
+        <div
+          :if={@in_meeting}
+          id="meeting-panel"
+          phx-hook="MeetingRoom"
+          class="hidden lg:flex w-96 flex-shrink-0 flex-col border-l border-base-300 bg-base-100"
+        >
+          <%!-- Panel header --%>
+          <div class="flex h-12 flex-shrink-0 items-center justify-between border-b border-base-300 px-4">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="bg-success rounded-full w-2 h-2 animate-pulse flex-shrink-0"></span>
+              <p class="text-sm font-semibold truncate">
+                {(@active_space && @active_space.name) || "Meeting"}
+              </p>
+              <span id="meeting-duration" class="text-xs text-base-content/50 tabular-nums">
+                0:00
+              </span>
+            </div>
+            <button
+              phx-click="leave_meeting"
+              class="btn btn-ghost btn-xs text-error"
+              title="Leave meeting"
+            >
+              <span class="hero-x-mark size-4"></span>
+            </button>
+          </div>
+
+          <%!-- Participant grid --%>
+          <div class="flex-1 overflow-y-auto p-3">
+            <div id="meeting-participants" class="meeting-participant-grid gap-2">
+              <%!-- Participant tiles injected by meeting_panel.js --%>
+            </div>
+
+            <%!-- Meeting captions overlay --%>
+            <div
+              id="meeting-captions"
+              phx-hook="MeetingCaptions"
+              class="mt-2 rounded-lg bg-base-300/80 px-3 py-2 text-sm opacity-0 pointer-events-none transition-opacity duration-300"
+            >
+            </div>
+          </div>
+
+          <%!-- Controls bar --%>
+          <div class="flex items-center justify-center gap-2 border-t border-base-300 px-4 py-3">
+            <button
+              phx-click="toggle_mic"
+              class={[
+                "meeting-control-btn rounded-full p-2.5 transition-colors",
+                if(@mic_enabled,
+                  do: "bg-base-200 hover:bg-base-300 text-base-content",
+                  else: "bg-error/20 text-error hover:bg-error/30"
+                )
+              ]}
+              title={if @mic_enabled, do: "Mute microphone", else: "Unmute microphone"}
+            >
+              <span class={[
+                "size-5",
+                if(@mic_enabled, do: "hero-microphone", else: "hero-microphone-slash")
+              ]}>
+              </span>
+            </button>
+
+            <button
+              phx-click="toggle_camera"
+              class={[
+                "meeting-control-btn rounded-full p-2.5 transition-colors",
+                if(@camera_enabled,
+                  do: "bg-base-200 hover:bg-base-300 text-base-content",
+                  else: "bg-error/20 text-error hover:bg-error/30"
+                )
+              ]}
+              title={if @camera_enabled, do: "Turn off camera", else: "Turn on camera"}
+            >
+              <span class={[
+                "size-5",
+                if(@camera_enabled, do: "hero-video-camera", else: "hero-video-camera-slash")
+              ]}>
+              </span>
+            </button>
+
+            <button
+              phx-click="toggle_screen_share"
+              class={[
+                "meeting-control-btn rounded-full p-2.5 transition-colors",
+                if(@screen_share_enabled,
+                  do: "bg-primary/20 text-primary hover:bg-primary/30",
+                  else: "bg-base-200 hover:bg-base-300 text-base-content"
+                )
+              ]}
+              title={if @screen_share_enabled, do: "Stop sharing screen", else: "Share screen"}
+            >
+              <span class="hero-computer-desktop size-5"></span>
+            </button>
+
+            <button
+              phx-click="leave_meeting"
+              class="meeting-control-btn rounded-full p-2.5 bg-error text-error-content hover:bg-error/80 transition-colors"
+              title="Leave meeting"
+            >
+              <span class="hero-phone-x-mark size-5"></span>
+            </button>
+          </div>
+
+          <%!-- Hidden media container for audio elements --%>
+          <div id="meeting-media" class="hidden"></div>
+        </div>
+
+        <%!-- Mobile/Tablet: Meeting overlay --%>
+        <%= if @in_meeting do %>
+          <div class="fixed inset-0 z-50 flex flex-col bg-base-100 lg:hidden">
+            <header class="flex h-12 flex-shrink-0 items-center justify-between border-b border-base-300 px-4 safe-area-top">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="bg-success rounded-full w-2 h-2 animate-pulse flex-shrink-0"></span>
+                <p class="text-sm font-semibold truncate">
+                  {(@active_space && @active_space.name) || "Meeting"}
+                </p>
+                <span id="meeting-duration-mobile" class="text-xs text-base-content/50 tabular-nums">
+                  0:00
+                </span>
+              </div>
+              <button phx-click="leave_meeting" class="btn btn-ghost btn-xs" title="Back to chat">
+                <span class="hero-arrow-left size-4"></span>
+                <span class="text-xs">Chat</span>
+              </button>
+            </header>
+
+            <div class="flex-1 overflow-y-auto p-4">
+              <div class="meeting-participant-grid gap-2"></div>
+            </div>
+
+            <div class="flex items-center justify-center gap-3 border-t border-base-300 px-4 py-4 safe-area-bottom">
+              <button
+                phx-click="toggle_mic"
+                class={[
+                  "meeting-control-btn rounded-full p-3 transition-colors",
+                  if(@mic_enabled,
+                    do: "bg-base-200 text-base-content",
+                    else: "bg-error/20 text-error"
+                  )
+                ]}
+              >
+                <span class={[
+                  "size-6",
+                  if(@mic_enabled, do: "hero-microphone", else: "hero-microphone-slash")
+                ]}>
+                </span>
+              </button>
+
+              <button
+                phx-click="toggle_camera"
+                class={[
+                  "meeting-control-btn rounded-full p-3 transition-colors",
+                  if(@camera_enabled,
+                    do: "bg-base-200 text-base-content",
+                    else: "bg-error/20 text-error"
+                  )
+                ]}
+              >
+                <span class={[
+                  "size-6",
+                  if(@camera_enabled, do: "hero-video-camera", else: "hero-video-camera-slash")
+                ]}>
+                </span>
+              </button>
+
+              <button
+                phx-click="toggle_screen_share"
+                class={[
+                  "meeting-control-btn rounded-full p-3 transition-colors",
+                  if(@screen_share_enabled,
+                    do: "bg-primary/20 text-primary",
+                    else: "bg-base-200 text-base-content"
+                  )
+                ]}
+              >
+                <span class="hero-computer-desktop size-6"></span>
+              </button>
+
+              <button
+                phx-click="leave_meeting"
+                class="meeting-control-btn rounded-full p-3 bg-error text-error-content hover:bg-error/80 transition-colors"
+              >
+                <span class="hero-phone-x-mark size-6"></span>
+              </button>
             </div>
           </div>
         <% end %>
