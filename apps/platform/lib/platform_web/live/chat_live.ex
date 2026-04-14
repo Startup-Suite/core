@@ -31,6 +31,7 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.PubSub, as: ChatPubSub
   alias Platform.Meetings
   alias Platform.Meetings.PubSub, as: MeetingsPubSub
+  alias Platform.Meetings.State, as: MeetingState
   alias Platform.Repo
 
   @message_limit 50
@@ -590,6 +591,82 @@ defmodule PlatformWeb.ChatLive do
 
   def handle_event("dismiss_meeting_agent", %{"agent-id" => agent_id}, socket) do
     space = socket.assigns.active_space
+
+    with {:ok, room} <- Platform.Meetings.ensure_room(space.id),
+         {:ok, _participant} <- Platform.Meetings.dismiss_agent(room, agent_id) do
+      {:noreply, socket}
+    else
+      _ ->
+        {:noreply, put_flash(socket, :error, "Failed to dismiss agent")}
+    end
+  end
+
+  def handle_event("join_meeting", _params, socket) do
+    space = socket.assigns.active_space
+    participant = socket.assigns.current_participant
+
+    with {:ok, room} <- Meetings.ensure_room(space.id),
+         identity = "user:#{socket.assigns.user_id}",
+         name = participant.display_name || "User",
+         {:ok, token} <- Meetings.generate_token(room, %{identity: identity, name: name}) do
+      socket =
+        socket
+        |> assign(:in_meeting, true)
+        |> push_event("join-meeting", %{
+          token: token,
+          url: Meetings.livekit_url(),
+          room_name: room.livekit_room_name,
+          space_slug: space.slug
+        })
+
+      # Broadcast to ShellLive so the mini-bar appears
+      MeetingState.broadcast_joined(socket.assigns.user_id, space.id, space.name)
+
+      {:noreply, socket}
+    else
+      {:error, reason} ->
+        require Logger
+        Logger.warning("[ChatLive] Failed to join meeting: #{inspect(reason)}")
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("leave_meeting", _params, socket) do
+    # Broadcast to ShellLive so the mini-bar disappears
+    MeetingState.broadcast_left(socket.assigns.user_id)
+
+    socket =
+      socket
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+      |> push_event("leave-meeting", %{})
+
+    {:noreply, socket}
+  end
+
+  # Handle meeting_left event from JS MeetingBar hook (via livekit:room-disconnected)
+  def handle_event("meeting_left", _params, socket) do
+    MeetingState.broadcast_left(socket.assigns.user_id)
+
+    socket =
+      socket
+      |> assign(:in_meeting, false)
+      |> assign(:active_speakers, [])
+      |> assign(:mic_enabled, true)
+      |> assign(:camera_enabled, false)
+      |> assign(:screen_share_enabled, false)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("toggle_mic", _params, socket) do
+    socket =
+      socket
+      |> assign(:mic_enabled, !socket.assigns.mic_enabled)
+      |> push_event("toggle-mic", %{})
 
     with {:ok, room} <- Platform.Meetings.ensure_room(space.id),
          {:ok, _participant} <- Platform.Meetings.dismiss_agent(room, agent_id) do
@@ -4981,5 +5058,15 @@ defmodule PlatformWeb.ChatLive do
       %{display_name: name} when is_binary(name) and name != "" -> name
       _ -> resolve_agent_name_by_id(primary_agent_id)
     end
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    # Prevent ghost mini-bars when tab is closed during active meeting
+    if socket.assigns[:in_meeting] do
+      MeetingState.broadcast_left(socket.assigns.user_id)
+    end
+
+    :ok
   end
 end
