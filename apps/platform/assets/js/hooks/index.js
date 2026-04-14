@@ -11,6 +11,7 @@ import LastChatLink from "./last_chat_link"
 import LocalTime from "./local_time"
 import MeetingCaptions from "./meeting_captions"
 import MeetingRoom from "./meeting_room"
+import MeetingTimer from "./meeting_timer"
 import MermaidDiagram from "./mermaid_diagram"
 import PushSubscribe from "./push_subscribe"
 import ResizableSidebar from "./resizable_sidebar"
@@ -32,6 +33,7 @@ export default {
   LocalTime,
   MeetingCaptions,
   MeetingRoom,
+  MeetingTimer,
   MermaidDiagram,
   PushSubscribe,
   ResizableSidebar,

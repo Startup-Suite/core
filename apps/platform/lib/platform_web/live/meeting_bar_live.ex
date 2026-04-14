@@ -37,6 +37,7 @@ defmodule PlatformWeb.MeetingBarLive do
      |> assign(:space_slug, assigns[:meeting_space_slug])
      |> assign(:started_at, assigns[:meeting_started_at])
      |> assign(:on_meeting_page, assigns[:on_meeting_page] || false)
+     |> assign(:sidebar_collapsed, assigns[:sidebar_collapsed] || false)
      |> assign(:id, assigns[:id])}
   end
 
@@ -48,7 +49,10 @@ defmodule PlatformWeb.MeetingBarLive do
       id="meeting-mini-bar"
       phx-hook="MeetingTimer"
       data-started-at={@started_at && DateTime.to_iso8601(@started_at)}
-      class="fixed bottom-0 inset-x-0 z-40 h-12 bg-base-200 border-t border-base-300 shadow-lg flex items-center gap-3 px-4 lg:left-14"
+      class={[
+        "fixed bottom-0 inset-x-0 z-40 h-12 bg-base-200 border-t border-base-300 shadow-lg flex items-center gap-3 px-4",
+        if(@sidebar_collapsed, do: "lg:left-14", else: "lg:left-56")
+      ]}
     >
       <%!-- Pulsing indicator + space name --%>
       <div class="flex items-center gap-2 min-w-0">
