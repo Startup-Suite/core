@@ -86,6 +86,9 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:meeting_participants, [])
       |> assign(:meeting_participant_count, 0)
       |> assign(:meeting_counts, %{})
+      |> assign(:meeting_room, nil)
+      |> assign(:show_agent_picker, false)
+      |> assign(:available_agents, [])
       |> assign(:active_agent_participant_id, nil)
       |> assign(:active_agent_name, nil)
       |> assign(:mobile_browser_open, false)
@@ -200,19 +203,19 @@ defmodule PlatformWeb.ChatLive do
       agent_presence = ensure_native_agent_presence(space.id)
 
       # Subscribe to meeting room presence for this space and load participants
-      {meeting_participants, meeting_active, meeting_participant_count} =
+      {meeting_room, meeting_participants, meeting_active, meeting_participant_count} =
         if connected?(socket) do
           case Meetings.get_active_room(space.id) do
             nil ->
-              {[], false, 0}
+              {nil, [], false, 0}
 
             room ->
               MeetingsPubSub.subscribe_room(room.id)
               participants = Meetings.active_participants(room.id)
-              {participants, participants != [], length(participants)}
+              {room, participants, participants != [], length(participants)}
           end
         else
-          {[], false, 0}
+          {nil, [], false, 0}
         end
 
       if connected?(socket) && participant do
@@ -316,6 +319,9 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:meeting_active, meeting_active)
        |> assign(:meeting_participants, meeting_participants)
        |> assign(:meeting_participant_count, meeting_participant_count)
+       |> assign(:meeting_room, meeting_room)
+       |> assign(:show_agent_picker, false)
+       |> assign(:available_meeting_agents, [])
        |> assign_new_canvas_form()
        |> assign(:meeting_active, false)
        |> assign(:meeting_room_name, nil)
@@ -547,6 +553,66 @@ defmodule PlatformWeb.ChatLive do
   def handle_event("join-meeting-click", _params, socket) do
     # Placeholder — full join flow handled by the Join Meeting UI task
     {:noreply, socket}
+  end
+
+  def handle_event("toggle_agent_picker", _params, socket) do
+    show = !socket.assigns.show_agent_picker
+
+    socket =
+      if show do
+        # Load available agents for the space, excluding those already in meeting
+        space_id = socket.assigns.active_space.id
+        space_agents = Chat.list_space_agents(space_id)
+
+        meeting_agent_ids =
+          socket.assigns.meeting_participants
+          |> Enum.filter(& &1.agent_id)
+          |> Enum.map(& &1.agent_id)
+          |> MapSet.new()
+
+        available =
+          space_agents
+          |> Enum.reject(fn sa -> MapSet.member?(meeting_agent_ids, sa.agent_id) end)
+          |> Enum.map(fn sa ->
+            status = Platform.Chat.SpaceAgentPresence.agent_status(sa.agent)
+            {sa, status}
+          end)
+
+        socket
+        |> assign(:show_agent_picker, true)
+        |> assign(:available_meeting_agents, available)
+      else
+        socket
+        |> assign(:show_agent_picker, false)
+        |> assign(:available_meeting_agents, [])
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("invite_agent", %{"agent-id" => agent_id}, socket) do
+    room = socket.assigns.meeting_room
+
+    if room do
+      case Platform.Repo.get(Platform.Agents.Agent, agent_id) do
+        nil ->
+          {:noreply, socket}
+
+        agent ->
+          case Meetings.invite_agent(room, agent, %{user_id: socket.assigns.user_id}) do
+            {:ok, _participant} ->
+              {:noreply,
+               socket
+               |> assign(:show_agent_picker, false)
+               |> assign(:available_meeting_agents, [])}
+
+            {:error, _reason} ->
+              {:noreply, socket}
+          end
+      end
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("noop", _params, socket), do: {:noreply, socket}
@@ -1608,13 +1674,24 @@ defmodule PlatformWeb.ChatLive do
     # If this is the active space, also update the header presence
     socket =
       if socket.assigns.active_space && socket.assigns.active_space.id == space_id do
-        meeting_participants =
-          if active, do: Meetings.active_participants_for_space(space_id), else: []
+        if active do
+          room = Meetings.get_active_room(space_id)
+          meeting_participants = Meetings.active_participants_for_space(space_id)
 
-        socket
-        |> assign(:meeting_active, active)
-        |> assign(:meeting_participants, meeting_participants)
-        |> assign(:meeting_participant_count, count)
+          socket
+          |> assign(:meeting_active, true)
+          |> assign(:meeting_participants, meeting_participants)
+          |> assign(:meeting_participant_count, count)
+          |> assign(:meeting_room, room)
+        else
+          socket
+          |> assign(:meeting_active, false)
+          |> assign(:meeting_participants, [])
+          |> assign(:meeting_participant_count, 0)
+          |> assign(:meeting_room, nil)
+          |> assign(:show_agent_picker, false)
+          |> assign(:available_meeting_agents, [])
+        end
       else
         socket
       end
@@ -1923,6 +2000,55 @@ defmodule PlatformWeb.ChatLive do
                 {@meeting_participant_count}
               </span>
             </button>
+
+            <%!-- Invite Agent to meeting button --%>
+            <div :if={@meeting_active} class="relative">
+              <button
+                phx-click="toggle_agent_picker"
+                class="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs hover:bg-base-200 transition-colors"
+                title="Invite agent to meeting"
+              >
+                <span class="hero-user-plus size-4 text-base-content/60"></span>
+                <span class="hidden lg:inline text-base-content/60 font-medium">Invite Agent</span>
+              </button>
+
+              <%!-- Agent picker dropdown --%>
+              <div
+                :if={@show_agent_picker}
+                class="absolute top-full right-0 mt-1 z-50 w-64 rounded-lg border border-base-300 bg-base-100 shadow-lg"
+                phx-click-away="toggle_agent_picker"
+              >
+                <div class="p-2 border-b border-base-300">
+                  <p class="text-xs font-semibold text-base-content/70">Available Agents</p>
+                </div>
+                <div class="max-h-48 overflow-y-auto">
+                  <div
+                    :if={@available_meeting_agents == []}
+                    class="p-3 text-center text-xs text-base-content/50"
+                  >
+                    No agents available
+                  </div>
+                  <button
+                    :for={{sa, status} <- @available_meeting_agents}
+                    phx-click="invite_agent"
+                    phx-value-agent-id={sa.agent_id}
+                    class="flex w-full items-center gap-3 px-3 py-2 hover:bg-base-200 transition-colors text-left"
+                  >
+                    <span
+                      class="size-2.5 rounded-full flex-shrink-0"
+                      style={"background-color: #{Platform.Agents.ColorPalette.accent_for(sa.agent.color)}"}
+                    >
+                    </span>
+                    <span class="flex-1 truncate text-sm font-medium">{sa.agent.name}</span>
+                    <span class={[
+                      "size-2 rounded-full flex-shrink-0",
+                      Platform.Chat.SpaceAgentPresence.dot_color(status)
+                    ]}>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <div class="flex flex-shrink-0 items-center gap-3 text-xs text-base-content/50">
               <.form
