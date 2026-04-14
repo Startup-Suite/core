@@ -21,6 +21,15 @@ defmodule PlatformWeb.ChatLive do
 
   import PlatformWeb.Chat.CanvasRenderer, only: [canvas_document: 1]
 
+  import PlatformWeb.Components.Meeting.RecordingControls,
+    only: [recording_controls: 1]
+
+  import PlatformWeb.Components.Meeting.RecordingsList,
+    only: [recordings_list: 1]
+
+  import PlatformWeb.Components.Meeting.TranscriptView,
+    only: [transcript_view: 1]
+
   alias Platform.Accounts
   alias Platform.Agents.WorkspaceBootstrap
   alias Ecto.Adapters.SQL.Sandbox
@@ -29,6 +38,7 @@ defmodule PlatformWeb.ChatLive do
   alias Platform.Chat.AttachmentStorage
   alias Platform.Chat.Presence, as: ChatPresence
   alias Platform.Chat.PubSub, as: ChatPubSub
+  alias Platform.Meetings
   alias Platform.Repo
 
   @message_limit 50
@@ -104,6 +114,16 @@ defmodule PlatformWeb.ChatLive do
       |> assign(:upload_caption, "")
       |> assign(:lightbox_url, nil)
       |> assign(:upload_tagged_agents, MapSet.new())
+      # Recording & transcript assigns
+      |> assign(:recording_active, false)
+      |> assign(:current_recording, nil)
+      |> assign(:can_record, true)
+      |> assign(:recordings, [])
+      |> assign(:show_recordings, false)
+      |> assign(:playing_recording_id, nil)
+      |> assign(:transcripts, [])
+      |> assign(:active_transcript, nil)
+      |> assign(:show_transcript, false)
       |> assign(:drafts, %{})
       |> assign_compose("")
       |> assign_thread_compose("")
@@ -266,6 +286,15 @@ defmodule PlatformWeb.ChatLive do
        |> assign(:active_agent_participant_id, active_agent_participant_id)
        |> assign(:active_agent_name, active_agent_name)
        |> assign(:mobile_browser_open, false)
+       # Reset recording/transcript state for new space
+       |> assign(:recording_active, Meetings.get_active_recording_for_space(space.id) != nil)
+       |> assign(:current_recording, Meetings.get_active_recording_for_space(space.id))
+       |> assign(:recordings, Meetings.list_recordings_for_space(space.id))
+       |> assign(:show_recordings, false)
+       |> assign(:playing_recording_id, nil)
+       |> assign(:transcripts, Meetings.list_transcripts_for_space(space.id))
+       |> assign(:active_transcript, nil)
+       |> assign(:show_transcript, false)
        |> assign(:channels, channels)
        |> assign(:dm_conversations, dm_convos)
        |> assign(:spaces, channels ++ dm_convos)
@@ -769,6 +798,97 @@ defmodule PlatformWeb.ChatLive do
 
   def handle_event("toggle_canvases_panel", _params, socket) do
     {:noreply, assign(socket, :show_canvases, !socket.assigns.show_canvases)}
+  end
+
+  # ── Recording events ──────────────────────────────────────────────────────
+
+  def handle_event("start_recording", _params, socket) do
+    space = socket.assigns.active_space
+    user_id = socket.assigns.user_id
+    # Use space_id as the room name for simplicity
+    room_id = space.id
+
+    case Meetings.start_recording(space.id, user_id, room_id) do
+      {:ok, recording} ->
+        ChatPubSub.broadcast(space.id, {:recording_started, recording})
+
+        {:noreply,
+         socket
+         |> assign(:recording_active, true)
+         |> assign(:current_recording, recording)}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to start recording")}
+    end
+  end
+
+  def handle_event("stop_recording", _params, socket) do
+    case socket.assigns.current_recording do
+      nil ->
+        {:noreply, socket}
+
+      recording ->
+        case Meetings.stop_recording(recording.id) do
+          {:ok, stopped} ->
+            ChatPubSub.broadcast(socket.assigns.active_space.id, {:recording_stopped, stopped})
+
+            {:noreply,
+             socket
+             |> assign(:recording_active, false)
+             |> assign(:current_recording, nil)
+             |> assign(
+               :recordings,
+               Meetings.list_recordings_for_space(socket.assigns.active_space.id)
+             )}
+
+          {:error, _reason} ->
+            {:noreply, put_flash(socket, :error, "Failed to stop recording")}
+        end
+    end
+  end
+
+  def handle_event("toggle_recordings_panel", _params, socket) do
+    {:noreply, assign(socket, :show_recordings, !socket.assigns.show_recordings)}
+  end
+
+  def handle_event("play_recording", %{"recording-id" => id}, socket) do
+    new_id = if socket.assigns.playing_recording_id == id, do: nil, else: id
+    {:noreply, assign(socket, :playing_recording_id, new_id)}
+  end
+
+  # ── Transcript events ─────────────────────────────────────────────────────
+
+  def handle_event("toggle_transcripts_panel", _params, socket) do
+    show = !socket.assigns.show_transcript
+
+    socket =
+      if show && socket.assigns.active_transcript == nil do
+        # Auto-select the most recent transcript
+        case socket.assigns.transcripts do
+          [first | _] -> assign(socket, :active_transcript, first)
+          _ -> socket
+        end
+      else
+        socket
+      end
+
+    {:noreply, assign(socket, :show_transcript, show)}
+  end
+
+  def handle_event("view_transcript", %{"transcript-id" => id}, socket) do
+    transcript = Meetings.get_transcript_with_segments(id)
+
+    {:noreply,
+     socket
+     |> assign(:active_transcript, transcript)
+     |> assign(:show_transcript, true)}
+  end
+
+  def handle_event("close_transcript", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:active_transcript, nil)
+     |> assign(:show_transcript, false)}
   end
 
   def handle_event("toggle_watch", _params, socket) do
@@ -1361,6 +1481,31 @@ defmodule PlatformWeb.ChatLive do
     {:noreply, put_canvas(socket, canvas)}
   end
 
+  # ── Recording PubSub handlers ─────────────────────────────────────────────
+
+  def handle_info({:recording_started, recording}, socket) do
+    {:noreply,
+     socket
+     |> assign(:recording_active, true)
+     |> assign(:current_recording, recording)}
+  end
+
+  def handle_info({:recording_stopped, _recording}, socket) do
+    {:noreply,
+     socket
+     |> assign(:recording_active, false)
+     |> assign(:current_recording, nil)}
+  end
+
+  def handle_info({:recording_completed, _recording}, socket) do
+    space_id = socket.assigns.active_space && socket.assigns.active_space.id
+
+    recordings =
+      if space_id, do: Meetings.list_recordings_for_space(space_id), else: []
+
+    {:noreply, assign(socket, :recordings, recordings)}
+  end
+
   def handle_info({:participant_joined, participant}, socket) do
     user =
       if participant.participant_type == "user" do
@@ -1777,6 +1922,42 @@ defmodule PlatformWeb.ChatLive do
                 <span>{length(@pins)} pinned</span>
               </button>
 
+              <%!-- Recording controls --%>
+              <.recording_controls
+                recording_active={@recording_active}
+                can_record={@can_record}
+                current_user_started={
+                  @current_recording != nil &&
+                    @current_recording.started_by_id == @user_id
+                }
+              />
+
+              <%!-- Recordings list toggle --%>
+              <button
+                :if={@recordings != []}
+                phx-click="toggle_recordings_panel"
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_recordings && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-microphone size-4"></span>
+                <span class="hidden md:inline">{length(@recordings)}</span>
+              </button>
+
+              <%!-- Transcripts toggle --%>
+              <button
+                :if={@transcripts != []}
+                phx-click="toggle_transcripts_panel"
+                class={[
+                  "flex items-center gap-1 rounded px-2 py-0.5 text-xs text-base-content/50 hover:text-base-content transition-colors hover:bg-base-300",
+                  @show_transcript && "!bg-base-300 !text-primary"
+                ]}
+              >
+                <span class="hero-document-text size-4"></span>
+                <span class="hidden md:inline">{length(@transcripts)}</span>
+              </button>
+
               <%!-- Active agent indicator --%>
               <span
                 :if={@active_agent_participant_id != nil}
@@ -2029,6 +2210,22 @@ defmodule PlatformWeb.ChatLive do
                 </button>
               </.form>
             </div>
+          </div>
+
+          <%!-- Recordings panel --%>
+          <div
+            :if={@show_recordings}
+            class="border-b border-base-300 bg-base-200 px-5 py-3"
+          >
+            <.recordings_list recordings={@recordings} playing_recording_id={@playing_recording_id} />
+          </div>
+
+          <%!-- Transcript panel --%>
+          <div
+            :if={@show_transcript && @active_transcript}
+            class="border-b border-base-300 bg-base-200 px-5 py-3 max-h-[50vh] overflow-y-auto"
+          >
+            <.transcript_view transcript={@active_transcript} show_transcript={@show_transcript} />
           </div>
 
           <div id="inline-focus-listener" phx-hook="InlineFocus" class="hidden"></div>

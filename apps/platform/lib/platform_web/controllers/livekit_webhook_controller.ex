@@ -135,6 +135,56 @@ defmodule PlatformWeb.LivekitWebhookController do
   end
 
   @doc """
+  Handle `egress_ended` events — update recording status with file metadata.
+  """
+  def handle(conn, %{"event" => "egress_ended", "egressInfo" => egress_info} = _params) do
+    egress_id = egress_info["egress_id"] || egress_info["egressId"]
+
+    if egress_id do
+      file_results = egress_info["file_results"] || egress_info["fileResults"] || []
+      first_file = List.first(file_results) || %{}
+
+      attrs = %{
+        file_url:
+          first_file["filename"] || first_file["download_url"] || first_file["downloadUrl"],
+        file_size: first_file["size"] || first_file["fileSize"],
+        duration: extract_duration(egress_info)
+      }
+
+      case Meetings.complete_recording(egress_id, attrs) do
+        {:ok, recording} ->
+          Logger.info("[LiveKit] Completed recording #{recording.id} for egress #{egress_id}")
+
+          if recording.space_id do
+            Platform.Chat.PubSub.broadcast(
+              recording.space_id,
+              {:recording_completed, recording}
+            )
+          end
+
+          conn
+          |> put_status(:ok)
+          |> json(%{status: "completed", recording_id: recording.id})
+
+        {:error, :not_found} ->
+          Logger.debug("[LiveKit] No recording found for egress #{egress_id}")
+          conn |> put_status(:ok) |> json(%{status: "ignored", reason: "no matching recording"})
+
+        {:error, reason} ->
+          Logger.warning(
+            "[LiveKit] Failed to complete recording for egress #{egress_id}: #{inspect(reason)}"
+          )
+
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{status: "error", reason: inspect(reason)})
+      end
+    else
+      conn |> put_status(:ok) |> json(%{status: "ignored", reason: "no egress_id"})
+    end
+  end
+
+  @doc """
   Catch-all for unhandled event types.
   """
   def handle(conn, %{"event" => event} = _params) do
@@ -199,5 +249,18 @@ defmodule PlatformWeb.LivekitWebhookController do
 
   defp maybe_trigger_summary(transcript) do
     Platform.Meetings.Summarizer.summarize_async(transcript)
+  end
+
+  defp extract_duration(egress_info) do
+    # LiveKit may provide duration as ended_at - started_at (Unix timestamps in nanoseconds)
+    started = egress_info["started_at"] || egress_info["startedAt"] || 0
+    ended = egress_info["ended_at"] || egress_info["endedAt"] || 0
+
+    if started > 0 and ended > started do
+      # Convert nanoseconds to seconds
+      div(ended - started, 1_000_000_000)
+    else
+      nil
+    end
   end
 end
