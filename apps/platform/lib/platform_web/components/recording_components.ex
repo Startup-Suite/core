@@ -114,9 +114,13 @@ defmodule PlatformWeb.RecordingComponents do
 
   def recording_player(assigns) do
     ~H"""
-    <div class="rounded-lg overflow-hidden bg-base-300/50 border border-base-300">
+    <div
+      id={"recording-player-#{@recording.id}"}
+      phx-hook="RecordingPlayer"
+      class="rounded-lg overflow-hidden bg-base-300/50 border border-base-300"
+    >
       <video
-        controls
+        data-media
         autoplay
         class="w-full max-h-64"
         src={"/recordings/#{@recording.id}"}
@@ -124,11 +128,48 @@ defmodule PlatformWeb.RecordingComponents do
       >
         Your browser does not support video playback.
       </video>
-      <div class="px-3 py-1.5 text-xs text-base-content/60 flex items-center justify-between">
-        <span>{format_recording_date(@recording.started_at)}</span>
-        <span :if={@recording.duration_seconds}>
-          {format_duration(@recording.duration_seconds)}
+
+      <div class="hidden text-center py-4 text-sm text-error/80" data-error>
+        Failed to load recording
+      </div>
+
+      <div class="px-3 py-2 flex items-center gap-3 text-xs text-base-content/60">
+        <button
+          data-play-btn
+          class="rounded-full p-1.5 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+          title="Play/Pause"
+        >
+          <span class="size-4 hero-play-solid"></span>
+        </button>
+
+        <span data-current-time>0:00</span>
+
+        <input
+          data-seek
+          type="range"
+          min="0"
+          max="100"
+          value="0"
+          class="flex-1 h-1 accent-primary cursor-pointer"
+        />
+
+        <span data-duration>
+          {if @recording.duration_seconds,
+            do: format_duration(@recording.duration_seconds),
+            else: "--:--"}
         </span>
+
+        <button
+          data-speed-btn
+          class="rounded px-1.5 py-0.5 text-[0.65rem] font-semibold bg-base-300 hover:bg-base-content/10 transition-colors"
+          title="Playback speed"
+        >
+          1x
+        </button>
+      </div>
+
+      <div class="px-3 pb-1.5 text-xs text-base-content/40">
+        {format_recording_date(@recording.started_at)}
       </div>
     </div>
     """
