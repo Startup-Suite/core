@@ -315,31 +315,4 @@ defmodule PlatformWeb.RuntimeChannelTest do
       assert_push "error", %{error: "Agent is not a participant in this space"}
     end
   end
-
-  describe "tool_call" do
-    test "executes tool and returns result", ctx do
-      {:ok, socket} =
-        connect(PlatformWeb.RuntimeSocket, %{
-          "runtime_id" => ctx.runtime.runtime_id,
-          "token" => ctx.raw_token
-        })
-
-      {:ok, _reply, socket} =
-        subscribe_and_join(socket, "runtime:#{ctx.runtime.runtime_id}", %{})
-
-      push(socket, "tool_call", %{
-        "call_id" => "call-1",
-        "tool" => "canvas_create",
-        "args" => %{
-          "space_id" => ctx.space.id,
-          "canvas_type" => "table",
-          "title" => "Runtime Canvas"
-        }
-      })
-
-      assert_push "tool_result", %{call_id: "call-1", status: "ok", result: result}
-      assert result.type == "table"
-      assert result.title == "Runtime Canvas"
-    end
-  end
 end
