@@ -61,8 +61,9 @@ const DragDropUpload = {
       const files = Array.from(e.dataTransfer.files);
       if (files.length === 0) return;
 
-      // Queue files into LiveView's upload channel
-      this.uploadTo(this.el, "attachments", files);
+      // Queue files into LiveView's upload channel — target the form
+      const form = this.el.querySelector("#compose-form") || this.el;
+      this.uploadTo(form, "attachments", files);
 
       // Tell the server to open the staging dialog
       this.pushEvent("show_upload_dialog", {});
@@ -89,6 +90,9 @@ const DragDropUpload = {
 
       if (imageFiles.length === 0) return;
 
+      // Prevent paste from inserting anything into textarea on mobile
+      e.preventDefault();
+
       // Show paste toast briefly
       this._pasteToast.classList.add("visible");
       clearTimeout(this._pasteToastTimer);
@@ -96,8 +100,12 @@ const DragDropUpload = {
         this._pasteToast.classList.remove("visible");
       }, 2500);
 
-      // Queue pasted images and open dialog
-      this.uploadTo(this.el, "attachments", imageFiles);
+      // Queue pasted images — target the form element so LiveView correctly
+      // associates the upload with the live_file_input. On mobile Safari,
+      // targeting a parent div outside the form can cause upload association
+      // failures.
+      const form = this.el.querySelector("#compose-form") || this.el;
+      this.uploadTo(form, "attachments", imageFiles);
       this.pushEvent("show_upload_dialog", {});
     };
 

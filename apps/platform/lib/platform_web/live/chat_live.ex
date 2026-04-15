@@ -3517,7 +3517,12 @@ defmodule PlatformWeb.ChatLive do
                       type="button"
                       class="upload-btn-send"
                       phx-click="send_upload"
-                      disabled={@uploads.attachments.entries == []}
+                      disabled={
+                        @uploads.attachments.entries == [] ||
+                          Enum.any?(@uploads.attachments.entries, fn entry ->
+                            not entry.done?
+                          end)
+                      }
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -4509,7 +4514,8 @@ defmodule PlatformWeb.ChatLive do
 
     cond do
       upload_in_progress?(socket, upload_name) ->
-        {:error, socket, "Please wait for uploads to finish."}
+        {:error, socket |> assign(:upload_dialog_open, true),
+         "Image upload still in progress — please wait for it to finish, then send from here."}
 
       content == "" and not has_completed_uploads?(socket, upload_name) ->
         {:noop, socket}
