@@ -12,7 +12,6 @@ defmodule PlatformWeb.RuntimeChannel do
   alias Platform.Chat
   alias Platform.Federation
   alias Platform.Federation.RuntimePresence
-  alias Platform.Federation.ToolSurface
 
   @impl true
   def join("runtime:" <> runtime_id, _params, socket) do
@@ -46,8 +45,9 @@ defmodule PlatformWeb.RuntimeChannel do
       # Notify the task board so the watcher can re-dispatch to this runtime
       Platform.Tasks.broadcast_board({:runtime_reconnected, runtime_id})
 
-      # Push capabilities after join completes (push/3 not allowed during join/3)
-      send(self(), :send_capabilities)
+      # Push spaces manifest after join completes (push/3 not allowed during join/3).
+      # Tool surface is served over the MCP endpoint (ADR 0034), not this channel.
+      send(self(), :send_spaces_manifest)
 
       {:ok, socket}
     else
@@ -58,13 +58,6 @@ defmodule PlatformWeb.RuntimeChannel do
   def join(_topic, _params, _socket), do: {:error, %{reason: "unauthorized"}}
 
   @impl true
-  def handle_info(:send_capabilities, socket) do
-    tools = ToolSurface.tool_definitions()
-    push(socket, "capabilities", %{tools: tools, tool_count: length(tools)})
-    send(self(), :send_spaces_manifest)
-    {:noreply, socket}
-  end
-
   def handle_info(:send_spaces_manifest, socket) do
     agent_id = socket.assigns[:agent_id]
 
@@ -185,74 +178,6 @@ defmodule PlatformWeb.RuntimeChannel do
         {:agent_typing, %{participant_id: agent_participant_id, typing: typing}}
       )
     end
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_in(
-        "tool_call",
-        %{"call_id" => call_id, "tool" => tool, "args" => args},
-        socket
-      )
-      when is_map(args) do
-    require Logger
-    runtime_id = socket.assigns.runtime_id
-
-    Logger.info(
-      "[RuntimeChannel] tool_call received: tool=#{tool} call_id=#{call_id} runtime=#{runtime_id}"
-    )
-
-    start_time = System.monotonic_time(:millisecond)
-
-    RuntimePresence.touch(runtime_id)
-    space_id = Map.get(args, "space_id")
-    agent_participant_id = get_agent_participant_id(socket, space_id)
-
-    context = %{
-      space_id: space_id,
-      agent_id: socket.assigns[:agent_id],
-      agent_participant_id: agent_participant_id,
-      runtime_id: socket.assigns.runtime_id
-    }
-
-    result = ToolSurface.execute(tool, args, context)
-    elapsed = System.monotonic_time(:millisecond) - start_time
-
-    case result do
-      {:ok, data} ->
-        Logger.info(
-          "[RuntimeChannel] tool_result ok: tool=#{tool} call_id=#{call_id} runtime=#{runtime_id} elapsed=#{elapsed}ms"
-        )
-
-        push(socket, "tool_result", %{call_id: call_id, status: "ok", result: data})
-
-      {:error, error} ->
-        Logger.warning(
-          "[RuntimeChannel] tool_result error: tool=#{tool} call_id=#{call_id} runtime=#{runtime_id} elapsed=#{elapsed}ms error=#{inspect(error)}"
-        )
-
-        push(socket, "tool_result", %{call_id: call_id, status: "error", error: error})
-    end
-
-    {:noreply, socket}
-  end
-
-  def handle_in("tool_call", %{"call_id" => call_id, "tool" => tool, "args" => args}, socket) do
-    require Logger
-
-    Logger.warning(
-      "[RuntimeChannel] tool_call #{tool} received non-map args (#{inspect(args)}), " <>
-        "expected a map with tool parameters"
-    )
-
-    push(socket, "tool_result", %{
-      call_id: call_id,
-      status: "error",
-      error: %{
-        error: "Invalid args: expected a map with tool parameters, got #{inspect(args)}"
-      }
-    })
 
     {:noreply, socket}
   end
