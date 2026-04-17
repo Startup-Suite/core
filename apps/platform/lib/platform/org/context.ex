@@ -16,7 +16,9 @@ defmodule Platform.Org.Context do
   """
 
   import Ecto.Query
+  require Logger
 
+  alias Platform.Memory
   alias Platform.Org.ContextFile
   alias Platform.Org.MemoryEntry
   alias Platform.Repo
@@ -247,6 +249,11 @@ defmodule Platform.Org.Context do
           }
         )
 
+        # Fire-and-forget: embed + index via memory-service if configured.
+        # Entry is already durably in Postgres; failures are logged and can
+        # be backfilled later via the /sync endpoint.
+        Memory.ingest_async([entry])
+
         {:ok, entry}
 
       error ->
@@ -260,9 +267,15 @@ defmodule Platform.Org.Context do
   @doc """
   Search memory entries with optional filters.
 
+  When `:query` is provided and a memory-service provider is configured
+  (see `Platform.Memory`), results are ranked by semantic similarity via
+  vector search. Without `:query` — or when memory-service is unreachable
+  — this falls back to plain SQL filters ordered by `inserted_at desc`.
+
   ## Options
 
-    * `:query` - case-insensitive substring match on content
+    * `:query` - natural-language query for semantic retrieval (falls back
+      to case-insensitive substring match if memory-service is unavailable)
     * `:memory_type` - filter by memory type
     * `:date_from` - include entries on/after this date
     * `:date_to` - include entries on/before this date
