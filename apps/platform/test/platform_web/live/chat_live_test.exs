@@ -756,8 +756,8 @@ defmodule PlatformWeb.ChatLiveTest do
       # Popover is now in the DOM, anchored to this message via the emoji buttons.
       assert html =~ ~s(id="reaction-picker")
       assert html =~ ~s(aria-label="Add reaction")
-      # Every picker emoji button carries the target message_id.
-      assert html =~ ~s(phx-value-message_id="#{msg.id}")
+      # Every picker emoji button carries the target message-id.
+      assert html =~ ~s(phx-value-message-id="#{msg.id}")
     end
 
     test "closing the reaction picker removes the popover", %{conn: conn} do
