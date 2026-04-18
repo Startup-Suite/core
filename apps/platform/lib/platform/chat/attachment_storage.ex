@@ -6,6 +6,8 @@ defmodule Platform.Chat.AttachmentStorage do
   contents live on disk and are served through an authenticated controller.
   """
 
+  require Logger
+
   @storage_prefix "chat"
 
   @spec persist_upload(binary(), String.t() | nil, String.t() | nil) ::
@@ -16,10 +18,11 @@ defmodule Platform.Chat.AttachmentStorage do
     stored_name = "#{Ecto.UUID.generate()}-#{filename}"
     storage_key = Path.join([@storage_prefix, bucket, stored_name])
     destination = path_for(storage_key)
+    dir = Path.dirname(destination)
 
-    with :ok <- File.mkdir_p(Path.dirname(destination)),
-         :ok <- File.cp(temp_path, destination),
-         {:ok, stat} <- File.stat(destination) do
+    with :ok <- mkdir_p(dir),
+         :ok <- copy(temp_path, destination),
+         {:ok, stat} <- stat(destination) do
       {:ok,
        %{
          filename: client_name || filename,
@@ -28,6 +31,48 @@ defmodule Platform.Chat.AttachmentStorage do
          storage_key: storage_key,
          metadata: %{}
        }}
+    end
+  end
+
+  defp mkdir_p(dir) do
+    case File.mkdir_p(dir) do
+      :ok ->
+        :ok
+
+      {:error, reason} = err ->
+        Logger.error(
+          "[chat.attachment_storage] mkdir_p failed: dir=#{inspect(dir)} reason=#{inspect(reason)} storage_root=#{inspect(storage_root())}"
+        )
+
+        err
+    end
+  end
+
+  defp copy(src, dest) do
+    case File.cp(src, dest) do
+      :ok ->
+        :ok
+
+      {:error, reason} = err ->
+        Logger.error(
+          "[chat.attachment_storage] File.cp failed: src=#{inspect(src)} dest=#{inspect(dest)} reason=#{inspect(reason)}"
+        )
+
+        err
+    end
+  end
+
+  defp stat(path) do
+    case File.stat(path) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = err ->
+        Logger.error(
+          "[chat.attachment_storage] File.stat failed after write: path=#{inspect(path)} reason=#{inspect(reason)}"
+        )
+
+        err
     end
   end
 
@@ -60,6 +105,44 @@ defmodule Platform.Chat.AttachmentStorage do
       :chat_attachments_root,
       Path.join(System.tmp_dir!(), "platform-chat-uploads")
     )
+  end
+
+  @doc """
+  Verifies the configured storage root exists and is writable by the running
+  process. Writes+deletes a zero-byte sentinel file. Raises on failure with
+  a message pointing at the most common cause (missing persistent volume
+  mount in the deployment manifest).
+
+  Called from `Platform.Application.start/2` in prod so misconfigured
+  deploys crash at boot rather than silently 404'ing attachment reads after
+  the first container restart.
+  """
+  @spec ensure_writable!() :: :ok
+  def ensure_writable! do
+    root = storage_root()
+    sentinel = Path.join(root, ".write-check-#{System.unique_integer([:positive])}")
+
+    with :ok <- File.mkdir_p(root),
+         :ok <- File.write(sentinel, <<>>),
+         :ok <- File.rm(sentinel) do
+      :ok
+    else
+      {:error, reason} ->
+        raise """
+        Chat attachment storage is not writable.
+
+          storage_root: #{inspect(root)}
+          reason: #{inspect(reason)}
+
+        This usually means the deployment manifest is missing a persistent
+        volume mount at this path, or the app user (UID 1000) cannot write
+        to it. Files written here must survive container restarts —
+        otherwise attachments go 404 on the next redeploy.
+
+        Fix: mount a persistent volume at #{root} and ensure it is owned
+        by UID 1000 (the `app` user).
+        """
+    end
   end
 
   defp normalize_content_type(nil, filename), do: infer_content_type(filename)

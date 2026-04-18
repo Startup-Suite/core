@@ -8,6 +8,11 @@ defmodule Platform.Application do
   @impl true
   def start(_type, _args) do
     Platform.Config.validate!()
+
+    if Application.get_env(:platform, :env) == :prod do
+      Platform.Chat.AttachmentStorage.ensure_writable!()
+    end
+
     Platform.Audit.TelemetryHandler.attach()
     Platform.Vault.TelemetryHandler.attach()
     Platform.Chat.TelemetryHandler.attach()
