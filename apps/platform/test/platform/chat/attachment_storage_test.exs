@@ -59,11 +59,14 @@ defmodule Platform.Chat.AttachmentStorageTest do
     end
 
     test "raises with guidance when the storage root cannot be written" do
-      # Point at a path that cannot be created (a file, not a directory).
-      # mkdir_p on a path whose parent is a regular file fails with :enotdir.
-      blocker = Path.join(System.tmp_dir!(), "platform-att-blocker-#{Ecto.UUID.generate()}")
-      File.write!(blocker, <<>>)
-      bad_root = Path.join(blocker, "uploads")
+      # chmod 000 the parent directory so mkdir_p + File.write both fail
+      # with :eacces. Portable across Linux and macOS (File-level permission
+      # checks on the parent directory), unlike :enotdir tricks which varied
+      # between filesystems.
+      parent = Path.join(System.tmp_dir!(), "platform-att-parent-#{Ecto.UUID.generate()}")
+      File.mkdir_p!(parent)
+      File.chmod!(parent, 0o000)
+      bad_root = Path.join(parent, "uploads")
       Application.put_env(:platform, :chat_attachments_root, bad_root)
 
       try do
@@ -71,7 +74,8 @@ defmodule Platform.Chat.AttachmentStorageTest do
           AttachmentStorage.ensure_writable!()
         end
       after
-        File.rm(blocker)
+        File.chmod!(parent, 0o755)
+        File.rm_rf(parent)
       end
     end
   end

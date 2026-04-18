@@ -54,8 +54,10 @@ defmodule Platform.Chat.AttachmentStorage do
         :ok
 
       {:error, reason} = err ->
+        # Log the source as basename only — the full tmp path has no debug
+        # value and exposes filesystem layout to log aggregators.
         Logger.error(
-          "[chat.attachment_storage] File.cp failed: src=#{inspect(src)} dest=#{inspect(dest)} reason=#{inspect(reason)}"
+          "[chat.attachment_storage] File.cp failed: src_basename=#{inspect(Path.basename(src))} dest=#{inspect(dest)} reason=#{inspect(reason)}"
         )
 
         err
@@ -78,10 +80,21 @@ defmodule Platform.Chat.AttachmentStorage do
 
   @spec delete(binary()) :: :ok
   def delete(storage_key) do
-    case File.rm(path_for(storage_key)) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, _reason} -> :ok
+    path = path_for(storage_key)
+
+    case File.rm(path) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[chat.attachment_storage] File.rm failed (continuing): path=#{inspect(path)} reason=#{inspect(reason)}"
+        )
+
+        :ok
     end
   end
 
@@ -123,9 +136,18 @@ defmodule Platform.Chat.AttachmentStorage do
     sentinel = Path.join(root, ".write-check-#{System.unique_integer([:positive])}")
 
     with :ok <- File.mkdir_p(root),
-         :ok <- File.write(sentinel, <<>>),
-         :ok <- File.rm(sentinel) do
-      :ok
+         :ok <- File.write(sentinel, <<>>) do
+      case File.rm(sentinel) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning(
+            "[chat.attachment_storage] sentinel delete failed (accumulating noise, not a block): sentinel=#{inspect(sentinel)} reason=#{inspect(reason)}"
+          )
+
+          :ok
+      end
     else
       {:error, reason} ->
         raise """
