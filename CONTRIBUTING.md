@@ -24,6 +24,44 @@ mix local.rebar --force --if-missing
 mix deps.get
 ```
 
+## Running the dev server
+
+Create + migrate the dev database once, then start the Phoenix endpoint:
+
+```bash
+cd apps/platform
+mix ecto.create
+mix ecto.migrate
+mix phx.server
+```
+
+The server listens on http://localhost:4000. The default `config/dev.exs` points `Platform.Repo` at `postgresql://postgres:postgres@localhost:5432/platform_dev` so `mix phx.server` works out of the box. Override via `DATABASE_URL` or the individual `PGUSER` / `PGPASSWORD` / `PGHOST` / `PGPORT` / `PLATFORM_DEV_DATABASE` env vars if you need a different instance.
+
+### Bypassing OIDC in dev
+
+Production requires an OIDC provider, but dev has a bypass. Visit http://localhost:4000/dev/login to auto-create a local user and get a session cookie. From there, navigate to `/chat`.
+
+### Testing from a phone on the same WiFi
+
+Phoenix binds to `127.0.0.1` by default. To reach the dev server from a phone on the same network (useful for testing mobile-only UX like the long-press menu), bind to all interfaces:
+
+```bash
+PHX_BIND_IP=0.0.0.0 mix phx.server
+```
+
+Then on your phone, open `http://<your-mac-ip>:4000` (find your Mac's IP with `ipconfig getifaddr en0`). Don't leave the server on `0.0.0.0` outside of a trusted network — there's no prod-style auth in dev.
+
+### Channel plugin (`claude-code-suite-channel`)
+
+If you also work on the Claude Code channel plugin, install Bun (it's the runtime the plugin targets) and pull its deps:
+
+```bash
+brew install oven-sh/bun/bun
+cd path/to/claude-code-suite-channel
+bun install
+bun run typecheck
+```
+
 ## Running checks
 
 Match what CI runs (`.github/workflows/ci.yml`):
