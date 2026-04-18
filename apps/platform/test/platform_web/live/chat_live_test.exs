@@ -696,16 +696,10 @@ defmodule PlatformWeb.ChatLiveTest do
           elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
 
       user = insert_chat_user(%{email: "pre@example.com", oidc_sub: "pre-sub"})
-      _ = add_user_message(space, user, "pre-reacted message")
+      # add_user_message both adds the participant and posts the message —
+      # capture the participant so we don't double-add (unique constraint).
+      participant = add_user_message(space, user, "pre-reacted message")
       [msg | _] = Chat.list_messages(space.id)
-
-      {:ok, participant} =
-        Chat.add_participant(space.id, %{
-          participant_type: "user",
-          participant_id: user.id,
-          display_name: user.name,
-          joined_at: DateTime.utc_now()
-        })
 
       {:ok, _} =
         Chat.add_reaction(%{
