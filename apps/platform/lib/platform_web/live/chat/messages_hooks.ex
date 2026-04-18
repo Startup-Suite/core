@@ -26,6 +26,7 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
     * `:attachments_map` — msg_id → [attachments]
     * `:reaction_picker_for` — msg_id | nil — when set, the picker popover is open for that message
     * `:reaction_picker_emojis` — curated emoji list shown in the picker
+    * `:longpress_menu_for` — msg_id | nil — when set, the mobile long-press menu is open for that message
     * `:compose_form`
     * `:thread_compose_form`
     * `:active_thread`
@@ -106,6 +107,7 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
     |> assign(:attachments_map, %{})
     |> assign(:reaction_picker_for, nil)
     |> assign(:reaction_picker_emojis, @reaction_picker_emojis)
+    |> assign(:longpress_menu_for, nil)
     |> assign(:active_thread, nil)
     |> assign(:thread_messages, [])
     |> assign(:thread_attachments_map, %{})
@@ -143,6 +145,7 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
     socket
     |> assign(:attachments_map, attachments_map)
     |> assign(:reaction_picker_for, nil)
+    |> assign(:longpress_menu_for, nil)
     |> assign(:thread_previews, thread_previews)
     |> assign(:active_thread, nil)
     |> assign(:thread_messages, [])
@@ -268,6 +271,12 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
 
   defp handle_event("close_reaction_picker", _params, socket),
     do: {:halt, assign(socket, :reaction_picker_for, nil)}
+
+  defp handle_event("open_longpress_menu", %{"message_id" => msg_id}, socket),
+    do: {:halt, assign(socket, :longpress_menu_for, msg_id)}
+
+  defp handle_event("close_longpress_menu", _params, socket),
+    do: {:halt, assign(socket, :longpress_menu_for, nil)}
 
   defp handle_event("react", %{"message-id" => msg_id, "emoji" => emoji}, socket),
     do: {:halt, socket |> react_to_message(msg_id, emoji) |> close_picker()}

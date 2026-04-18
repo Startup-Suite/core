@@ -8,6 +8,7 @@ import InlineFocus from "./inline_focus"
 import InlineThread from "./inline_thread"
 import KanbanDragDrop from "./kanban_drag_drop"
 import LastChatLink from "./last_chat_link"
+import LongpressMenu from "./longpress_menu"
 import MarkdownEditor from "./markdown_editor"
 import LocalTime from "./local_time"
 import MeetingBar from "./meeting_bar"
@@ -34,6 +35,7 @@ export default {
   KanbanDragDrop,
   LastChatLink,
   LocalTime,
+  LongpressMenu,
   MarkdownEditor,
   MeetingBar,
   MeetingCaptions,

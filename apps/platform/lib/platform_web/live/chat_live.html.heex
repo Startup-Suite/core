@@ -585,6 +585,8 @@
           }
           data-participant-id={msg.participant_id}
           data-date={msg.inserted_at && DateTime.to_date(msg.inserted_at) |> Date.to_iso8601()}
+          data-message-id={msg.id}
+          phx-hook="LongpressMenu"
         >
           <%!-- Avatar circle (hidden when grouped with previous message via JS) --%>
           <div class="flex-shrink-0 mt-0.5 message-avatar">
@@ -1262,6 +1264,37 @@
       >
         {emoji}
       </button>
+    </div>
+  </div>
+</div>
+
+<%!--
+  Long-press menu (mobile). V3 "lift-and-center" pattern. Day 1-2
+  placeholder: opens/closes correctly; animation + action rows land in
+  subsequent phases.
+--%>
+<div
+  :if={@longpress_menu_for}
+  id="longpress-menu"
+  class="fixed inset-0 z-50 flex items-center justify-center"
+  role="dialog"
+  aria-label="Message actions"
+>
+  <div
+    class="absolute inset-0 bg-base-content/40"
+    phx-click="close_longpress_menu"
+    aria-hidden="true"
+  >
+  </div>
+  <div class="relative z-10 w-80 rounded-2xl bg-base-100 p-5 shadow-2xl text-center">
+    <div class="text-xs font-semibold uppercase tracking-widest text-base-content/60 mb-2">
+      Message actions
+    </div>
+    <div class="text-sm text-base-content/70 mb-3">
+      Menu coming in the next phase. Tap outside to close.
+    </div>
+    <div class="text-[11px] font-mono text-base-content/50 break-all">
+      msg {@longpress_menu_for}
     </div>
   </div>
 </div>

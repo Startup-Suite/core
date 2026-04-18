@@ -805,6 +805,66 @@ defmodule PlatformWeb.ChatLiveTest do
     end
   end
 
+  # ── Long-press menu (mobile) ────────────────────────────────────────────────
+
+  describe "long-press menu" do
+    test "opening the menu renders the dialog with the target message id",
+         %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, html} = live(conn, ~p"/chat/general")
+
+      refute html =~ ~s(id="longpress-menu")
+
+      view
+      |> form("#compose-form", compose: %{text: "longpress target"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      html = render_hook(view, "open_longpress_menu", %{"message_id" => msg.id})
+
+      assert html =~ ~s(id="longpress-menu")
+      assert html =~ ~s(aria-label="Message actions")
+      assert html =~ "msg #{msg.id}"
+    end
+
+    test "closing the menu removes it from the DOM", %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "longpress close"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      html = render_hook(view, "open_longpress_menu", %{"message_id" => msg.id})
+      assert html =~ ~s(id="longpress-menu")
+
+      html = render_click(view, "close_longpress_menu", %{})
+      refute html =~ ~s(id="longpress-menu")
+    end
+
+    test "message bubbles carry the LongpressMenu hook and data-message-id",
+         %{conn: conn} do
+      conn = authenticated_conn(conn)
+      {:ok, view, _html} = live(conn, ~p"/chat/general")
+
+      view
+      |> form("#compose-form", compose: %{text: "longpress attach"})
+      |> render_submit()
+
+      space = Chat.get_space_by_slug("general")
+      [msg | _] = Chat.list_messages(space.id)
+
+      html = render(view)
+      assert html =~ ~s(phx-hook="LongpressMenu")
+      assert html =~ ~s(data-message-id="#{msg.id}")
+    end
+  end
+
   # ── Threads ──────────────────────────────────────────────────────────────────
 
   describe "threads" do
