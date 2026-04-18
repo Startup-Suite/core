@@ -244,7 +244,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         <div class="min-w-0">
           <p class="text-sm font-semibold">Live Canvas</p>
           <p class="truncate text-xs text-base-content/50">
-            {@canvas.title || CanvasHooks.humanize_type(@canvas.canvas_type)}
+            {@canvas.title || CanvasHooks.humanize_kind(@canvas)}
           </p>
         </div>
         <button phx-click="canvas_close" class="btn btn-ghost btn-xs" title="Close canvas">
@@ -252,7 +252,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         </button>
       </div>
       <div class="flex-1 overflow-y-auto px-4 py-4">
-        <.canvas_document canvas={@canvas} dom_id_base="chat-live-canvas-panel" />
+        <.canvas_document canvas={@canvas} />
       </div>
     </div>
 
@@ -261,7 +261,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         <div class="min-w-0">
           <p class="text-sm font-semibold">Live Canvas</p>
           <p class="truncate text-xs text-base-content/50">
-            {@canvas.title || CanvasHooks.humanize_type(@canvas.canvas_type)}
+            {@canvas.title || CanvasHooks.humanize_kind(@canvas)}
           </p>
         </div>
         <button phx-click="canvas_close" class="btn btn-ghost btn-xs" title="Close canvas">
@@ -269,7 +269,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         </button>
       </header>
       <div class="flex-1 overflow-y-auto px-4 py-4">
-        <.canvas_document canvas={@canvas} dom_id_base="chat-live-canvas-overlay" />
+        <.canvas_document canvas={@canvas} />
       </div>
     </div>
     """
