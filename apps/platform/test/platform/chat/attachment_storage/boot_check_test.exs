@@ -27,19 +27,13 @@ defmodule Platform.Chat.AttachmentStorage.BootCheckTest do
     end
 
     test "propagates the ensure_writable! raise when storage is broken" do
-      parent = Path.join(System.tmp_dir!(), "platform-bootcheck-parent-#{Ecto.UUID.generate()}")
-      File.mkdir_p!(parent)
-      File.chmod!(parent, 0o000)
-      bad_root = Path.join(parent, "uploads")
+      # /dev/null is a char device; mkdir_p of a child path fails with
+      # :enotdir for all users including root (vs. chmod which root bypasses).
+      bad_root = "/dev/null/platform-bootcheck-boot-#{Ecto.UUID.generate()}"
       Application.put_env(:platform, :chat_attachments_root, bad_root)
 
-      try do
-        assert_raise RuntimeError, ~r/attachment storage is not writable/i, fn ->
-          BootCheck.init(:ok)
-        end
-      after
-        File.chmod!(parent, 0o755)
-        File.rm_rf(parent)
+      assert_raise RuntimeError, ~r/attachment storage is not writable/i, fn ->
+        BootCheck.init(:ok)
       end
     end
   end

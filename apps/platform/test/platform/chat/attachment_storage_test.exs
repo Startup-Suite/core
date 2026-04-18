@@ -59,23 +59,15 @@ defmodule Platform.Chat.AttachmentStorageTest do
     end
 
     test "raises with guidance when the storage root cannot be written" do
-      # chmod 000 the parent directory so mkdir_p + File.write both fail
-      # with :eacces. Portable across Linux and macOS (File-level permission
-      # checks on the parent directory), unlike :enotdir tricks which varied
-      # between filesystems.
-      parent = Path.join(System.tmp_dir!(), "platform-att-parent-#{Ecto.UUID.generate()}")
-      File.mkdir_p!(parent)
-      File.chmod!(parent, 0o000)
-      bad_root = Path.join(parent, "uploads")
+      # Use /dev/null as the would-be parent — it's a character device on
+      # every Unix-like system (macOS dev + Linux CI container), so
+      # File.mkdir_p of a child path always fails with :enotdir regardless
+      # of whether the process runs as root (which bypasses chmod checks).
+      bad_root = "/dev/null/platform-bootcheck-test-#{Ecto.UUID.generate()}"
       Application.put_env(:platform, :chat_attachments_root, bad_root)
 
-      try do
-        assert_raise RuntimeError, ~r/attachment storage is not writable/i, fn ->
-          AttachmentStorage.ensure_writable!()
-        end
-      after
-        File.chmod!(parent, 0o755)
-        File.rm_rf(parent)
+      assert_raise RuntimeError, ~r/attachment storage is not writable/i, fn ->
+        AttachmentStorage.ensure_writable!()
       end
     end
   end
