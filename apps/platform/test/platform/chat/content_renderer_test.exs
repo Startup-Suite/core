@@ -200,6 +200,40 @@ defmodule Platform.Chat.ContentRendererTest do
       result = render(~S(`@not_a_mention`))
       assert result =~ "@not_a_mention"
     end
+
+    test "decorates bracketed multi-word mentions (ADR 0037)" do
+      result = render("Hello @[Ryan Milvenan] and @[Jacob Scott]")
+
+      assert result =~
+               ~s(<span class="rounded bg-primary/20 text-primary px-1 font-medium">@Ryan Milvenan</span>)
+
+      assert result =~
+               ~s(<span class="rounded bg-primary/20 text-primary px-1 font-medium">@Jacob Scott</span>)
+
+      # Raw brackets must not survive in the rendered output.
+      refute result =~ "@["
+      refute result =~ "]"
+    end
+
+    test "bracketed mention span contains full multi-word name" do
+      result = render("ping @[Ryan Milvenan] please")
+      # The span should wrap the full '@Ryan Milvenan', not split after Ryan.
+      assert result =~ ~r{<span[^>]*>@Ryan Milvenan</span>}
+    end
+
+    test "mixed bracketed and legacy mentions both highlight" do
+      result = render("@[Ryan Milvenan] and @alice")
+      assert result =~ ~r{<span[^>]*>@Ryan Milvenan</span>}
+      assert result =~ ~r{<span[^>]*>@alice</span>}
+      # Must not double-wrap: no span nested inside a mention span.
+      refute result =~ ~r{<span[^>]*><span}
+    end
+
+    test "bracketed content is html-escaped" do
+      result = render("@[<script>alert(1)</script>]")
+      refute result =~ "<script>alert(1)</script>"
+      assert result =~ "&lt;script&gt;"
+    end
   end
 
   describe "highlight_code/2" do
