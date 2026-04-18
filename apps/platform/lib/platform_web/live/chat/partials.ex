@@ -252,7 +252,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         </button>
       </div>
       <div class="flex-1 overflow-y-auto px-4 py-4">
-        <.canvas_document canvas={@canvas} />
+        <.canvas_document canvas={@canvas} dom_id_base="chat-live-canvas-panel" />
       </div>
     </div>
 
@@ -269,7 +269,7 @@ defmodule PlatformWeb.ChatLive.Partials do
         </button>
       </header>
       <div class="flex-1 overflow-y-auto px-4 py-4">
-        <.canvas_document canvas={@canvas} />
+        <.canvas_document canvas={@canvas} dom_id_base="chat-live-canvas-overlay" />
       </div>
     </div>
     """

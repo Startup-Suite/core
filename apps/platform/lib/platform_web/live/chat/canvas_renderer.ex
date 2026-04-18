@@ -23,8 +23,20 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
   def canvas_document(assigns) do
     canvas = assigns.canvas
+    # Mode suffix distinguishes inline (in-chat) vs. expanded (panel/overlay)
+    # copies of the same canvas. dom_id_base further disambiguates multiple
+    # expanded copies (e.g. desktop panel + mobile overlay render both under
+    # lg:hidden / hidden lg:flex; without a unique id, LiveView warns about
+    # duplicate ids even though only one is visible at a time).
     mode_suffix = if assigns.inline, do: "inline", else: "expanded"
-    assigns = assign(assigns, :mode_suffix, mode_suffix)
+
+    base = assigns[:dom_id_base]
+    id_suffix = if base, do: "#{base}-#{mode_suffix}", else: mode_suffix
+
+    assigns =
+      assigns
+      |> assign(:mode_suffix, mode_suffix)
+      |> assign(:id_suffix, id_suffix)
 
     cond do
       canvas.deleted_at ->
@@ -35,7 +47,7 @@ defmodule PlatformWeb.Chat.CanvasRenderer do
 
         ~H"""
         <div
-          id={"canvas-doc-#{@canvas.id}-#{@mode_suffix}"}
+          id={"canvas-doc-#{@canvas.id}-#{@id_suffix}"}
           class={["overflow-x-auto", @inline && "cursor-pointer"]}
           phx-click={if(@inline, do: "canvas_open")}
           phx-value-canvas-id={if(@inline, do: @canvas.id)}
