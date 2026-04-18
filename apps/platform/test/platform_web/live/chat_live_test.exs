@@ -826,7 +826,14 @@ defmodule PlatformWeb.ChatLiveTest do
 
       assert html =~ ~s(id="longpress-menu")
       assert html =~ ~s(aria-label="Message actions")
-      assert html =~ "msg #{msg.id}"
+      # The MessageLift hook reads the target via this attribute and clones
+      # the corresponding DOM element on mount.
+      assert html =~ ~s(data-target-message-id="#{msg.id}")
+      assert html =~ ~s(phx-hook="MessageLift")
+      # Scrim is the lone DOM element inside the fragment at this phase —
+      # tapping it fires close_longpress_menu. Subsequent phases add the
+      # emoji pill and action card alongside the scrim.
+      assert html =~ "longpress-scrim"
     end
 
     test "closing the menu removes it from the DOM", %{conn: conn} do

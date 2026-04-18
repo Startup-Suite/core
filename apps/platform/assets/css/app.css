@@ -1283,3 +1283,36 @@ body, .font-kobo, * {
   transform: scale(0.95);
   transition: transform 0.1s ease;
 }
+
+/* ── V3 long-press menu (mobile) ─────────────────────────────────────────── */
+
+/* Lifted clone of the target message bubble. Positioned at the original
+   message's rect at mount, animates to the viewport center via CSS
+   transition when the .lifted class is added. See
+   assets/js/hooks/message_lift.js. */
+.message-lift {
+  transition: transform 220ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  will-change: transform;
+}
+
+.message-lift.lifted {
+  transform: translate(var(--lift-dx, 0), var(--lift-dy, 0)) scale(1.02);
+}
+
+/* Scrim with backdrop blur. Fallback: solid semi-transparent background
+   for browsers without backdrop-filter support (older Mobile Safari). */
+.longpress-scrim {
+  background: rgba(10, 10, 10, 0.55);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: longpress-scrim-in 220ms ease-out both;
+}
+
+@keyframes longpress-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
