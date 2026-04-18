@@ -67,6 +67,23 @@ const MessageLift = {
 
     document.body.appendChild(clone)
 
+    // Lock background scroll while the menu is open. Restored in destroyed().
+    this._prevBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+
+    // Close on ESC (desktop/tablet keyboard) and on any viewport geometry
+    // change — orientation flip, window resize, or the iOS visualViewport
+    // changing. Positions are stale once the viewport has shifted; safer
+    // to dismiss than to try to re-measure mid-animation.
+    this._onKey = (e) => {
+      if (e.key === "Escape") this.pushEvent("close_longpress_menu", {})
+    }
+    this._onViewport = () => this.pushEvent("close_longpress_menu", {})
+
+    window.addEventListener("keydown", this._onKey)
+    window.addEventListener("resize", this._onViewport)
+    window.addEventListener("orientationchange", this._onViewport)
+
     // Force a reflow, then add the class so the transition fires.
     void clone.offsetWidth
     requestAnimationFrame(() => clone.classList.add("lifted"))
@@ -76,6 +93,17 @@ const MessageLift = {
   },
 
   destroyed() {
+    if (this._onKey) window.removeEventListener("keydown", this._onKey)
+    if (this._onViewport) {
+      window.removeEventListener("resize", this._onViewport)
+      window.removeEventListener("orientationchange", this._onViewport)
+    }
+
+    if (this._prevBodyOverflow !== undefined) {
+      document.body.style.overflow = this._prevBodyOverflow
+      this._prevBodyOverflow = undefined
+    }
+
     const clone = this._clone
     const target = this._target
     if (!clone || !target) return
