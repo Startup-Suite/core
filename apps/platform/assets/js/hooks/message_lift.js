@@ -59,6 +59,12 @@ const MessageLift = {
     clone.style.setProperty("--lift-dx", `${dx}px`)
     clone.style.setProperty("--lift-dy", `${dy}px`)
 
+    // Expose the clone's post-lift half-height to the LV menu fragment so
+    // the emoji pill (above) and action card (below) can position
+    // themselves relative to where the clone lands. 1.02 matches the CSS
+    // scale on .message-lift.lifted.
+    this.el.style.setProperty("--clone-half-h", `${(rect.height * 1.02) / 2}px`)
+
     document.body.appendChild(clone)
 
     // Force a reflow, then add the class so the transition fires.
