@@ -150,7 +150,6 @@ defmodule Platform.Chat do
         where:
           p.participant_type == "agent" and
             p.participant_id == ^agent_id and
-            is_nil(p.left_at) and
             is_nil(s.archived_at),
         order_by: [asc: s.inserted_at]
       )
@@ -196,9 +195,7 @@ defmodule Platform.Chat do
         where:
           s.kind == "dm" and s.is_direct == true and is_nil(s.archived_at) and
             p1.participant_type == "user" and p1.participant_id == ^user_id and
-            is_nil(p1.left_at) and
-            p2.participant_type == ^target_type and p2.participant_id == ^target_id and
-            is_nil(p2.left_at),
+            p2.participant_type == ^target_type and p2.participant_id == ^target_id,
         limit: 1,
         select: s
       )
@@ -235,7 +232,7 @@ defmodule Platform.Chat do
       if target_type == "agent" do
         case Repo.get(Agent, target_id) do
           %Agent{} = agent ->
-            ensure_agent_participant(space.id, agent)
+            add_agent_participant(space.id, agent)
 
           nil ->
             {:error, :agent_not_found}
@@ -301,7 +298,7 @@ defmodule Platform.Chat do
           Multi.run(multi, {:participant, idx}, fn _repo, %{space: space} ->
             if type == "agent" do
               case Repo.get(Agent, id) do
-                %Agent{} = agent -> ensure_agent_participant(space.id, agent)
+                %Agent{} = agent -> add_agent_participant(space.id, agent)
                 nil -> {:error, :agent_not_found}
               end
             else
@@ -360,7 +357,7 @@ defmodule Platform.Chat do
       on: m.space_id == s.id and is_nil(m.deleted_at),
       where:
         p.participant_type == "user" and p.participant_id == ^user_id and
-          is_nil(p.left_at) and is_nil(s.archived_at),
+          is_nil(s.archived_at),
       group_by: s.id,
       order_by: [desc: fragment("COALESCE(MAX(?), ?)", m.inserted_at, s.inserted_at)],
       select: s
@@ -381,10 +378,7 @@ defmodule Platform.Chat do
   end
 
   def display_name_for_space(%Space{kind: "dm"}, participants, current_user_id) do
-    other =
-      Enum.find(participants, fn p ->
-        p.participant_id != current_user_id and is_nil(p.left_at)
-      end)
+    other = Enum.find(participants, fn p -> p.participant_id != current_user_id end)
 
     case other do
       %Participant{display_name: name} when is_binary(name) and name != "" -> name
@@ -395,7 +389,7 @@ defmodule Platform.Chat do
   def display_name_for_space(%Space{kind: "group"}, participants, current_user_id) do
     names =
       participants
-      |> Enum.filter(fn p -> p.participant_id != current_user_id and is_nil(p.left_at) end)
+      |> Enum.filter(fn p -> p.participant_id != current_user_id end)
       |> Enum.map(fn p -> p.display_name || "User" end)
 
     case names do
@@ -471,29 +465,17 @@ defmodule Platform.Chat do
   def get_participant(id), do: Repo.get(Participant, id)
 
   @doc """
-  List participants in a space.
-
-  By default only active participants (left_at IS NULL) are returned.
+  List participants in a space (ADR 0038: all rows are active).
 
   ## Options
 
     * `:participant_type` — filter by `"user"` or `"agent"`
-    * `:include_left`     — include participants who have left (default: `false`)
   """
   @spec list_participants(binary(), keyword()) :: [Participant.t()]
   def list_participants(space_id, opts \\ []) do
-    include_left = Keyword.get(opts, :include_left, false)
     participant_type = Keyword.get(opts, :participant_type)
 
-    base =
-      if include_left do
-        from(p in Participant, where: p.space_id == ^space_id, order_by: [asc: p.joined_at])
-      else
-        from(p in Participant,
-          where: p.space_id == ^space_id and is_nil(p.left_at),
-          order_by: [asc: p.joined_at]
-        )
-      end
+    base = from(p in Participant, where: p.space_id == ^space_id, order_by: [asc: p.joined_at])
 
     base =
       if participant_type do
@@ -549,76 +531,85 @@ defmodule Platform.Chat do
     end
   end
 
-  @doc "Soft-remove a participant by setting `left_at` to now."
+  @doc """
+  Hard-delete a participant row (ADR 0038). Messages/pins/canvases
+  authored by this participant survive via the author_* snapshot columns.
+
+  Returns `{:ok, participant}` with the deleted struct for backward
+  compatibility with callers that want telemetry on who was removed.
+  """
   @spec remove_participant(Participant.t()) ::
           {:ok, Participant.t()} | {:error, Ecto.Changeset.t()}
   def remove_participant(%Participant{} = participant) do
-    result =
-      participant
-      |> Participant.changeset(%{left_at: DateTime.utc_now()})
-      |> Repo.update()
-
-    case result do
-      {:ok, p} ->
+    case Repo.delete(participant) do
+      {:ok, deleted} ->
         :telemetry.execute(
           [:platform, :chat, :participant_removed],
           %{system_time: System.system_time()},
-          %{space_id: p.space_id, participant_id: p.id}
+          %{space_id: deleted.space_id, participant_id: deleted.id}
         )
 
-        ChatPubSub.broadcast(p.space_id, {:participant_left, p})
+        ChatPubSub.broadcast(deleted.space_id, {:participant_left, deleted})
+        {:ok, deleted}
 
-      _ ->
-        :ok
+      {:error, _} = error ->
+        error
     end
-
-    result
   end
 
   @doc """
-  Ensure an agent is an active participant in the space.
+  Insert an agent participant row for the space. Returns the existing row
+  if one already exists; otherwise inserts a fresh one. Never resurrects —
+  dismissal is durable, and `reinvite_mentioned_agents/1` is the only path
+  that brings a dismissed agent back (ADR 0038).
   """
-  @spec ensure_agent_participant(binary(), Agent.t() | binary(), keyword()) ::
+  @spec add_agent_participant(binary(), Agent.t() | binary(), keyword()) ::
           {:ok, Participant.t()} | {:error, term()}
-  def ensure_agent_participant(space_id, agent_or_id, opts \\ [])
+  def add_agent_participant(space_id, agent_or_id, opts \\ [])
 
-  def ensure_agent_participant(space_id, %Agent{} = agent, opts) do
-    display_name = Keyword.get(opts, :display_name, agent.name)
-    attention_mode = Keyword.get(opts, :attention_mode, "mention")
-    joined_at = Keyword.get(opts, :joined_at, DateTime.utc_now())
-
+  def add_agent_participant(space_id, %Agent{} = agent, opts) do
     case Repo.get_by(Participant,
            space_id: space_id,
            participant_type: "agent",
            participant_id: agent.id
          ) do
+      %Participant{} = existing ->
+        {:ok, existing}
+
       nil ->
         add_participant(space_id, %{
           participant_type: "agent",
           participant_id: agent.id,
-          display_name: display_name,
-          attention_mode: attention_mode,
-          joined_at: joined_at
-        })
-
-      %Participant{left_at: nil} = participant ->
-        {:ok, participant}
-
-      %Participant{} = participant ->
-        update_participant(participant, %{
-          left_at: nil,
-          display_name: display_name,
-          attention_mode: attention_mode,
-          joined_at: joined_at
+          display_name: Keyword.get(opts, :display_name, agent.name),
+          attention_mode: Keyword.get(opts, :attention_mode, "mention"),
+          joined_at: Keyword.get(opts, :joined_at, DateTime.utc_now())
         })
     end
   end
 
-  def ensure_agent_participant(space_id, agent_id, opts) when is_binary(agent_id) do
+  def add_agent_participant(space_id, agent_id, opts) when is_binary(agent_id) do
     case Repo.get(Agent, agent_id) do
-      %Agent{} = agent -> ensure_agent_participant(space_id, agent, opts)
+      %Agent{} = agent -> add_agent_participant(space_id, agent, opts)
       nil -> {:error, :not_found}
     end
+  end
+
+  @doc """
+  Strict participant lookup — returns the row if present or `nil`. Use
+  this in read paths (tool surface, runtime channel, responder context
+  load) where an agent calling without being in the space is an error to
+  surface, not a reason to auto-join.
+  """
+  @spec get_agent_participant(binary(), Agent.t() | binary()) :: Participant.t() | nil
+  def get_agent_participant(space_id, %Agent{id: agent_id}),
+    do: get_agent_participant(space_id, agent_id)
+
+  def get_agent_participant(space_id, agent_id) when is_binary(agent_id) do
+    Repo.get_by(Participant,
+      space_id: space_id,
+      participant_type: "agent",
+      participant_id: agent_id
+    )
   end
 
   # ── Messages ────────────────────────────────────────────────────────────────
@@ -1649,30 +1640,13 @@ defmodule Platform.Chat do
 
   defp reinvite_mentioned_agents(_), do: :ok
 
-  # Narrow resurrect: only called from the mention-reinvite path. Inserts a
-  # fresh participant row if none exists, or clears `left_at` if one does.
-  # Phase 4 will hard-delete on dismissal and this function will shed its
-  # `left_at` branch.
+  # Mention-reinvite. Post-ADR-0038 there's no soft-dismissed state —
+  # either the row exists (already in the space) or it doesn't (dismissed
+  # and hard-deleted). So "reinvite" is just an add-if-missing.
   defp reinstate_on_mention(space_id, %Platform.Agents.Agent{} = agent) do
-    case Repo.get_by(Participant,
-           space_id: space_id,
-           participant_type: "agent",
-           participant_id: agent.id
-         ) do
-      nil ->
-        add_participant(space_id, %{
-          participant_type: "agent",
-          participant_id: agent.id,
-          display_name: agent.name,
-          attention_mode: "mention",
-          joined_at: DateTime.utc_now()
-        })
-
-      %Participant{left_at: nil} ->
-        :ok
-
-      %Participant{} = p ->
-        update_participant(p, %{left_at: nil, joined_at: DateTime.utc_now()})
+    case add_agent_participant(space_id, agent, attention_mode: "mention") do
+      {:ok, _} -> :ok
+      _ -> :ok
     end
   end
 
@@ -1980,9 +1954,7 @@ defmodule Platform.Chat do
   @spec unread_counts_for_user(binary()) :: %{binary() => non_neg_integer()}
   def unread_counts_for_user(user_id) do
     from(p in Participant,
-      where:
-        p.participant_id == ^user_id and is_nil(p.left_at) and
-          p.participant_type == "user",
+      where: p.participant_id == ^user_id and p.participant_type == "user",
       select: {p.space_id, p.last_read_message_id, p.id}
     )
     |> Repo.all()

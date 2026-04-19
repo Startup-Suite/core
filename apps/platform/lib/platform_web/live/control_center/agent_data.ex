@@ -476,16 +476,13 @@ defmodule PlatformWeb.ControlCenter.AgentData do
     participant_space_ids =
       Repo.all(
         from(p in Participant,
-          where:
-            p.participant_type == "agent" and
-              p.participant_id == ^agent.id and
-              is_nil(p.left_at),
+          where: p.participant_type == "agent" and p.participant_id == ^agent.id,
           select: p.space_id
         )
       )
 
     # Pre-compute DM space IDs before the transaction — the subquery approach
-    # won't work because step 1 sets left_at on participants before step 3 runs.
+    # won't work because step 1 hard-deletes participants before step 3 runs.
     dm_space_ids =
       Repo.all(
         from(p in Participant,
@@ -494,7 +491,6 @@ defmodule PlatformWeb.ControlCenter.AgentData do
           where:
             p.participant_type == "agent" and
               p.participant_id == ^agent.id and
-              is_nil(p.left_at) and
               s.kind == "dm" and
               is_nil(s.archived_at),
           select: s.id
@@ -509,16 +505,13 @@ defmodule PlatformWeb.ControlCenter.AgentData do
 
     result =
       Multi.new()
-      # 1. Soft-remove all chat_participants for this agent (set left_at)
-      |> Multi.update_all(
-        :soft_remove_participants,
+      # 1. Hard-delete all chat_participants for this agent (ADR 0038).
+      #    Message/pin/canvas attribution survives via author_* snapshots.
+      |> Multi.delete_all(
+        :remove_participants,
         from(p in Participant,
-          where:
-            p.participant_type == "agent" and
-              p.participant_id == ^agent.id and
-              is_nil(p.left_at)
-        ),
-        set: [left_at: now]
+          where: p.participant_type == "agent" and p.participant_id == ^agent.id
+        )
       )
       # 2. Remove all chat_space_agents roster entries
       |> Multi.delete_all(

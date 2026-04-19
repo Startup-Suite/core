@@ -360,7 +360,7 @@ defmodule Platform.Chat.SpaceAgentTest do
       agent = create_agent(%{name: "CodeBot"})
 
       {:ok, agent_participant} =
-        Chat.ensure_agent_participant(space.id, agent, display_name: "CodeBot")
+        Chat.add_agent_participant(space.id, agent, display_name: "CodeBot")
 
       {:ok, _} = Chat.add_space_agent(space.id, agent.id)
 
@@ -380,7 +380,7 @@ defmodule Platform.Chat.SpaceAgentTest do
       agent = create_agent(%{name: "Zip"})
 
       {:ok, agent_participant} =
-        Chat.ensure_agent_participant(space.id, agent, display_name: "Zip")
+        Chat.add_agent_participant(space.id, agent, display_name: "Zip")
 
       {:ok, _} = Chat.set_principal_agent(space.id, agent.id)
 
@@ -403,8 +403,8 @@ defmodule Platform.Chat.SpaceAgentTest do
       agent = create_agent(%{name: "Ghost"})
       other_agent = create_agent(%{name: "Visible"})
 
-      {:ok, _} = Chat.ensure_agent_participant(space.id, agent, display_name: "Ghost")
-      {:ok, _} = Chat.ensure_agent_participant(space.id, other_agent, display_name: "Visible")
+      {:ok, _} = Chat.add_agent_participant(space.id, agent, display_name: "Ghost")
+      {:ok, _} = Chat.add_agent_participant(space.id, other_agent, display_name: "Visible")
 
       # Only add other_agent to roster, not agent
       {:ok, _} = Chat.add_space_agent(space.id, other_agent.id)
@@ -423,7 +423,7 @@ defmodule Platform.Chat.SpaceAgentTest do
       agent = create_agent(%{name: "Zip"})
 
       {:ok, agent_participant} =
-        Chat.ensure_agent_participant(space.id, agent, display_name: "Zip")
+        Chat.add_agent_participant(space.id, agent, display_name: "Zip")
 
       # No roster entries — should use legacy participant-based routing
       message = create_message(space.id, user.id, %{content: "hey"})

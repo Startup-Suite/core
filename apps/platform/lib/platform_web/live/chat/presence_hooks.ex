@@ -419,13 +419,16 @@ defmodule PlatformWeb.ChatLive.PresenceHooks do
 
   # ── Agent presence bootstrap ─────────────────────────────────────────
 
+  # Bootstrap the native agent's *runtime* on LV mount — sandbox plumbing
+  # and a boot kick if unreachable. Does NOT add the agent as a space
+  # participant; that is an explicit act (DM creation, admin action, or
+  # @-mention per ADR 0038). Auto-adding here is what caused Higgins to
+  # reappear after every dismissal.
   defp ensure_native_agent_presence(space_id) do
     status = WorkspaceBootstrap.status()
 
     case status do
-      %{configured?: true, agent: %{} = agent} ->
-        _ = Chat.ensure_agent_participant(space_id, agent, display_name: agent.name)
-
+      %{configured?: true, agent: %{}} ->
         if status.pid, do: allow_runtime_sandbox(status.pid)
 
         unless status.reachable? do

@@ -358,18 +358,13 @@ defmodule Platform.Chat.AttentionRouter do
           ActiveAgentStore.set_active(space.id, active_participant_id)
           [%{participant_id: active_participant_id, reason: :active_agent}]
         else
-          # Active agent not in recipients — check whether they're still an
-          # active (non-left) participant in the space.  If they are, they are
-          # simply the message author and we skip routing for this message.
-          # If they're NOT an active participant any more (left_at is set or
-          # record deleted), the mutex is stale — clear it and fall through to
-          # watch-mode so the feedback still reaches an agent.
+          # Active agent not in recipients — check whether they're still a
+          # participant in the space (post-ADR-0038 the row either exists or
+          # has been hard-deleted). If they are, they're the message author
+          # and we skip routing. If the row is gone, the mutex is stale —
+          # clear it and fall through to watch-mode.
           still_active =
-            Repo.exists?(
-              from(p in Participant,
-                where: p.id == ^active_participant_id and is_nil(p.left_at)
-              )
-            )
+            Repo.exists?(from(p in Participant, where: p.id == ^active_participant_id))
 
           if still_active do
             # Author is still present — skip routing for this message.
@@ -394,11 +389,7 @@ defmodule Platform.Chat.AttentionRouter do
           [%{participant_id: active_participant_id, reason: :active_agent}]
         else
           still_active =
-            Repo.exists?(
-              from(p in Participant,
-                where: p.id == ^active_participant_id and is_nil(p.left_at)
-              )
-            )
+            Repo.exists?(from(p in Participant, where: p.id == ^active_participant_id))
 
           if still_active do
             []
@@ -414,7 +405,7 @@ defmodule Platform.Chat.AttentionRouter do
     with task_id when is_binary(task_id) <- execution_space_task_id(space),
          %TaskRecord{assignee_type: "agent", assignee_id: agent_id} when is_binary(agent_id) <-
            Repo.get(TaskRecord, task_id) do
-      Chat.ensure_agent_participant(space.id, agent_id, attention_mode: "all")
+      Chat.add_agent_participant(space.id, agent_id, attention_mode: "all")
     else
       _ -> {:error, :no_execution_assignee}
     end
@@ -544,7 +535,7 @@ defmodule Platform.Chat.AttentionRouter do
   # ── Query helpers ───────────────────────────────────────────────────────────
 
   defp active_participants(space_id) do
-    from(p in Participant, where: p.space_id == ^space_id and is_nil(p.left_at))
+    from(p in Participant, where: p.space_id == ^space_id)
     |> Repo.all()
   end
 

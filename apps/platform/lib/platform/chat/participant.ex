@@ -20,7 +20,6 @@ defmodule Platform.Chat.Participant do
     field(:attention_mode, :string, default: "mention")
     field(:attention_config, :map, default: %{})
     field(:joined_at, :utc_datetime_usec)
-    field(:left_at, :utc_datetime_usec)
   end
 
   def changeset(participant, attrs) do
@@ -35,8 +34,7 @@ defmodule Platform.Chat.Participant do
       :last_read_message_id,
       :attention_mode,
       :attention_config,
-      :joined_at,
-      :left_at
+      :joined_at
     ])
     |> validate_required([:space_id, :participant_type, :participant_id, :role, :joined_at])
     |> validate_inclusion(:participant_type, @participant_types)

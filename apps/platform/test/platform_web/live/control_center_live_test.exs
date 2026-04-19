@@ -543,7 +543,6 @@ defmodule PlatformWeb.ControlCenterLiveTest do
       )
 
     assert participant.attention_mode == "all"
-    assert is_nil(participant.left_at)
 
     roster = Repo.get_by!(Platform.Chat.SpaceAgent, space_id: space.id, agent_id: agent.id)
     assert roster.role == "principal"
