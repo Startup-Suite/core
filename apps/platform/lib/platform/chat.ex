@@ -45,7 +45,6 @@ defmodule Platform.Chat do
     Pin,
     Reaction,
     Space,
-    SpaceAgent,
     Thread
   }
 
@@ -1732,72 +1731,87 @@ defmodule Platform.Chat do
   defp fetch_map(_, _), do: nil
 
   # ── Space Agent Roster ──────────────────────────────────────────────────────
+  #
+  # ADR 0038 Phase 5 unified the roster into `chat_participants`. There is
+  # no separate `chat_space_agents` table anymore; `participant.role`
+  # carries `principal | member | admin | observer` for agent rows, and
+  # membership is just the presence of the row.
+  #
+  # The helpers below return maps shaped `%{agent_id, role, agent}` for
+  # backward compatibility with UI and roster-status callers.
+
+  @type roster_entry :: %{
+          required(:agent_id) => binary(),
+          required(:role) => String.t(),
+          required(:agent) => Agent.t() | nil,
+          required(:inserted_at) => DateTime.t() | nil
+        }
 
   @doc """
-  Set the principal agent for a space.
-
-  Atomically removes any existing principal and sets the new one.
-  If the agent already exists in the roster, promotes it; otherwise inserts.
+  Set the principal agent for a space. Demotes any existing principal to
+  `member` and promotes the target (inserting a participant row if needed).
   """
   @spec set_principal_agent(binary(), binary()) ::
-          {:ok, SpaceAgent.t()} | {:error, term()}
+          {:ok, roster_entry()} | {:error, term()}
   def set_principal_agent(space_id, agent_id) do
     Multi.new()
     |> Multi.run(:demote_existing, fn repo, _changes ->
-      case repo.get_by(SpaceAgent, space_id: space_id, role: "principal") do
+      case repo.get_by(Participant,
+             space_id: space_id,
+             participant_type: "agent",
+             role: "principal"
+           ) do
         nil ->
           {:ok, nil}
 
-        %SpaceAgent{agent_id: ^agent_id} = existing ->
-          # Already principal — no-op for demotion
+        %Participant{participant_id: ^agent_id} = existing ->
           {:ok, existing}
 
-        %SpaceAgent{} = existing ->
+        %Participant{} = existing ->
           existing
-          |> SpaceAgent.changeset(%{role: "member"})
+          |> Participant.changeset(%{role: "member"})
           |> repo.update()
       end
     end)
     |> Multi.run(:promote, fn repo, %{demote_existing: demoted} ->
       case demoted do
-        %SpaceAgent{agent_id: ^agent_id} ->
-          # Already principal
+        %Participant{participant_id: ^agent_id} ->
           {:ok, demoted}
 
         _ ->
-          case repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
-            nil ->
-              %SpaceAgent{}
-              |> SpaceAgent.changeset(%{
-                space_id: space_id,
-                agent_id: agent_id,
-                role: "principal"
-              })
-              |> repo.insert()
-
-            %SpaceAgent{} = existing ->
+          case repo.get_by(Participant,
+                 space_id: space_id,
+                 participant_type: "agent",
+                 participant_id: agent_id
+               ) do
+            %Participant{} = existing ->
               existing
-              |> SpaceAgent.changeset(%{role: "principal"})
+              |> Participant.changeset(%{role: "principal"})
               |> repo.update()
+
+            nil ->
+              case Repo.get(Agent, agent_id) do
+                %Agent{} = agent ->
+                  add_participant(space_id, %{
+                    participant_type: "agent",
+                    participant_id: agent.id,
+                    display_name: agent.name,
+                    role: "principal",
+                    attention_mode: "all",
+                    joined_at: DateTime.utc_now()
+                  })
+
+                nil ->
+                  {:error, :agent_not_found}
+              end
           end
       end
     end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{promote: space_agent}} ->
-        :telemetry.execute(
-          [:platform, :chat, :agent_roster_changed],
-          %{system_time: System.system_time()},
-          %{space_id: space_id, agent_id: agent_id, action: :set_principal}
-        )
-
-        Phoenix.PubSub.broadcast(
-          Platform.PubSub,
-          "space_agents:#{space_id}",
-          {:roster_changed, space_id}
-        )
-
-        {:ok, space_agent}
+      {:ok, %{promote: %Participant{} = participant}} ->
+        broadcast_roster_changed(space_id, agent_id, :set_principal)
+        {:ok, participant_to_roster_entry(participant)}
 
       {:error, _step, reason, _} ->
         {:error, reason}
@@ -1805,134 +1819,161 @@ defmodule Platform.Chat do
   end
 
   @doc """
-  Add an agent to a space's roster.
+  Add an agent to a space's roster. Idempotent insert; if the agent is
+  already a participant the existing row is returned unchanged.
 
   ## Options
 
     * `:role` — `"member"` (default) or `"principal"`
   """
   @spec add_space_agent(binary(), binary(), keyword()) ::
-          {:ok, SpaceAgent.t()} | {:error, term()}
+          {:ok, roster_entry()} | {:error, term()}
   def add_space_agent(space_id, agent_id, opts \\ []) do
     role = Keyword.get(opts, :role, "member")
 
-    result =
-      %SpaceAgent{}
-      |> SpaceAgent.changeset(%{space_id: space_id, agent_id: agent_id, role: role})
-      |> Repo.insert()
+    cond do
+      role == "principal" ->
+        set_principal_agent(space_id, agent_id)
 
-    case result do
-      {:ok, sa} ->
-        :telemetry.execute(
-          [:platform, :chat, :agent_roster_changed],
-          %{system_time: System.system_time()},
-          %{space_id: space_id, agent_id: agent_id, action: :added}
-        )
+      true ->
+        case Repo.get(Agent, agent_id) do
+          nil ->
+            {:error, :agent_not_found}
 
-        Phoenix.PubSub.broadcast(
-          Platform.PubSub,
-          "space_agents:#{space_id}",
-          {:roster_changed, space_id}
-        )
+          %Agent{} = agent ->
+            case add_agent_participant(space_id, agent,
+                   display_name: agent.name,
+                   joined_at: DateTime.utc_now()
+                 ) do
+              {:ok, participant} ->
+                broadcast_roster_changed(space_id, agent_id, :added)
+                {:ok, participant_to_roster_entry(participant)}
 
-        {:ok, sa}
-
-      error ->
-        error
+              error ->
+                error
+            end
+        end
     end
   end
 
-  @doc "Remove an agent from a space entirely (hard delete)."
+  @doc "Remove an agent from a space entirely (hard delete, ADR 0038)."
   @spec remove_space_agent(binary(), binary()) :: :ok | {:error, :not_found}
   def remove_space_agent(space_id, agent_id) do
-    case Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
+    case get_agent_participant(space_id, agent_id) do
       nil ->
         {:error, :not_found}
 
-      %SpaceAgent{} = sa ->
-        Repo.delete!(sa)
-
-        :telemetry.execute(
-          [:platform, :chat, :agent_roster_changed],
-          %{system_time: System.system_time()},
-          %{space_id: space_id, agent_id: agent_id, action: :removed}
-        )
-
-        Phoenix.PubSub.broadcast(
-          Platform.PubSub,
-          "space_agents:#{space_id}",
-          {:roster_changed, space_id}
-        )
-
+      %Participant{} = participant ->
+        {:ok, _} = Repo.delete(participant)
+        broadcast_roster_changed(space_id, agent_id, :removed)
         :ok
     end
   end
 
   @doc """
-  Ensure an agent exists in a space's roster.
-
-  This is idempotent:
-  - `role: "principal"` promotes the agent to principal via `set_principal_agent/2`
-  - `role: "member"` inserts a member row if missing, otherwise returns the
-    existing roster entry without demoting a principal
+  Ensure an agent is on a space's roster. Idempotent.
+  `:role` controls whether the ensure also promotes to principal.
   """
   @spec ensure_space_agent(binary(), binary(), keyword()) ::
-          {:ok, SpaceAgent.t()} | {:error, term()}
+          {:ok, roster_entry()} | {:error, term()}
   def ensure_space_agent(space_id, agent_id, opts \\ []) do
     role = Keyword.get(opts, :role, "member")
 
-    case role do
-      "principal" ->
+    case {role, get_agent_participant(space_id, agent_id)} do
+      {"principal", _} ->
         set_principal_agent(space_id, agent_id)
 
-      _ ->
-        case Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id) do
-          %SpaceAgent{} = existing -> {:ok, existing}
-          nil -> add_space_agent(space_id, agent_id, role: "member")
-        end
+      {_, %Participant{} = existing} ->
+        {:ok, participant_to_roster_entry(existing)}
+
+      {_, nil} ->
+        add_space_agent(space_id, agent_id, role: "member")
     end
   end
 
-  # ADR 0027: dismiss_space_agent/3 and reinvite_space_agent/2 removed.
-  # The 'dismissed' role no longer exists — use remove_space_agent/2 instead.
-
-  @doc "List all agents in a space's roster, with preloaded agent data."
-  @spec list_space_agents(binary()) :: [SpaceAgent.t()]
+  @doc "List all agents in a space's roster with agent preloaded."
+  @spec list_space_agents(binary()) :: [roster_entry()]
   def list_space_agents(space_id) do
-    from(sa in SpaceAgent,
-      where: sa.space_id == ^space_id,
-      preload: [:agent],
-      order_by: [asc: sa.inserted_at]
-    )
-    |> Repo.all()
+    participants =
+      from(p in Participant,
+        where: p.space_id == ^space_id and p.participant_type == "agent",
+        order_by: [asc: p.joined_at]
+      )
+      |> Repo.all()
+
+    preload_roster_entries(participants)
   end
 
   @doc "Get the principal agent for a space. Returns `nil` if none set."
-  @spec get_principal_agent(binary()) :: SpaceAgent.t() | nil
+  @spec get_principal_agent(binary()) :: roster_entry() | nil
   def get_principal_agent(space_id) do
-    from(sa in SpaceAgent,
-      where: sa.space_id == ^space_id and sa.role == "principal",
-      preload: [:agent],
-      limit: 1
-    )
-    |> Repo.one()
+    case Repo.one(
+           from(p in Participant,
+             where:
+               p.space_id == ^space_id and
+                 p.participant_type == "agent" and
+                 p.role == "principal",
+             limit: 1
+           )
+         ) do
+      nil -> nil
+      %Participant{} = p -> preload_roster_entries([p]) |> List.first()
+    end
   end
 
-  @doc "Get a specific space agent entry."
-  @spec get_space_agent(binary(), binary()) :: SpaceAgent.t() | nil
+  @doc "Get a specific space-agent roster entry, or `nil` if not present."
+  @spec get_space_agent(binary(), binary()) :: roster_entry() | nil
   def get_space_agent(space_id, agent_id) do
-    Repo.get_by(SpaceAgent, space_id: space_id, agent_id: agent_id)
+    case get_agent_participant(space_id, agent_id) do
+      nil -> nil
+      %Participant{} = p -> preload_roster_entries([p]) |> List.first()
+    end
   end
 
-  @doc "List all agents in a space's roster (all roles are active now — ADR 0027)."
-  @spec list_active_space_agents(binary()) :: [SpaceAgent.t()]
-  def list_active_space_agents(space_id) do
-    from(sa in SpaceAgent,
-      where: sa.space_id == ^space_id,
-      preload: [:agent],
-      order_by: [asc: sa.inserted_at]
+  @doc "Alias kept for call sites that still use the older name."
+  @spec list_active_space_agents(binary()) :: [roster_entry()]
+  def list_active_space_agents(space_id), do: list_space_agents(space_id)
+
+  defp preload_roster_entries([]), do: []
+
+  defp preload_roster_entries(participants) do
+    agent_ids = Enum.map(participants, & &1.participant_id) |> Enum.uniq()
+
+    agents_by_id =
+      Repo.all(from(a in Agent, where: a.id in ^agent_ids))
+      |> Map.new(&{&1.id, &1})
+
+    Enum.map(participants, fn p ->
+      %{
+        agent_id: p.participant_id,
+        role: p.role,
+        agent: Map.get(agents_by_id, p.participant_id),
+        inserted_at: p.joined_at
+      }
+    end)
+  end
+
+  defp participant_to_roster_entry(%Participant{} = p) do
+    %{
+      agent_id: p.participant_id,
+      role: p.role,
+      agent: Repo.get(Agent, p.participant_id),
+      inserted_at: p.joined_at
+    }
+  end
+
+  defp broadcast_roster_changed(space_id, agent_id, action) do
+    :telemetry.execute(
+      [:platform, :chat, :agent_roster_changed],
+      %{system_time: System.system_time()},
+      %{space_id: space_id, agent_id: agent_id, action: action}
     )
-    |> Repo.all()
+
+    Phoenix.PubSub.broadcast(
+      Platform.PubSub,
+      "space_agents:#{space_id}",
+      {:roster_changed, space_id}
+    )
   end
 
   # ── Unread counts ──────────────────────────────────────────────────────────

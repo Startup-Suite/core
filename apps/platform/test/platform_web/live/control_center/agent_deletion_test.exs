@@ -3,8 +3,7 @@ defmodule PlatformWeb.ControlCenter.AgentDeletionTest do
   Integration tests for agent deletion cascade cleanup.
 
   Verifies that deleting an agent via `AgentData.delete_agent/1` cleans up:
-  - chat_participants (soft-removed via left_at)
-  - chat_space_agents (roster entries deleted)
+  - chat_participants (hard-deleted, ADR 0038)
   - DM spaces (archived)
   - NodeContext ETS entries (cleared)
   - RuntimePresence entries (untracked)
@@ -16,7 +15,7 @@ defmodule PlatformWeb.ControlCenter.AgentDeletionTest do
 
   alias Platform.Agents.Agent
   alias Platform.Chat
-  alias Platform.Chat.{Participant, Space, SpaceAgent}
+  alias Platform.Chat.{Participant, Space}
   alias Platform.Federation.NodeContext
   alias Platform.Repo
 
@@ -70,9 +69,9 @@ defmodule PlatformWeb.ControlCenter.AgentDeletionTest do
     )
   end
 
-  defp roster_entries_for_agent(agent_id) do
-    Repo.all(from(sa in SpaceAgent, where: sa.agent_id == ^agent_id))
-  end
+  # Post-ADR-0038: "roster entries" are just agent participants, so the
+  # two queries coincide.
+  defp roster_entries_for_agent(agent_id), do: all_participants_for_agent(agent_id)
 
   # ── Tests ────────────────────────────────────────────────────────────────────
 

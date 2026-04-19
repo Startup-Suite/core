@@ -26,7 +26,7 @@ defmodule PlatformWeb.ControlCenter.AgentData do
   }
 
   alias Platform.Agents.AgentRuntime
-  alias Platform.Chat.{ActiveAgentStore, Participant, Space, SpaceAgent}
+  alias Platform.Chat.{ActiveAgentStore, Participant, Space}
   alias Platform.Federation
   alias Platform.Federation.{NodeContext, RuntimePresence}
   alias Platform.Repo
@@ -513,11 +513,10 @@ defmodule PlatformWeb.ControlCenter.AgentData do
           where: p.participant_type == "agent" and p.participant_id == ^agent.id
         )
       )
-      # 2. Remove all chat_space_agents roster entries
-      |> Multi.delete_all(
-        :remove_roster_entries,
-        from(sa in SpaceAgent, where: sa.agent_id == ^agent.id)
-      )
+      # Step 1 already hard-deleted every chat_participants row for this
+      # agent. Post-ADR-0038 that row *is* the roster entry, so there's
+      # nothing extra to remove. Keep the no-op step for ordering.
+      |> Multi.run(:remove_roster_entries, fn _repo, _changes -> {:ok, 0} end)
       # 3. Archive DM spaces where this agent was an active participant
       |> Multi.update_all(
         :archive_dm_spaces,

@@ -6,7 +6,7 @@ defmodule Platform.Chat.Participant do
   @foreign_key_type :binary_id
 
   @participant_types ~w(user agent)
-  @roles ~w(member admin observer)
+  @roles ~w(member admin observer principal)
   @attention_modes ~w(mention heartbeat active all)
 
   schema "chat_participants" do
