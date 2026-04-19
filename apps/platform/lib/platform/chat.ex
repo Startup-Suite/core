@@ -1611,30 +1611,40 @@ defmodule Platform.Chat do
         :ok
 
       tokens ->
-        # Limit lookup to agents on the space roster (ADR 0027). Name or slug
-        # match, case-insensitive.
-        roster_agent_ids = list_space_agents(space_id) |> Enum.map(& &1.agent_id)
+        # Any active agent in the space's workspace is eligible. Match by
+        # slug OR display name (case-insensitive). Currently-present
+        # participants are handled by the attention router; this path only
+        # fires an insert-if-missing, so already-present agents are no-ops.
+        workspace_id =
+          Repo.get(Space, space_id)
+          |> case do
+            %Space{workspace_id: wid} -> wid
+            _ -> nil
+          end
 
-        if roster_agent_ids != [] do
-          roster_agents =
-            Repo.all(
-              from(a in Platform.Agents.Agent,
-                where: a.id in ^roster_agent_ids and a.status != "archived"
-              )
-            )
+        from(a in Platform.Agents.Agent, where: a.status != "archived")
+        |> maybe_scope_to_workspace(workspace_id)
+        |> Repo.all()
+        |> Enum.each(fn agent ->
+          slug = String.downcase(agent.slug || "")
+          name = String.downcase(agent.name || "")
 
-          Enum.each(roster_agents, fn agent ->
-            slug = String.downcase(agent.slug || "")
-            name = String.downcase(agent.name || "")
-
-            if slug in tokens or name in tokens do
-              reinstate_on_mention(space_id, agent)
-            end
-          end)
-        end
+          if slug in tokens or name in tokens do
+            reinstate_on_mention(space_id, agent)
+          end
+        end)
 
         :ok
     end
+  end
+
+  # Single-tenant/default-org setups leave `workspace_id: nil` on both
+  # agents and spaces; in that case skip the scope filter and trust the
+  # name-match. Otherwise, scope to the space's workspace.
+  defp maybe_scope_to_workspace(query, nil), do: query
+
+  defp maybe_scope_to_workspace(query, workspace_id) do
+    from(a in query, where: a.workspace_id == ^workspace_id or is_nil(a.workspace_id))
   end
 
   defp reinvite_mentioned_agents(_), do: :ok
