@@ -7,12 +7,15 @@ defmodule Platform.Federation.ToolSurface do
 
   require Logger
 
+  alias Platform.Agents.Agent
   alias Platform.Chat
-  alias Platform.Chat.ContextPlane
+  alias Platform.Chat.{ActiveAgentStore, ContextPlane, Participant}
   alias Platform.Org.Context, as: OrgContext
   alias Platform.Tasks
   alias Platform.Tasks.{Plan, PlanEngine, Stage, Validation}
   alias Platform.Repo
+
+  import Ecto.Query, only: [from: 2]
 
   @bundles ~w(canvas messaging task plan review space context_read federation org_context)
 
@@ -338,6 +341,40 @@ defmodule Platform.Federation.ToolSurface do
         limitations: "Only returns spaces the agent is a participant in",
         when_to_use:
           "When you need to discover available spaces or find a space ID for proactive messaging"
+      },
+      %{
+        name: "space_list_agents",
+        description:
+          "List the agent participants in a space with their IDs, slugs, and display names. Use this to resolve an agent by name before calling tools that require an `agent_id` (e.g. `space_leave`).",
+        parameters: %{
+          space_id: %{type: "string", required: true, description: "UUID of the Suite space"}
+        },
+        returns:
+          "Array of `{agent_id, slug, name, display_name, participant_id, joined_at}`. Only active agent participants are returned (humans excluded, left agents excluded).",
+        limitations:
+          "Only agent participants currently in the space. Name matching is case-sensitive — compare against `slug` for stable lookups or `name` for the human-readable label.",
+        when_to_use:
+          "Before calling `space_leave` on another agent, or whenever you need to map a human-readable agent name to its UUID."
+      },
+      %{
+        name: "space_leave",
+        description:
+          "Remove an agent from a Suite space. Defaults to removing the calling agent (self-leave). Pass `agent_id` to remove a different agent — for example if you were asked to evict another agent who shouldn't be present. Hard-delete: the participant row is removed. Message history stays attributed via author-identity snapshots on each message (ADR 0038). To return, a user needs to @-mention the agent in a new message.",
+        parameters: %{
+          space_id: %{type: "string", required: true, description: "UUID of the Suite space"},
+          agent_id: %{
+            type: "string",
+            required: false,
+            description:
+              "UUID of the agent to remove. Omit to leave the space yourself (the calling agent)."
+          }
+        },
+        returns:
+          "`{space_id, agent_id, participant_id, removed: true, removed_at, self_removed}` on success. If the target was the active-agent mutex holder, the mutex is cleared as a side effect.",
+        limitations:
+          "Only removes agent participants (not humans). Target must currently be a participant in the space. If the target is the principal agent of an execution space with a live task, the space's task will orphan until re-assigned — use deliberately.",
+        when_to_use:
+          "When you were invited to a space you shouldn't be in (e.g. a private DM you're stuck listening to), or when asked to remove another agent who shouldn't be present."
       }
     ]
   end
@@ -442,50 +479,57 @@ defmodule Platform.Federation.ToolSurface do
   defp canvas_tools do
     [
       %{
-        name: "canvas_create",
+        name: "canvas.create",
         description:
-          "Create a new live canvas in a space. Canvases are collaborative visual artifacts (tables, forms, code blocks, diagrams, dashboards).",
+          "Create a live canvas with a canonical document (ADR 0036). The document is a node tree whose root type is one of the registered kinds.",
         parameters: %{
-          space_id: %{
-            type: "string",
-            required: true,
-            description: "The space to create the canvas in"
-          },
-          canvas_type: %{
-            type: "string",
-            required: true,
-            description: "One of: table, form, code, diagram, dashboard, custom"
-          },
-          title: %{
-            type: "string",
-            required: false,
-            description: "Human-readable title for the canvas"
-          },
-          initial_state: %{
+          space_id: %{type: "string", required: true, description: "Target space UUID"},
+          title: %{type: "string", required: false, description: "Human-readable title"},
+          document: %{
             type: "object",
-            required: false,
-            description: "Initial state map for the canvas"
+            required: true,
+            description:
+              "Canonical document. See canvas.describe on an existing canvas for a valid shape."
           }
         },
-        returns: "The created canvas object with id, title, type",
-        limitations: "Cannot create canvases in spaces the agent is not a participant of",
+        returns: "%{canvas_id, title, kind, revision}",
+        limitations: "Canvas kinds are defined in the kind registry.",
         when_to_use: "When you need to present structured, interactive, or visual data to users"
       },
       %{
-        name: "canvas_update",
-        description: "Update an existing canvas by merging new keys into its state.",
+        name: "canvas.patch",
+        description:
+          "Apply patch operations with rebase-or-reject concurrency (ADR 0036). Requires the current base_revision — the server compares it to the live revision and either applies, rebases, or rejects with a structured reason.",
         parameters: %{
-          canvas_id: %{type: "string", required: true, description: "The canvas to update"},
-          patches: %{
-            type: "object",
+          canvas_id: %{type: "string", required: true},
+          base_revision: %{
+            type: "integer",
             required: true,
-            description: "Map of keys to merge into canvas state"
+            description: "Revision the caller last observed (from canvas.describe)"
+          },
+          operations: %{
+            type: "array",
+            required: true,
+            description:
+              "Each op is [\"set_props\", id, props] | [\"replace_children\", id, children] | [\"append_child\", parent_id, child] | [\"delete_node\", id] | [\"replace_document\", doc]."
           }
         },
-        returns: "The updated canvas object",
+        returns: "%{canvas_id, revision} on success, structured conflict on rejection",
         limitations:
-          "Cannot update canvases in spaces the agent is not a participant of. Patches are merged, not replaced.",
+          "Rejection reasons: target_deleted, schema_violation, illegal_child, too_stale. Refresh with canvas.describe and retry.",
         when_to_use: "When you need to modify the content or state of an existing canvas"
+      },
+      %{
+        name: "canvas.describe",
+        description:
+          "Read the current document, revision, presence, and recent events for a canvas. Cheap, idempotent — call before patching so base_revision is fresh.",
+        parameters: %{
+          canvas_id: %{type: "string", required: true}
+        },
+        returns:
+          "%{canvas_id, title, space_id, kind, revision, document, presence, recent_events}",
+        limitations: "Only works for canvases in spaces the agent is a participant in.",
+        when_to_use: "Before emitting canvas.patch, or to present canvas state to a user"
       }
     ]
   end
@@ -1163,68 +1207,184 @@ defmodule Platform.Federation.ToolSurface do
      end)}
   end
 
-  # ── Canvas tools ─────────────────────────────────────────────────────────
+  def execute("space_list_agents", args, _context) do
+    space_id = Map.get(args, "space_id")
 
-  def execute("canvas_create", args, context) do
-    space_id = Map.get(args, "space_id") || Map.get(context, :space_id)
-    participant_id = Map.get(context, :agent_participant_id)
+    if not is_binary(space_id) or space_id == "" do
+      {:error,
+       %{
+         error: "space_id is required",
+         recoverable: false,
+         suggestion: "Provide a valid Suite space UUID"
+       }}
+    else
+      participants = Chat.list_participants(space_id, participant_type: "agent")
+      agent_ids = Enum.map(participants, & &1.participant_id) |> Enum.uniq()
 
-    canvas_attrs = %{
-      "canvas_type" => Map.get(args, "canvas_type", "custom"),
-      "title" => Map.get(args, "title"),
-      "state" => Map.get(args, "initial_state", %{})
-    }
+      agents_by_id =
+        if agent_ids == [] do
+          %{}
+        else
+          Repo.all(from(a in Agent, where: a.id in ^agent_ids))
+          |> Map.new(&{&1.id, &1})
+        end
 
-    try do
-      case Chat.create_canvas_with_message(space_id, participant_id, canvas_attrs) do
-        {:ok, canvas, _message} ->
-          {:ok, %{id: canvas.id, title: canvas.title, type: canvas.canvas_type}}
+      rows =
+        Enum.flat_map(participants, fn p ->
+          case Map.get(agents_by_id, p.participant_id) do
+            nil ->
+              []
 
-        {:error, reason} ->
-          {:error,
-           %{
-             error: "Failed to create canvas: #{inspect(reason)}",
-             recoverable: true,
-             suggestion: "Verify the space_id is valid and the agent is a participant"
-           }}
-      end
-    rescue
-      e ->
-        {:error,
-         %{
-           error: "Failed to create canvas: #{Exception.message(e)}",
-           recoverable: true,
-           suggestion: "Verify the space_id is valid and the agent is a participant"
-         }}
+            %Agent{} = agent ->
+              [
+                %{
+                  agent_id: agent.id,
+                  slug: agent.slug,
+                  name: agent.name,
+                  display_name: p.display_name || agent.name,
+                  participant_id: p.id,
+                  joined_at: p.joined_at
+                }
+              ]
+          end
+        end)
+
+      {:ok, rows}
     end
   end
 
-  def execute("canvas_update", args, _context) do
-    canvas_id = Map.get(args, "canvas_id")
-    patches = Map.get(args, "patches", %{})
+  def execute("space_leave", args, context) do
+    space_id = Map.get(args, "space_id")
+    calling_agent_id = Map.get(context, :agent_id)
+    target_agent_id = Map.get(args, "agent_id") || calling_agent_id
 
-    case Chat.get_canvas(canvas_id) do
-      nil ->
+    cond do
+      not is_binary(space_id) or space_id == "" ->
         {:error,
          %{
-           error: "Canvas not found: #{canvas_id}",
+           error: "space_id is required",
            recoverable: false,
-           suggestion: "Use canvas_create to create a new canvas instead"
+           suggestion: "Provide a valid Suite space UUID"
          }}
 
-      canvas ->
-        case Chat.update_canvas_state(canvas, patches) do
-          {:ok, updated} ->
-            {:ok, %{id: updated.id, title: updated.title, type: updated.canvas_type}}
+      not is_binary(target_agent_id) or target_agent_id == "" ->
+        {:error,
+         %{
+           error: "Caller identity unresolved and no agent_id supplied",
+           recoverable: false,
+           suggestion:
+             "This tool needs either a context-bound calling agent or an explicit agent_id parameter"
+         }}
 
-          {:error, reason} ->
+      true ->
+        case find_active_agent_participant(space_id, target_agent_id) do
+          nil ->
             {:error,
              %{
-               error: "Failed to update canvas: #{inspect(reason)}",
-               recoverable: true,
-               suggestion: "Check that the patches are valid JSON-compatible maps"
+               error:
+                 "Agent #{target_agent_id} is not an active participant in space #{space_id}",
+               recoverable: false,
+               suggestion:
+                 "Verify the space_id and agent_id. The agent may already have left, or was never added. Non-agent (human) participants cannot be removed via this tool."
              }}
+
+          %Participant{} = participant ->
+            case Chat.remove_participant(participant) do
+              {:ok, removed} ->
+                ActiveAgentStore.clear_if_match(space_id, removed.id)
+
+                {:ok,
+                 %{
+                   space_id: space_id,
+                   agent_id: target_agent_id,
+                   participant_id: removed.id,
+                   removed: true,
+                   removed_at: DateTime.utc_now(),
+                   self_removed: target_agent_id == calling_agent_id
+                 }}
+
+              {:error, reason} ->
+                {:error,
+                 %{
+                   error: "Failed to remove participant: #{inspect(reason)}",
+                   recoverable: true,
+                   suggestion: "Retry; if this persists the participant record may be corrupt"
+                 }}
+            end
         end
+    end
+  end
+
+  # Look up the agent's participant row in a space. Post-ADR-0038 there is
+  # no dismissed-but-present state — the row exists iff the agent is in the
+  # space. Scoped to participant_type="agent" so a user participant with a
+  # colliding UUID can't be matched here.
+  defp find_active_agent_participant(space_id, agent_id) do
+    from(p in Participant,
+      where:
+        p.space_id == ^space_id and
+          p.participant_id == ^agent_id and
+          p.participant_type == "agent"
+    )
+    |> Repo.one()
+  end
+
+  # ── Canvas tools (ADR 0036) ─────────────────────────────────────────────
+
+  def execute("canvas.create", args, context),
+    do: Platform.Chat.Canvas.ToolHandlers.create(args, context)
+
+  def execute("canvas.patch", args, context),
+    do: Platform.Chat.Canvas.ToolHandlers.patch(args, context)
+
+  def execute("canvas.describe", args, context),
+    do: Platform.Chat.Canvas.ToolHandlers.describe(args, context)
+
+  # Legacy underscore-names kept for one release — delegate to the new handlers.
+  def execute("canvas_create", args, context) do
+    case Platform.Chat.Canvas.ToolHandlers.create(args, context) do
+      {:ok, payload} ->
+        {:ok, %{id: payload.canvas_id, title: payload.title, kind: payload.kind}}
+
+      {:error, _} = err ->
+        err
+    end
+  rescue
+    e ->
+      {:error,
+       %{
+         error: "Failed to create canvas: #{Exception.message(e)}",
+         recoverable: true,
+         suggestion: "Verify the space_id is valid and the agent is a participant"
+       }}
+  end
+
+  def execute("canvas_update", args, context) do
+    # Legacy canvas_update wrote without base_revision; use a describe lookup
+    # to fetch current so callers that haven't migrated don't crash.
+    canvas_id = Map.get(args, "canvas_id")
+
+    with {:ok, %{revision: rev}} <- Platform.Chat.Canvas.Server.describe(canvas_id) do
+      patched_args = Map.put(args, "base_revision", rev)
+
+      case Platform.Chat.Canvas.ToolHandlers.patch(patched_args, context) do
+        {:ok, payload} ->
+          canvas = Chat.get_canvas(canvas_id)
+
+          {:ok,
+           %{
+             id: payload.canvas_id,
+             title: canvas && canvas.title,
+             kind: canvas && Platform.Chat.CanvasDocument.root_kind(canvas.document),
+             revision: payload.revision
+           }}
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      {:error, reason} ->
+        {:error, %{error: "canvas_update: #{inspect(reason)}", recoverable: true}}
     end
   end
 
@@ -1304,7 +1464,7 @@ defmodule Platform.Federation.ToolSurface do
          %{
            id: c.id,
            title: c.title,
-           type: c.canvas_type,
+           kind: Platform.Chat.CanvasDocument.root_kind(c.document),
            inserted_at: format_datetime(c.inserted_at),
            updated_at: format_datetime(c.updated_at)
          }
@@ -1330,7 +1490,7 @@ defmodule Platform.Federation.ToolSurface do
           result = %{
             id: canvas.id,
             title: canvas.title,
-            type: canvas.canvas_type,
+            kind: Platform.Chat.CanvasDocument.root_kind(canvas.document),
             space_id: canvas.space_id,
             inserted_at: format_datetime(canvas.inserted_at),
             updated_at: format_datetime(canvas.updated_at)
@@ -1338,7 +1498,7 @@ defmodule Platform.Federation.ToolSurface do
 
           result =
             if mode == "full" do
-              Map.put(result, :state, canvas.state)
+              Map.put(result, :document, canvas.document)
             else
               result
             end
@@ -2552,21 +2712,14 @@ defmodule Platform.Federation.ToolSurface do
          }}
 
       true ->
-        participant =
-          Repo.get_by(Chat.Participant,
-            space_id: space_id,
-            participant_type: "agent",
-            participant_id: agent_id
-          )
-
-        case participant do
-          %{left_at: nil} ->
+        case Chat.get_agent_participant(space_id, agent_id) do
+          %Chat.Participant{} ->
             :ok
 
           _ ->
             {:error,
              %{
-               error: "Access denied: agent is not an active participant in space #{space_id}",
+               error: "Access denied: agent is not a participant in space #{space_id}",
                recoverable: false,
                suggestion: "Use space_list to find spaces the agent has access to"
              }}
@@ -2578,8 +2731,8 @@ defmodule Platform.Federation.ToolSurface do
     agent_id = Map.get(context, :agent_id)
 
     if agent_id && space_id do
-      case Chat.ensure_agent_participant(space_id, agent_id) do
-        {:ok, participant} -> participant.id
+      case Chat.get_agent_participant(space_id, agent_id) do
+        %Chat.Participant{id: id} -> id
         _ -> nil
       end
     end

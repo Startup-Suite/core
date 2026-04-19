@@ -35,16 +35,19 @@ defmodule Platform.Federation.ToolSurfaceTest do
   defp unique_slug, do: "test-#{System.unique_integer([:positive])}"
 
   describe "tool_definitions/0" do
-    test "returns all 39 tools with required components" do
+    test "returns all 41 tools with required components" do
       tools = ToolSurface.tool_definitions()
-      assert length(tools) == 39
+      assert length(tools) == 42
 
       tool_names = Enum.map(tools, & &1.name)
       assert "send_media" in tool_names
       assert "react" in tool_names
       assert "space_list" in tool_names
-      assert "canvas_create" in tool_names
-      assert "canvas_update" in tool_names
+      assert "space_list_agents" in tool_names
+      assert "space_leave" in tool_names
+      assert "canvas.create" in tool_names
+      assert "canvas.patch" in tool_names
+      assert "canvas.describe" in tool_names
       assert "project_list" in tool_names
       assert "epic_list" in tool_names
       assert "task_create" in tool_names
@@ -138,17 +141,41 @@ defmodule Platform.Federation.ToolSurfaceTest do
         agent_participant_id: participant.id
       }
 
+      document = %{
+        "version" => 1,
+        "revision" => 1,
+        "root" => %{
+          "id" => "root",
+          "type" => "stack",
+          "props" => %{"gap" => 12},
+          "children" => [
+            %{
+              "id" => "t",
+              "type" => "table",
+              "props" => %{
+                "columns" => ["Name", "Owner"],
+                "rows" => [%{"Name" => "One", "Owner" => "You"}]
+              },
+              "children" => []
+            }
+          ]
+        },
+        "theme" => %{},
+        "bindings" => %{},
+        "meta" => %{}
+      }
+
       {:ok, result} =
         ToolSurface.execute(
           "canvas_create",
           %{
-            "canvas_type" => "table",
-            "title" => "Test Table"
+            "title" => "Test Table",
+            "document" => document
           },
           context
         )
 
-      assert result.type == "table"
+      assert result.kind == "stack"
       assert result.title == "Test Table"
       assert is_binary(result.id)
     end
@@ -554,6 +581,216 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
       assert length(results) == 1
       assert hd(results).name == "DM"
+    end
+
+    # ── space_list_agents ────────────────────────────────────────────────
+
+    test "space_list_agents returns active agent participants enriched with slug + name" do
+      higgins = create_agent(%{name: "Higgins"})
+      geordi = create_agent(%{name: "Geordi"})
+      space = create_space(%{name: "Engineering"})
+
+      {:ok, higgins_p} =
+        Chat.add_agent_participant(space.id, higgins, display_name: "Higgins")
+
+      {:ok, _geordi_p} =
+        Chat.add_agent_participant(space.id, geordi, display_name: "Geordi")
+
+      {:ok, rows} = ToolSurface.execute("space_list_agents", %{"space_id" => space.id}, %{})
+
+      assert length(rows) == 2
+      higgins_row = Enum.find(rows, &(&1.agent_id == higgins.id))
+      assert higgins_row.slug == higgins.slug
+      assert higgins_row.name == "Higgins"
+      assert higgins_row.display_name == "Higgins"
+      assert higgins_row.participant_id == higgins_p.id
+      assert %DateTime{} = higgins_row.joined_at
+    end
+
+    test "space_list_agents excludes human participants and left agents" do
+      higgins = create_agent(%{name: "Higgins"})
+      geordi = create_agent(%{name: "Geordi"})
+      space = create_space(%{name: "Mixed"})
+
+      {:ok, _} = Chat.add_agent_participant(space.id, higgins, display_name: "Higgins")
+      {:ok, geordi_p} = Chat.add_agent_participant(space.id, geordi, display_name: "Geordi")
+
+      # Human participant — uses a raw UUID, no corresponding agent row.
+      human_user_id = Ecto.UUID.generate()
+
+      create_participant(space.id, %{
+        participant_type: "user",
+        participant_id: human_user_id,
+        display_name: "Human"
+      })
+
+      # Geordi leaves.
+      {:ok, _} = Chat.remove_participant(geordi_p)
+
+      {:ok, rows} = ToolSurface.execute("space_list_agents", %{"space_id" => space.id}, %{})
+
+      agent_ids = Enum.map(rows, & &1.agent_id)
+      assert higgins.id in agent_ids
+      refute geordi.id in agent_ids
+      refute human_user_id in agent_ids
+    end
+
+    test "space_list_agents returns an error when space_id is missing" do
+      assert {:error, err} = ToolSurface.execute("space_list_agents", %{}, %{})
+      assert err.error =~ "space_id is required"
+    end
+
+    # ── space_leave ──────────────────────────────────────────────────────
+
+    test "space_leave removes the calling agent from the space (self-leave)" do
+      ensure_active_agent_store()
+
+      agent = create_agent()
+      space = create_space(%{name: "DM Stuck", kind: "dm", slug: unique_slug()})
+
+      {:ok, participant} =
+        Chat.add_agent_participant(space.id, agent, display_name: agent.name)
+
+      {:ok, result} =
+        ToolSurface.execute("space_leave", %{"space_id" => space.id}, %{agent_id: agent.id})
+
+      assert result.space_id == space.id
+      assert result.agent_id == agent.id
+      assert result.participant_id == participant.id
+      assert result.removed == true
+      assert result.self_removed == true
+      assert %DateTime{} = result.removed_at
+
+      # Hard-delete (ADR 0038): the row is gone.
+      assert Chat.get_agent_participant(space.id, agent.id) == nil
+    end
+
+    test "space_leave removes a different agent when agent_id is provided" do
+      ensure_active_agent_store()
+
+      higgins = create_agent(%{name: "Higgins"})
+      geordi = create_agent(%{name: "Geordi"})
+      space = create_space(%{name: "Engineering"})
+
+      {:ok, _higgins_p} =
+        Chat.add_agent_participant(space.id, higgins, display_name: "Higgins")
+
+      {:ok, geordi_p} =
+        Chat.add_agent_participant(space.id, geordi, display_name: "Geordi")
+
+      {:ok, result} =
+        ToolSurface.execute(
+          "space_leave",
+          %{"space_id" => space.id, "agent_id" => geordi.id},
+          %{agent_id: higgins.id}
+        )
+
+      assert result.agent_id == geordi.id
+      assert result.participant_id == geordi_p.id
+      assert result.self_removed == false
+
+      assert Chat.get_agent_participant(space.id, geordi.id) == nil
+      # Caller stays put.
+      refute Chat.list_participants(space.id) |> Enum.any?(&(&1.participant_id == geordi.id))
+      assert Chat.list_participants(space.id) |> Enum.any?(&(&1.participant_id == higgins.id))
+    end
+
+    test "space_leave returns an error when the target agent is not in the space" do
+      ensure_active_agent_store()
+
+      agent = create_agent()
+      space = create_space()
+
+      assert {:error, error} =
+               ToolSurface.execute(
+                 "space_leave",
+                 %{"space_id" => space.id},
+                 %{agent_id: agent.id}
+               )
+
+      assert error.error =~ "not an active participant"
+      assert error.recoverable == false
+    end
+
+    test "space_leave refuses to remove human participants (agent-only tool)" do
+      ensure_active_agent_store()
+
+      caller = create_agent()
+      space = create_space()
+      human = create_participant(space.id, %{display_name: "Ryan"})
+
+      # Try to target the human's participant_id — the helper filters on
+      # participant_type="agent", so this should come back with not-found
+      # rather than actually removing the human.
+      {:error, error} =
+        ToolSurface.execute(
+          "space_leave",
+          %{"space_id" => space.id, "agent_id" => human.participant_id},
+          %{agent_id: caller.id}
+        )
+
+      assert error.error =~ "not an active participant"
+      # Human is still a participant.
+      assert Repo.reload!(human)
+    end
+
+    test "space_leave is idempotent — already-left participants return not-found" do
+      ensure_active_agent_store()
+
+      agent = create_agent()
+      space = create_space()
+
+      {:ok, _participant} =
+        Chat.add_agent_participant(space.id, agent, display_name: agent.name)
+
+      # First call removes cleanly.
+      {:ok, _} =
+        ToolSurface.execute("space_leave", %{"space_id" => space.id}, %{agent_id: agent.id})
+
+      assert Chat.get_agent_participant(space.id, agent.id) == nil
+
+      # Second call: the participant row is gone, so the lookup returns nil
+      # and the tool surfaces a clear error.
+      {:error, error} =
+        ToolSurface.execute("space_leave", %{"space_id" => space.id}, %{agent_id: agent.id})
+
+      assert error.error =~ "not an active participant"
+    end
+
+    test "space_leave clears the active-agent mutex if the leaver was holding it" do
+      ensure_active_agent_store()
+
+      agent = create_agent()
+      space = create_space()
+
+      {:ok, participant} =
+        Chat.add_agent_participant(space.id, agent, display_name: agent.name)
+
+      Platform.Chat.ActiveAgentStore.set_active(space.id, participant.id)
+      assert Platform.Chat.ActiveAgentStore.get_active(space.id) == participant.id
+
+      {:ok, _} =
+        ToolSurface.execute("space_leave", %{"space_id" => space.id}, %{agent_id: agent.id})
+
+      assert Platform.Chat.ActiveAgentStore.get_active(space.id) == nil
+    end
+
+    test "space_leave requires space_id" do
+      agent = create_agent()
+
+      assert {:error, error} =
+               ToolSurface.execute("space_leave", %{}, %{agent_id: agent.id})
+
+      assert error.error =~ "space_id is required"
+    end
+
+    test "space_leave requires an identifiable caller when agent_id arg is omitted" do
+      space = create_space()
+
+      assert {:error, error} =
+               ToolSurface.execute("space_leave", %{"space_id" => space.id}, %{})
+
+      assert error.error =~ "identity unresolved"
     end
 
     # ── send_media ───────────────────────────────────────────────────────
@@ -1000,7 +1237,6 @@ defmodule Platform.Federation.ToolSurfaceTest do
     test "canvas_list returns canvases in a space", ctx do
       {:ok, canvas, _msg} =
         Chat.create_canvas_with_message(ctx.space.id, ctx.participant.id, %{
-          "canvas_type" => "table",
           "title" => "Test Canvas"
         })
 
@@ -1014,7 +1250,7 @@ defmodule Platform.Federation.ToolSurfaceTest do
       assert length(results) >= 1
       entry = Enum.find(results, &(&1.id == canvas.id))
       assert entry.title == "Test Canvas"
-      assert entry.type == "table"
+      assert entry.kind == "stack"
       assert is_binary(entry.inserted_at)
     end
 
@@ -1036,9 +1272,7 @@ defmodule Platform.Federation.ToolSurfaceTest do
     test "canvas_get returns summary by default", ctx do
       {:ok, canvas, _msg} =
         Chat.create_canvas_with_message(ctx.space.id, ctx.participant.id, %{
-          "canvas_type" => "code",
-          "title" => "My Code",
-          "state" => %{"language" => "elixir", "code" => "IO.puts(:hello)"}
+          "title" => "My Code"
         })
 
       {:ok, result} =
@@ -1050,17 +1284,15 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
       assert result.id == canvas.id
       assert result.title == "My Code"
-      assert result.type == "code"
+      assert result.kind == "stack"
       assert result.space_id == ctx.space.id
-      refute Map.has_key?(result, :state)
+      refute Map.has_key?(result, :document)
     end
 
-    test "canvas_get with mode=full includes state", ctx do
+    test "canvas_get with mode=full includes the document", ctx do
       {:ok, canvas, _msg} =
         Chat.create_canvas_with_message(ctx.space.id, ctx.participant.id, %{
-          "canvas_type" => "table",
-          "title" => "Data Table",
-          "state" => %{"rows" => [%{"a" => 1}]}
+          "title" => "Data Table"
         })
 
       {:ok, result} =
@@ -1071,7 +1303,8 @@ defmodule Platform.Federation.ToolSurfaceTest do
         )
 
       assert result.id == canvas.id
-      assert is_map(result.state)
+      assert is_map(result.document)
+      assert result.document["root"]["type"] == "stack"
     end
 
     test "canvas_get with non-existent canvas returns error", ctx do
@@ -1091,7 +1324,6 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
       {:ok, canvas, _msg} =
         Chat.create_canvas_with_message(other_space.id, other_participant.id, %{
-          "canvas_type" => "table",
           "title" => "Secret Canvas"
         })
 
@@ -1122,6 +1354,23 @@ defmodule Platform.Federation.ToolSurfaceTest do
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────
+
+  # `space_leave` calls ActiveAgentStore.clear_if_match/2 — start the GenServer
+  # the first time a test needs it and allow the test process to share the
+  # repo sandbox connection.
+  defp ensure_active_agent_store do
+    alias Ecto.Adapters.SQL.Sandbox
+    alias Platform.Chat.ActiveAgentStore
+
+    pid =
+      case Process.whereis(ActiveAgentStore) do
+        nil -> start_supervised!({ActiveAgentStore, []})
+        existing -> existing
+      end
+
+    Sandbox.allow(Repo, self(), pid)
+    :ok
+  end
 
   defp create_agent(attrs \\ %{}) do
     defaults = %{

@@ -364,10 +364,7 @@ defmodule PlatformWeb.ChatLive do
   def handle_event("canvas_create", %{"canvas" => canvas_params}, socket) do
     with space when not is_nil(space) <- socket.assigns.active_space,
          participant when not is_nil(participant) <- socket.assigns.current_participant do
-      attrs =
-        canvas_params
-        |> Map.take(["title", "canvas_type"])
-        |> Map.put("state", CanvasHooks.default_state(canvas_params["canvas_type"]))
+      attrs = Map.take(canvas_params, ["title"])
 
       case Chat.create_canvas_with_message(space.id, participant.id, attrs) do
         {:ok, canvas, message} ->
@@ -571,13 +568,19 @@ defmodule PlatformWeb.ChatLive do
   # ADR 0027: default_attention_mode/1 and default_attention_label/1 removed
   # (agent_attention field no longer exists on Space)
 
+  # ADR 0038: participant rows represent current membership only — no
+  # soft-delete to reconcile. If the user is in the space they get their
+  # existing row; otherwise a fresh row is inserted.
   defp ensure_participant(space_id, user_id) do
     existing =
       space_id
-      |> Chat.list_participants(include_left: true)
+      |> Chat.list_participants()
       |> Enum.find(fn p -> p.participant_id == user_id end)
 
     case existing do
+      %Chat.Participant{} = p ->
+        p
+
       nil ->
         display_name = name_for_user(user_id)
 
@@ -589,15 +592,6 @@ defmodule PlatformWeb.ChatLive do
              }) do
           {:ok, p} -> p
           {:error, _} -> nil
-        end
-
-      %{left_at: nil} = p ->
-        p
-
-      p ->
-        case Chat.update_participant(p, %{left_at: nil, joined_at: DateTime.utc_now()}) do
-          {:ok, rejoined} -> rejoined
-          {:error, _} -> p
         end
     end
   end

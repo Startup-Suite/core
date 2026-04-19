@@ -481,10 +481,10 @@
             >
               <div class="min-w-0">
                 <p class="truncate text-sm font-semibold text-base-content">
-                  {canvas.title || CanvasHooks.humanize_type(canvas.canvas_type)}
+                  {canvas.title || CanvasHooks.humanize_kind(canvas)}
                 </p>
                 <p class="text-[11px] uppercase tracking-widest text-base-content/50">
-                  {CanvasHooks.humanize_type(canvas.canvas_type)}
+                  {CanvasHooks.humanize_kind(canvas)}
                 </p>
               </div>
 
@@ -525,21 +525,6 @@
                 placeholder="Sprint planning board"
                 class="input input-bordered w-full"
               />
-            </div>
-
-            <div class="space-y-1.5">
-              <label class="text-xs font-semibold uppercase tracking-widest text-base-content/50">
-                Canvas type
-              </label>
-              <select name="canvas[canvas_type]" class="select select-bordered w-full">
-                <option
-                  :for={type <- @canvas_types}
-                  value={type}
-                  selected={@new_canvas_form[:canvas_type].value == type}
-                >
-                  {CanvasHooks.humanize_type(type)}
-                </option>
-              </select>
             </div>
 
             <button
@@ -592,15 +577,13 @@
           <div class="flex-shrink-0 mt-0.5 message-avatar">
             <%= if MapSet.member?(@agent_participant_ids, msg.participant_id) do %>
               <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold select-none bg-base-300 text-primary msg-agent-avatar">
-                {PresenceHooks.avatar_initial(@participants_map, msg.participant_id)}
+                {PresenceHooks.avatar_initial(@participants_map, msg)}
               </div>
             <% else %>
               <.human_avatar
-                name={PresenceHooks.sender_name(@participants_map, msg.participant_id)}
-                avatar_url={
-                  PresenceHooks.sender_avatar_url(@participants_map, msg.participant_id)
-                }
-                seed={PresenceHooks.sender_avatar_seed(@participants_map, msg.participant_id)}
+                name={PresenceHooks.sender_name(@participants_map, msg)}
+                avatar_url={PresenceHooks.sender_avatar_url(@participants_map, msg)}
+                seed={PresenceHooks.sender_avatar_seed(@participants_map, msg)}
                 size="md"
               />
             <% end %>
@@ -616,7 +599,7 @@
                   else: "text-base-content"
                 )
               ]}>
-                {PresenceHooks.sender_name(@participants_map, msg.participant_id)}
+                {PresenceHooks.sender_name(@participants_map, msg)}
                 <span
                   :if={MapSet.member?(@agent_participant_ids, msg.participant_id)}
                   class="msg-agent-badge"
@@ -721,7 +704,7 @@
                   {CanvasHooks.message_canvas_title(msg, @canvases_by_message_id)}
                 </p>
                 <p class="text-[11px] uppercase tracking-widest text-base-content/50">
-                  {CanvasHooks.message_canvas_type(msg, @canvases_by_message_id)} canvas
+                  Canvas
                 </p>
               </div>
             </div>
@@ -878,7 +861,7 @@
                           do: "ai-name"
                         )
                       ]}>
-                        {PresenceHooks.sender_name(@participants_map, tmsg.participant_id)}
+                        {PresenceHooks.sender_name(@participants_map, tmsg)}
                       </span>
                       <span
                         :if={MapSet.member?(@agent_participant_ids, tmsg.participant_id)}
