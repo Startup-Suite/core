@@ -631,6 +631,8 @@ defmodule Platform.Chat do
   """
   @spec post_message(map(), keyword()) :: {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
   def post_message(attrs, opts \\ []) do
+    attrs = put_author_snapshot(attrs, :participant_id, :author)
+
     result =
       %Message{}
       |> Message.changeset(attrs)
@@ -657,6 +659,8 @@ defmodule Platform.Chat do
           {:ok, Message.t(), [Attachment.t()]} | {:error, term()}
   def post_message_with_attachments(attrs, attachment_attrs_list, opts \\ [])
       when is_list(attachment_attrs_list) do
+    attrs = put_author_snapshot(attrs, :participant_id, :author)
+
     multi =
       Multi.new()
       |> Multi.insert(:message, Message.changeset(%Message{}, attrs))
@@ -1170,6 +1174,8 @@ defmodule Platform.Chat do
   """
   @spec pin_message(map()) :: {:ok, Pin.t()} | {:error, Ecto.Changeset.t()}
   def pin_message(attrs) do
+    attrs = put_author_snapshot(attrs, :pinned_by, :pinned_by)
+
     result =
       %Pin{}
       |> Pin.changeset(attrs)
@@ -1243,7 +1249,10 @@ defmodule Platform.Chat do
   """
   @spec create_canvas(map()) :: {:ok, Canvas.t()} | {:error, Ecto.Changeset.t()}
   def create_canvas(attrs) do
-    attrs = stringify_canvas_payload(attrs)
+    attrs =
+      attrs
+      |> stringify_canvas_payload()
+      |> put_canvas_creator_snapshot()
 
     result =
       %Canvas{}
@@ -1268,6 +1277,7 @@ defmodule Platform.Chat do
           {:ok, Canvas.t(), Message.t()} | {:error, term()}
   def create_canvas_with_message(space_id, participant_id, attrs \\ %{}) do
     attrs = stringify_canvas_payload(attrs)
+    snapshot = author_snapshot_for(participant_id)
 
     multi =
       Multi.new()
@@ -1275,21 +1285,25 @@ defmodule Platform.Chat do
         attrs
         |> Map.put("space_id", space_id)
         |> Map.put("created_by", participant_id)
+        |> Map.put("created_by_display_name", snapshot[:author_display_name])
+        |> Map.put("created_by_participant_type", snapshot[:author_participant_type])
         |> then(&Canvas.changeset(%Canvas{}, &1))
         |> repo.insert()
       end)
       |> Multi.run(:message, fn repo, %{canvas: canvas} ->
-        message_attrs = %{
-          space_id: space_id,
-          participant_id: participant_id,
-          canvas_id: canvas.id,
-          content_type: "canvas",
-          content: Map.get(attrs, "message_content") || default_canvas_message(attrs),
-          structured_content: %{
-            "canvas_id" => canvas.id,
-            "title" => Map.get(attrs, "title")
+        message_attrs =
+          %{
+            space_id: space_id,
+            participant_id: participant_id,
+            canvas_id: canvas.id,
+            content_type: "canvas",
+            content: Map.get(attrs, "message_content") || default_canvas_message(attrs),
+            structured_content: %{
+              "canvas_id" => canvas.id,
+              "title" => Map.get(attrs, "title")
+            }
           }
-        }
+          |> Map.merge(snapshot)
 
         %Message{}
         |> Message.changeset(message_attrs)
@@ -1587,6 +1601,87 @@ defmodule Platform.Chat do
   end
 
   defp stringify_canvas_payload(value), do: value
+
+  # ── Author snapshots (ADR 0038) ────────────────────────────────────────────
+  #
+  # Snapshot the authoring participant's identity onto the owning row so
+  # rendering never depends on the participant still existing. If the
+  # caller already supplied snapshot fields, they're preserved.
+
+  defp put_author_snapshot(attrs, source_key, role) do
+    pid = fetch_map(attrs, source_key)
+
+    cond do
+      already_snapshotted?(attrs, role) ->
+        attrs
+
+      is_binary(pid) ->
+        Map.merge(snapshot_map(author_snapshot_for(pid), role), attrs)
+
+      true ->
+        attrs
+    end
+  end
+
+  defp put_canvas_creator_snapshot(attrs) do
+    cond do
+      Map.get(attrs, "created_by_display_name") not in [nil, ""] ->
+        attrs
+
+      is_binary(Map.get(attrs, "created_by")) ->
+        snap = author_snapshot_for(Map.get(attrs, "created_by"))
+
+        attrs
+        |> Map.put("created_by_display_name", snap[:author_display_name])
+        |> Map.put("created_by_participant_type", snap[:author_participant_type])
+
+      true ->
+        attrs
+    end
+  end
+
+  defp author_snapshot_for(participant_id) when is_binary(participant_id) do
+    case Repo.get(Participant, participant_id) do
+      %Participant{} = p ->
+        %{
+          author_display_name: p.display_name,
+          author_avatar_url: p.avatar_url,
+          author_participant_type: p.participant_type,
+          author_agent_id: if(p.participant_type == "agent", do: p.participant_id),
+          author_user_id: if(p.participant_type == "user", do: p.participant_id)
+        }
+
+      nil ->
+        %{}
+    end
+  end
+
+  defp author_snapshot_for(_), do: %{}
+
+  # Translate the canonical `:author_*` shape into role-specific keys. The
+  # message path uses `author_*` directly; pins use `pinned_by_*`.
+  defp snapshot_map(snap, :author), do: snap
+
+  defp snapshot_map(snap, :pinned_by) do
+    %{
+      pinned_by_display_name: snap[:author_display_name],
+      pinned_by_participant_type: snap[:author_participant_type]
+    }
+  end
+
+  defp already_snapshotted?(attrs, :author) do
+    fetch_map(attrs, :author_display_name) not in [nil, ""]
+  end
+
+  defp already_snapshotted?(attrs, :pinned_by) do
+    fetch_map(attrs, :pinned_by_display_name) not in [nil, ""]
+  end
+
+  defp fetch_map(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp fetch_map(_, _), do: nil
 
   # ── Space Agent Roster ──────────────────────────────────────────────────────
 
