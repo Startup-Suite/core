@@ -509,7 +509,19 @@ defmodule Platform.Chat.AttentionRouter do
 
   defp mentioned?(_participant, _message), do: false
 
-  defp extract_bracketed_tokens(content) do
+  @doc """
+  Extract ADR 0037 `@[Display Name]` bracketed mention tokens from content.
+
+  Returns `{tokens, legacy_zone}` where:
+    * `tokens` is the list of display-name strings captured between brackets
+    * `legacy_zone` is the original content with the bracketed forms stripped,
+      suitable for the legacy `@name` substring check.
+
+  Public so `Chat.post_message` can use the same parser to resolve
+  mention-based reinvites without duplicating the regex.
+  """
+  @spec extract_bracketed_tokens(String.t()) :: {[String.t()], String.t()}
+  def extract_bracketed_tokens(content) when is_binary(content) do
     tokens =
       ~r/@\[([^\[\]]+)\]/
       |> Regex.scan(content, capture: :all_but_first)
@@ -518,6 +530,8 @@ defmodule Platform.Chat.AttentionRouter do
     legacy_zone = Regex.replace(~r/@\[([^\[\]]+)\]/, content, "")
     {tokens, legacy_zone}
   end
+
+  def extract_bracketed_tokens(_), do: {[], ""}
 
   defp name_mention?(name, bracketed_tokens, legacy_zone) do
     name in bracketed_tokens or String.contains?(legacy_zone, "@#{name}")

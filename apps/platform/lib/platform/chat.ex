@@ -640,6 +640,7 @@ defmodule Platform.Chat do
 
     case result do
       {:ok, msg} ->
+        reinvite_mentioned_agents(msg)
         publish_message_posted(msg, opts)
 
       _ ->
@@ -686,6 +687,7 @@ defmodule Platform.Chat do
           |> Enum.sort_by(fn {{:attachment, index}, _value} -> index end)
           |> Enum.map(fn {_key, attachment} -> attachment end)
 
+        reinvite_mentioned_agents(message)
         publish_message_posted(message, opts)
         {:ok, message, attachments}
 
@@ -1601,6 +1603,78 @@ defmodule Platform.Chat do
   end
 
   defp stringify_canvas_payload(value), do: value
+
+  # ── Mention-based reinvite (ADR 0038) ──────────────────────────────────────
+  #
+  # An @-mention of an agent who isn't currently an active participant brings
+  # them back. This is the ONLY path that should resurrect a dismissed agent
+  # — the contract the product owner wants is "dismiss = gone; @mention = back".
+  # Agents must be on the space's roster; we don't add agents out of thin air.
+
+  defp reinvite_mentioned_agents(%Message{space_id: space_id, content: content})
+       when is_binary(content) and content != "" do
+    {bracketed, _legacy_zone} =
+      Platform.Chat.AttentionRouter.extract_bracketed_tokens(String.downcase(content))
+
+    case bracketed do
+      [] ->
+        :ok
+
+      tokens ->
+        # Limit lookup to agents on the space roster (ADR 0027). Name or slug
+        # match, case-insensitive.
+        roster_agent_ids = list_space_agents(space_id) |> Enum.map(& &1.agent_id)
+
+        if roster_agent_ids != [] do
+          roster_agents =
+            Repo.all(
+              from(a in Platform.Agents.Agent,
+                where: a.id in ^roster_agent_ids and a.status != "archived"
+              )
+            )
+
+          Enum.each(roster_agents, fn agent ->
+            slug = String.downcase(agent.slug || "")
+            name = String.downcase(agent.name || "")
+
+            if slug in tokens or name in tokens do
+              reinstate_on_mention(space_id, agent)
+            end
+          end)
+        end
+
+        :ok
+    end
+  end
+
+  defp reinvite_mentioned_agents(_), do: :ok
+
+  # Narrow resurrect: only called from the mention-reinvite path. Inserts a
+  # fresh participant row if none exists, or clears `left_at` if one does.
+  # Phase 4 will hard-delete on dismissal and this function will shed its
+  # `left_at` branch.
+  defp reinstate_on_mention(space_id, %Platform.Agents.Agent{} = agent) do
+    case Repo.get_by(Participant,
+           space_id: space_id,
+           participant_type: "agent",
+           participant_id: agent.id
+         ) do
+      nil ->
+        add_participant(space_id, %{
+          participant_type: "agent",
+          participant_id: agent.id,
+          display_name: agent.name,
+          attention_mode: "mention",
+          joined_at: DateTime.utc_now()
+        })
+
+      %Participant{left_at: nil} ->
+        :ok
+
+      %Participant{} = p ->
+        update_participant(p, %{left_at: nil, joined_at: DateTime.utc_now()})
+    end
+  end
 
   # ── Author snapshots (ADR 0038) ────────────────────────────────────────────
   #
