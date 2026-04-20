@@ -8,7 +8,8 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
   alias Platform.Repo
 
   setup do
-    root = Path.join(System.tmp_dir!(), "platform-attachment-handlers-test-#{Ecto.UUID.generate()}")
+    root =
+      Path.join(System.tmp_dir!(), "platform-attachment-handlers-test-#{Ecto.UUID.generate()}")
 
     prev = Application.get_env(:platform, :chat_attachments_root)
     Application.put_env(:platform, :chat_attachments_root, root)
@@ -61,7 +62,7 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
       assert is_binary(result.id)
       assert result.url == "/chat/attachments/#{result.id}"
       assert result.byte_size == byte_size(payload)
-      assert result.content_hash == (:crypto.hash(:sha256, payload) |> Base.encode16(case: :lower))
+      assert result.content_hash == :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
       assert result.content_type == "application/octet-stream"
       assert result.deduplicated == false
     end
@@ -73,7 +74,8 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
       Application.put_env(:platform, :inline_upload_max_bytes, 100)
 
       on_exit(fn ->
-        if prev, do: Application.put_env(:platform, :inline_upload_max_bytes, prev),
+        if prev,
+          do: Application.put_env(:platform, :inline_upload_max_bytes, prev),
           else: Application.delete_env(:platform, :inline_upload_max_bytes)
       end)
 
@@ -94,6 +96,7 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
       %{space: space, participant: participant} = setup_space()
 
       payload = :crypto.strong_rand_bytes(512)
+
       base_args = %{
         "space_id" => space.id,
         "filename" => "dupe.bin",
@@ -119,7 +122,9 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
         "data_base64" => Base.encode64("x")
       }
 
-      assert {:error, payload} = ToolHandlers.upload_inline(args, %{agent_id: Ecto.UUID.generate()})
+      assert {:error, payload} =
+               ToolHandlers.upload_inline(args, %{agent_id: Ecto.UUID.generate()})
+
       assert payload.recoverable == false
       assert payload.error =~ "not a participant"
     end
@@ -156,7 +161,8 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
       Application.put_env(:platform, :upload_max_bytes, 1_000)
 
       on_exit(fn ->
-        if prev, do: Application.put_env(:platform, :upload_max_bytes, prev),
+        if prev,
+          do: Application.put_env(:platform, :upload_max_bytes, prev),
           else: Application.delete_env(:platform, :upload_max_bytes)
       end)
 
@@ -209,7 +215,10 @@ defmodule Platform.Chat.Attachments.ToolHandlersTest do
       {:ok, _} = LocalDisk.persist(pending.storage_key, {:binary, payload})
 
       assert {:ok, finalized} =
-               ToolHandlers.finalize_pending(started.id, %{byte_size: byte_size(payload), content_hash: hash})
+               ToolHandlers.finalize_pending(started.id, %{
+                 byte_size: byte_size(payload),
+                 content_hash: hash
+               })
 
       assert finalized.id == first.id
       assert finalized.deduplicated == true

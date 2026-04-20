@@ -55,7 +55,9 @@ defmodule Platform.Chat.AttachmentReaper do
     expired =
       Repo.all(
         from(a in Attachment,
-          where: a.state == "pending" and not is_nil(a.upload_expires_at) and a.upload_expires_at < ^now,
+          where:
+            a.state == "pending" and not is_nil(a.upload_expires_at) and
+              a.upload_expires_at < ^now,
           select: %{id: a.id, storage_key: a.storage_key}
         )
       )

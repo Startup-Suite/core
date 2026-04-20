@@ -52,7 +52,10 @@ defmodule Platform.Chat.Attachments.ToolHandlers do
 
         {:error, reason} ->
           {:error,
-           %{error: "attachment.upload_inline: persist failed: #{inspect(reason)}", recoverable: true}}
+           %{
+             error: "attachment.upload_inline: persist failed: #{inspect(reason)}",
+             recoverable: true
+           }}
       end
     end
   end
@@ -104,8 +107,7 @@ defmodule Platform.Chat.Attachments.ToolHandlers do
           end
 
         {:error, %Ecto.Changeset{} = cs} ->
-          {:error,
-           %{error: "attachment.upload_start: #{inspect(cs.errors)}", recoverable: true}}
+          {:error, %{error: "attachment.upload_start: #{inspect(cs.errors)}", recoverable: true}}
       end
     end
   end
@@ -250,15 +252,26 @@ defmodule Platform.Chat.Attachments.ToolHandlers do
 
   defp require_string(args, key) do
     case Map.get(args, key) do
-      v when is_binary(v) and v != "" -> {:ok, v}
-      _ -> {:error, %{error: "attachment: missing or invalid \"#{key}\" (string)", recoverable: true}}
+      v when is_binary(v) and v != "" ->
+        {:ok, v}
+
+      _ ->
+        {:error,
+         %{error: "attachment: missing or invalid \"#{key}\" (string)", recoverable: true}}
     end
   end
 
   defp require_positive_integer(args, key) do
     case Map.get(args, key) do
-      v when is_integer(v) and v > 0 -> {:ok, v}
-      _ -> {:error, %{error: "attachment: missing or invalid \"#{key}\" (positive integer)", recoverable: true}}
+      v when is_integer(v) and v > 0 ->
+        {:ok, v}
+
+      _ ->
+        {:error,
+         %{
+           error: "attachment: missing or invalid \"#{key}\" (positive integer)",
+           recoverable: true
+         }}
     end
   end
 
@@ -269,8 +282,11 @@ defmodule Platform.Chat.Attachments.ToolHandlers do
 
       :error ->
         case Base.decode64(s) do
-          {:ok, bytes} -> {:ok, bytes}
-          :error -> {:error, %{error: "attachment: data_base64 is not valid base64", recoverable: true}}
+          {:ok, bytes} ->
+            {:ok, bytes}
+
+          :error ->
+            {:error, %{error: "attachment: data_base64 is not valid base64", recoverable: true}}
         end
     end
   end
@@ -324,7 +340,13 @@ defmodule Platform.Chat.Attachments.ToolHandlers do
     end
   end
 
-  defp adapter, do: Application.get_env(:platform, :attachment_storage_adapter, AttachmentStorage.Adapter.LocalDisk)
+  defp adapter,
+    do:
+      Application.get_env(
+        :platform,
+        :attachment_storage_adapter,
+        AttachmentStorage.Adapter.LocalDisk
+      )
 
   defp inline_upload_max_bytes,
     do: Application.get_env(:platform, :inline_upload_max_bytes, 25 * 1024 * 1024)
