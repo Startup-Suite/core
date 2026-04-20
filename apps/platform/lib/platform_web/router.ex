@@ -38,6 +38,15 @@ defmodule PlatformWeb.Router do
     get("/chat/attachments/:id", ChatAttachmentController, :show)
   end
 
+  # Presigned upload POST — HMAC token in the URL is the only auth. No
+  # session / no bearer. Body parsers are bypassed via the endpoint's
+  # body-reader skip-list so the controller can stream raw bytes.
+  scope "/", PlatformWeb do
+    pipe_through(:api)
+
+    post("/chat/attachments/upload/:token", ChatAttachmentUploadController, :create)
+  end
+
   scope "/", PlatformWeb do
     pipe_through(:browser)
 
