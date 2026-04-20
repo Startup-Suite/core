@@ -23,6 +23,21 @@ defmodule PlatformWeb.Router do
     plug(PlatformWeb.Plugs.RequireAuth)
   end
 
+  # Attachment reads accept either a browser session or a runtime bearer
+  # token. The plug assigns `conn.assigns.principal` in either shape so the
+  # controller can authorize against the attachment's `space_id`.
+  pipeline :attachment_auth do
+    plug(:accepts, ["html", "json"])
+    plug(:fetch_session)
+    plug(PlatformWeb.Plugs.AttachmentAuth)
+  end
+
+  scope "/", PlatformWeb do
+    pipe_through(:attachment_auth)
+
+    get("/chat/attachments/:id", ChatAttachmentController, :show)
+  end
+
   scope "/", PlatformWeb do
     pipe_through(:browser)
 
@@ -42,7 +57,6 @@ defmodule PlatformWeb.Router do
     # Root redirects to /chat
     get("/", PageController, :home)
 
-    get("/chat/attachments/:id", ChatAttachmentController, :show)
     get("/artifacts/preview", ArtifactPreviewController, :show)
     get("/api/transcripts/:id/download", TranscriptController, :show)
 
