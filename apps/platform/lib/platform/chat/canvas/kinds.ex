@@ -334,9 +334,14 @@ defmodule Platform.Chat.Canvas.Kinds do
   # kinds without custom rules are a no-op here.
   defp validate_kind_props(mod, %{"props" => props}, path) when is_map(props) do
     case mod.validate_props(props) do
-      :ok -> :ok
-      {:error, reason} when is_binary(reason) -> {:error, ["node at #{path} #{reason}"]}
-      {:error, reasons} when is_list(reasons) -> {:error, Enum.map(reasons, &"node at #{path} #{&1}")}
+      :ok ->
+        :ok
+
+      {:error, reason} when is_binary(reason) ->
+        {:error, ["node at #{path} #{reason}"]}
+
+      {:error, reasons} when is_list(reasons) ->
+        {:error, Enum.map(reasons, &"node at #{path} #{&1}")}
     end
   end
 

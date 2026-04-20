@@ -26,7 +26,8 @@ defmodule Platform.Chat.Canvas.Kinds.ImageTest do
           {"protocol-relative", "//cdn.example.com/foo.png"},
           {"path outside /chat/attachments", "/other/path/foo.png"},
           {"/chat/attachments/<not-a-uuid>", "/chat/attachments/not-a-uuid"},
-          {"/chat/attachments/ with trailing path", "/chat/attachments/a1b2c3d4-e5f6-7890-abcd-ef1234567890/../etc"},
+          {"/chat/attachments/ with trailing path",
+           "/chat/attachments/a1b2c3d4-e5f6-7890-abcd-ef1234567890/../etc"},
           {"empty string", ""}
         ] do
       test "rejects #{label}: #{bad_src}" do
