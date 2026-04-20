@@ -26,7 +26,8 @@ defmodule PlatformWeb.ChatAttachmentUploadController do
          %Attachment{state: "pending", storage_key: ^key} = attachment <- lookup_pending(key),
          :ok <- validate_content_type(conn, attachment),
          {:ok, tmp_path, byte_size} <- stream_body_to_tmp(conn, max_bytes),
-         {:ok, %{byte_size: ^byte_size, content_hash: _} = stat} <- persist_bytes(attachment, tmp_path) do
+         {:ok, %{byte_size: ^byte_size, content_hash: _} = stat} <-
+           persist_bytes(attachment, tmp_path) do
       File.rm(tmp_path)
 
       case ToolHandlers.finalize_pending(attachment.id, stat) do
@@ -39,13 +40,26 @@ defmodule PlatformWeb.ChatAttachmentUploadController do
           send_error(conn, 500, "finalize failed: #{inspect(reason)}")
       end
     else
-      {:error, :invalid} -> send_error(conn, 401, "invalid upload token")
-      {:error, :expired} -> send_error(conn, 410, "upload token expired")
-      {:error, :too_large} -> send_error(conn, 413, "body exceeds max_bytes")
-      {:error, :content_type_mismatch} -> send_error(conn, 400, "content-type does not match reserved row")
-      {:error, reason} -> send_error(conn, 500, "upload failed: #{inspect(reason)}")
-      nil -> send_error(conn, 404, "no pending reservation for key")
-      %Attachment{} -> send_error(conn, 409, "attachment already finalized")
+      {:error, :invalid} ->
+        send_error(conn, 401, "invalid upload token")
+
+      {:error, :expired} ->
+        send_error(conn, 410, "upload token expired")
+
+      {:error, :too_large} ->
+        send_error(conn, 413, "body exceeds max_bytes")
+
+      {:error, :content_type_mismatch} ->
+        send_error(conn, 400, "content-type does not match reserved row")
+
+      {:error, reason} ->
+        send_error(conn, 500, "upload failed: #{inspect(reason)}")
+
+      nil ->
+        send_error(conn, 404, "no pending reservation for key")
+
+      %Attachment{} ->
+        send_error(conn, 409, "attachment already finalized")
     end
   end
 
@@ -55,8 +69,12 @@ defmodule PlatformWeb.ChatAttachmentUploadController do
 
   defp validate_content_type(conn, %Attachment{content_type: declared}) do
     case get_req_header(conn, "content-type") do
-      [] -> :ok
-      [^declared | _] -> :ok
+      [] ->
+        :ok
+
+      [^declared | _] ->
+        :ok
+
       [sent | _] ->
         if strip_params(sent) == strip_params(declared) do
           :ok
@@ -72,7 +90,10 @@ defmodule PlatformWeb.ChatAttachmentUploadController do
 
   defp stream_body_to_tmp(conn, max_bytes) do
     tmp_path =
-      Path.join(System.tmp_dir!(), "att-upload-#{System.unique_integer([:positive])}-#{Ecto.UUID.generate()}")
+      Path.join(
+        System.tmp_dir!(),
+        "att-upload-#{System.unique_integer([:positive])}-#{Ecto.UUID.generate()}"
+      )
 
     case File.open(tmp_path, [:write, :binary, :raw]) do
       {:ok, io} ->
@@ -130,5 +151,10 @@ defmodule PlatformWeb.ChatAttachmentUploadController do
   end
 
   defp adapter,
-    do: Application.get_env(:platform, :attachment_storage_adapter, AttachmentStorage.Adapter.LocalDisk)
+    do:
+      Application.get_env(
+        :platform,
+        :attachment_storage_adapter,
+        AttachmentStorage.Adapter.LocalDisk
+      )
 end

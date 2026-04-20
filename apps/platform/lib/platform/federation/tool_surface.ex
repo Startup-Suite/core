@@ -122,7 +122,11 @@ defmodule Platform.Federation.ToolSurface do
             required: true,
             description: "Declared size in bytes; enforced at POST time"
           },
-          canvas_id: %{type: "string", required: false, description: "Attach to a specific canvas"}
+          canvas_id: %{
+            type: "string",
+            required: false,
+            description: "Attach to a specific canvas"
+          }
         },
         returns: "%{id, upload_url, expires_at, max_bytes, url}",
         limitations:
