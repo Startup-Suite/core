@@ -35,7 +35,7 @@ defmodule Platform.Chat do
   import Ecto.Query
 
   alias Ecto.Multi
-  alias Platform.Agents.Agent
+  alias Platform.Agents.{Agent, AgentRuntime}
 
   alias Platform.Chat.{
     Attachment,
@@ -1539,6 +1539,55 @@ defmodule Platform.Chat do
     )
     |> Repo.one()
   end
+
+  @doc """
+  Fetch an attachment for a principal (ADR 0039 phase 3).
+
+  Extends `get_visible_attachment/1` with a space-membership check so the
+  same route can serve session users and runtime bearers:
+
+    - `{:user, user_id}` — must be a `participant_type: "user"` participant in
+      `attachment.space_id`.
+    - `{:runtime, %AgentRuntime{}}` — the runtime's `agent_id` must be a
+      `participant_type: "agent"` participant in `attachment.space_id`.
+
+  Attachments without a `space_id` (legacy rows pre-1a backfill) fall back to
+  the message-deleted check alone, so existing behavior is preserved.
+  """
+  @spec get_visible_attachment_for_principal(
+          binary(),
+          {:user, binary()} | {:runtime, AgentRuntime.t()}
+        ) :: Attachment.t() | nil
+  def get_visible_attachment_for_principal(id, principal) do
+    case get_visible_attachment(id) do
+      nil ->
+        nil
+
+      %Attachment{space_id: nil} = attachment ->
+        attachment
+
+      %Attachment{space_id: space_id} = attachment ->
+        if principal_is_member?(space_id, principal), do: attachment, else: nil
+    end
+  end
+
+  defp principal_is_member?(space_id, {:user, user_id}) when is_binary(user_id) do
+    Repo.exists?(
+      from(p in Participant,
+        where:
+          p.space_id == ^space_id and
+            p.participant_type == "user" and
+            p.participant_id == ^user_id
+      )
+    )
+  end
+
+  defp principal_is_member?(space_id, {:runtime, %AgentRuntime{agent_id: agent_id}})
+       when is_binary(agent_id) do
+    not is_nil(get_agent_participant(space_id, agent_id))
+  end
+
+  defp principal_is_member?(_space_id, _principal), do: false
 
   @doc "List attachments for a message, oldest first."
   @spec list_attachments(binary()) :: [Attachment.t()]
