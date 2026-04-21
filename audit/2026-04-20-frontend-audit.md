@@ -8,8 +8,8 @@
 ## Executive summary
 
 1. **One user-blocker.** Mobile PWA has no way to create a new DM or channel — the affordance is inside a desktop-only `<aside class="hidden lg:flex">`. This is the bug Kelly flagged, and it's the same root cause as BACKLOG #1. **~20 lines of heex fixes it.**
-2. **One WCAG violation.** Viewport meta at `layouts/root.html.heex:5-8` includes `maximum-scale=1`, blocking user zoom. WCAG 2.1 SC 1.4.4 (Resize Text) violation with no design justification.
-3. **iOS zoom-on-focus bug.** Composer textarea `font-size: 14px` (`app.css:1123`) triggers iOS Safari's "zoom on focus" behaviour. Combined with `maximum-scale=1`, users get stuck zoomed after their first tap.
+2. **iOS zoom-on-focus bug.** Composer textarea `font-size: 14px` (`app.css:1123`) triggers iOS Safari's "zoom on focus" behaviour — Safari auto-zooms any input below 16px on focus, and combined with the `maximum-scale=1` lock (kept intentionally for native-app feel), the UI can get "unmoored / stuck zoomed." Fix is at the source: bump to `font-size: 16px`, so no zoom triggers in the first place. **Does NOT require removing `maximum-scale=1`.**
+3. **~~WCAG violation~~ → Product philosophy choice.** I initially flagged `maximum-scale=1` as WCAG 2.1 SC 1.4.4 (Resize Text). Per Ryan's correction: Suite operates as an installed PWA intended to feel like a native chat app, and you can't pinch-zoom into arbitrary parts of native chat apps either. The constraint is intentional. **Low-vision a11y is covered via OS-level Dynamic Type / Android font scale** — worth verifying Suite respects those settings as a separate investigation, not a viewport-meta change.
 4. **Attachment rendering is NOT a template issue.** The grey box is the unstyled `.gallery-item` background showing through when `<img>` fails to load (likely 404 from lost container-local storage volume, or `content_type` misclassification on iOS uploads).
 5. **The orientation brief's framing was partially stale.** Hotspots #2 (canvas transition) and #4 (meeting dead code) are already ~90% done. What's left there is *cleanup*, not structural refactor. The audit recommendations reflect the actual current state.
 6. **Touch-interaction gaps are pervasive.** The `opacity-0 group-hover:opacity-100` pattern (used for reactions, message actions, thread-open) is invisible on touch. Reaction hit-targets are 22-26px (below 44pt iOS / 48dp Android minimums). Kanban drag-drop uses HTML5 DnD, which does not fire on iOS Safari touch.
@@ -21,7 +21,7 @@
 | # | Title | Scope | Why this order |
 |---|---|---|---|
 | 1 | `fix(mobile): add new-conversation + new-channel buttons to mobile drawer` | 20 LOC heex | Unblocks users today. Zero risk. |
-| 2 | `fix(mobile): remove maximum-scale=1, raise composer font-size, 44pt touch targets` | ~40 LOC | WCAG compliance + iOS zoom fix + hit-target a11y. |
+| 2 | `fix(mobile): composer font-size 16px (iOS zoom-on-focus fix) + 44pt touch targets` | ~20 LOC | Eliminates the iOS Safari zoom-on-focus trigger at the source (so `maximum-scale=1` can stay — native-app feel intact) + hit-target a11y. |
 | 3 | `fix(chat): attachment render fallback + content-type sniffing` | ~80 LOC | Fixes visible "grey box" bug + makes storage-missing cases legible. |
 | 4 | `feat(chat): touch-polish reactions (44pt pills, always-visible "+", responsive picker grid)` | ~300 LOC CSS + heex | Mobile reactions UX polish per BACKLOG #3. |
 | 5 | `refactor(chat): namespace MessagesHooks events, standardize param casing, document attach order` | ~60 LOC | Pays down ChatLive modularization tech debt. Low user-visible impact. |
@@ -197,11 +197,11 @@ This leaves **8 hotspots with real, actionable findings.** Hotspots #2, #4, #10 
 
 ### Hotspot #8 — Mobile responsive behavior
 
-**Current state:** Viewport meta at `layouts/root.html.heex:5-8` has `viewport-fit=cover` (good) and `maximum-scale=1` (a11y violation). Safe-area top/bottom only. Mobile drawer via `@mobile_browser_open`. Canvas/meeting panels have `lg:hidden` overlays. Composer, reactions, tasks kanban, admin screens are desktop-first.
+**Current state:** Viewport meta at `layouts/root.html.heex:5-8` has `viewport-fit=cover` (good) and `maximum-scale=1` (intentional per Ryan — native-app feel; see finding #1 below). Safe-area top/bottom only. Mobile drawer via `@mobile_browser_open`. Canvas/meeting panels have `lg:hidden` overlays. Composer, reactions, tasks kanban, admin screens are desktop-first.
 
 **Findings:**
-1. **[bug, must-fix]** `maximum-scale=1` in viewport meta — **WCAG 2.1 SC 1.4.4 violation**, no design justification.
-2. **[bug, must-fix]** Composer textarea `font-size: 14px` triggers iOS Safari zoom-on-focus. With `maximum-scale=1`, users stuck zoomed.
+1. **[product-choice, NOT a bug]** `maximum-scale=1` in viewport meta is **intentional** per Ryan — Suite operates as an installed PWA targeting native-app feel, and native chat apps (Slack, Discord, iMessage) don't allow arbitrary pinch-zoom either. The abstract WCAG 2.1 SC 1.4.4 concern is satisfied via OS-level Dynamic Type / Android font scale, not via pinch-zoom. **Verify** (separate investigation): that Suite's PWA respects `env(font-size)` / iOS Large Text settings. **Do NOT remove `maximum-scale=1`.**
+2. **[bug, must-fix]** Composer textarea `font-size: 14px` triggers iOS Safari's zoom-on-focus (Safari auto-zooms any input below 16px on focus). Combined with the locked viewport, the UI becomes "unmoored / stuck zoomed." **Fix at the source: 16px font — no zoom triggers, no unmooring, native-app feel preserved.**
 3. **[bug, must-fix]** Composer send 36×36, attach 32×32 — below 44pt.
 4. **[friction]** Composer + keyboard: no `interactive-widget=resizes-content` hint. Composer hides behind keyboard on some Android Chrome.
 5. **[friction]** `@mention` dropdown fixed `w-64`, anchored bottom-left. Overflows viewport at 320px.
@@ -212,10 +212,10 @@ This leaves **8 hotspots with real, actionable findings.** Hotspots #2, #4, #10 
 10. **[opportunity]** No `@media (prefers-reduced-motion: reduce)` despite several animations.
 
 **Tasks:**
-- [must-fix] Remove `maximum-scale=1` from viewport meta. 1 line.
-- [must-fix] Composer textarea `font-size: 16px` at `<640px`. ~5 LOC.
+- [must-fix] Composer textarea `font-size: 16px` at `<640px`. Fixes iOS zoom-on-focus **at the source** — so `maximum-scale=1` stays locked for native-app feel. ~5 LOC.
 - [must-fix] Composer attach/send `min-h-[44px] min-w-[44px]` on touch. ~10 LOC.
 - [must-fix] `.safe-area-left/-right` + apply to mobile overlays. ~15 LOC.
+- [investigate, separate] Verify PWA respects iOS Large Text / Android font scale (OS-level a11y path, since we're keeping pinch-zoom locked).
 - [should-fix] `interactive-widget=resizes-content`. 1 line.
 - [should-fix] `@mention` dropdown viewport-aware positioning. ~30 LOC.
 - [should-fix] Tasks mobile drawer mirroring `@mobile_browser_open`. ~60 LOC.
@@ -305,10 +305,9 @@ This leaves **8 hotspots with real, actionable findings.** Hotspots #2, #4, #10 
 | # | Task | Hotspot | Est. |
 |---|---|---|---|
 | 1 | Mobile "New Conversation" + "New Channel" buttons | #11 | ~20 LOC |
-| 2 | Remove `maximum-scale=1` from viewport meta (WCAG) | #8 | 1 line |
-| 3 | Composer font-size 16px at `<640px` (iOS zoom fix) | #8 | ~5 LOC |
-| 4 | Composer attach/send `min-h-[44px] min-w-[44px]` on touch | #8 | ~10 LOC |
-| 5 | Safe-area left/right on mobile overlays | #8 | ~15 LOC |
+| 2 | Composer font-size 16px at `<640px` (iOS zoom-on-focus fix — keeps `maximum-scale=1` locked for native feel) | #8 | ~5 LOC |
+| 3 | Composer attach/send `min-h-[44px] min-w-[44px]` on touch | #8 | ~10 LOC |
+| 4 | Safe-area left/right on mobile overlays | #8 | ~15 LOC |
 | 6 | `<img>` `onerror` fallback for attachments | #1 | ~15 LOC |
 | 7 | Content-type sniffing on upload (PNG/JPEG magic bytes) | #1 | ~30 LOC |
 | 8 | **Verify persistent volume mount for attachment storage** (ops) | #1 | infra |
@@ -388,8 +387,8 @@ Five PRs, sized to ship incrementally:
 **Unblocks users today.** ~20 LOC heex, zero backend work. Tests: LiveView test exercising the mobile path.
 **Hotspot:** #11
 
-### PR 2 — `fix(a11y): remove maximum-scale=1, iOS zoom fix, 44pt touch targets, safe-area left/right`
-**WCAG compliance + basic mobile hygiene.** ~40 LOC across viewport meta + composer CSS.
+### PR 2 — `fix(mobile): composer font-size 16px + 44pt touch targets + safe-area left/right`
+**iOS zoom-on-focus fix at the source (keeps `maximum-scale=1` for native-app feel) + hit-target a11y.** ~30 LOC across composer CSS and mobile overlays. Per Ryan's guidance, do **not** remove `maximum-scale=1` — the zoom restriction is intentional product philosophy; the bug is the 14px composer font triggering Safari's auto-zoom, which we fix at the trigger.
 **Hotspot:** #8
 
 ### PR 3 — `fix(chat): attachment render fallback, content-type sniffing, skeleton loading`
