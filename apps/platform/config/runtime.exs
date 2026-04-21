@@ -107,11 +107,22 @@ proof_mode =
 config :platform,
   agent_workspace_path: System.get_env("AGENT_WORKSPACE_PATH", "/data/agents/zip"),
   anthropic_api_key: System.get_env("ANTHROPIC_API_KEY"),
-  chat_attachments_root: System.get_env("CHAT_ATTACHMENTS_ROOT", "/data/platform/chat_uploads"),
   inline_upload_max_bytes:
     String.to_integer(System.get_env("INLINE_UPLOAD_MAX_BYTES", "26214400")),
   upload_max_bytes: String.to_integer(System.get_env("UPLOAD_MAX_BYTES", "524288000")),
   pending_ttl_seconds: String.to_integer(System.get_env("PENDING_TTL_SECONDS", "900"))
+
+# chat_attachments_root: prod must have a persistent volume mount; dev + test
+# fall through to the AttachmentStorage default (a /tmp subdir) so local
+# runs don't require pre-provisioning /data/platform/chat_uploads.
+if config_env() == :prod do
+  config :platform,
+    chat_attachments_root: System.get_env("CHAT_ATTACHMENTS_ROOT", "/data/platform/chat_uploads")
+else
+  if root = System.get_env("CHAT_ATTACHMENTS_ROOT") do
+    config :platform, chat_attachments_root: root
+  end
+end
 
 # :attachment_signing_key is set by dev.exs/test.exs for local envs; prod
 # must read it from an env var and fail fast if unset.
