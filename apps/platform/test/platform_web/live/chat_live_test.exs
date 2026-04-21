@@ -794,6 +794,107 @@ defmodule PlatformWeb.ChatLiveTest do
       assert html =~ "safety message"
     end
 
+    test "reaction pill carries data-reactors JSON and aria-label with reactor names",
+         %{conn: conn} do
+      # Desktop reactor-popover feature: the server embeds the reactor list
+      # in data-reactors on each pill (read lazily on hover by the JS hook)
+      # and emits an aria-label on the pill itself so screen readers get
+      # the full list without needing to open the popover. Mobile is
+      # intentionally no-op on the hook side, but the aria-label is
+      # rendered on every platform.
+      conn = authenticated_conn(conn)
+
+      space =
+        Chat.get_space_by_slug("general") ||
+          elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
+
+      alice = insert_chat_user(%{name: "Alice", email: "alice@example.com", oidc_sub: "alice"})
+      bob = insert_chat_user(%{name: "Bob", email: "bob@example.com", oidc_sub: "bob"})
+
+      alice_participant = add_user_message(space, alice, "pizza or thai?")
+      [msg | _] = Chat.list_messages(space.id)
+
+      {:ok, bob_participant} =
+        Chat.add_participant(space.id, %{
+          participant_type: "user",
+          participant_id: bob.id,
+          display_name: bob.name,
+          joined_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        Chat.add_reaction(%{
+          message_id: msg.id,
+          participant_id: alice_participant.id,
+          emoji: "🍕"
+        })
+
+      {:ok, _} =
+        Chat.add_reaction(%{
+          message_id: msg.id,
+          participant_id: bob_participant.id,
+          emoji: "🍕"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+      # Pill carries the data attributes the hook reads.
+      assert html =~ ~s(phx-hook="ReactorPopover")
+      assert html =~ ~s(data-emoji="🍕")
+
+      # Both reactor names are embedded in the JSON payload (order
+      # follows insertion; the test doesn't pin order).
+      assert html =~ "Alice"
+      assert html =~ "Bob"
+      assert html =~ ~s(data-reactors=)
+
+      # aria-label on the pill itself renders the human-readable list
+      # regardless of hook activation.
+      assert html =~ "Alice and Bob reacted with 🍕" ||
+               html =~ "Bob and Alice reacted with 🍕"
+    end
+
+    test "reactor popover marks agent reactors with is_agent=true",
+         %{conn: conn} do
+      # Agents react via the same Participant/Reaction path humans do.
+      # The reactor list must flag them so the UI can render the AI badge.
+      conn = authenticated_conn(conn)
+
+      space =
+        Chat.get_space_by_slug("general") ||
+          elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
+
+      user = insert_chat_user(%{name: "Kelly", email: "kelly@example.com", oidc_sub: "kelly"})
+      agent = insert_chat_agent(%{name: "Higgins", slug: "higgins"})
+
+      _user_participant = add_user_message(space, user, "anyone around?")
+      [msg | _] = Chat.list_messages(space.id)
+
+      {:ok, agent_participant} =
+        Chat.add_participant(space.id, %{
+          participant_type: "agent",
+          participant_id: agent.id,
+          display_name: agent.name,
+          joined_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        Chat.add_reaction(%{
+          message_id: msg.id,
+          participant_id: agent_participant.id,
+          emoji: "✅"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+      # JSON attribute must carry is_agent:true for the agent reactor.
+      # The Jason encoder escapes quotes in HTML attributes, so match
+      # permissively across the encoding.
+      assert html =~ ~s(data-emoji="✅")
+      assert html =~ "Higgins"
+      assert html =~ ~s("is_agent":true) || html =~ ~s(&quot;is_agent&quot;:true)
+    end
+
     test "opening the reaction picker renders the popover for the target message",
          %{conn: conn} do
       conn = authenticated_conn(conn)
