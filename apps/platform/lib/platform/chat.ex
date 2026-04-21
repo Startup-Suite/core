@@ -74,6 +74,10 @@ defmodule Platform.Chat do
           %{space_id: space.id, slug: space.slug, kind: space.kind}
         )
 
+        # Broadcast on the global space-lifecycle topic so connected chat
+        # sessions can surface the new channel without requiring a refresh.
+        ChatPubSub.broadcast_space_event({:space_created, space})
+
       _ ->
         :ok
     end
@@ -111,9 +115,9 @@ defmodule Platform.Chat do
 
     base =
       if archived do
-        from(s in Space, where: not is_nil(s.archived_at), order_by: [asc: s.inserted_at])
+        from(s in Space, where: not is_nil(s.archived_at), order_by: [asc: s.name])
       else
-        from(s in Space, where: is_nil(s.archived_at), order_by: [asc: s.inserted_at])
+        from(s in Space, where: is_nil(s.archived_at), order_by: [asc: s.name])
       end
 
     # Exclude execution spaces by default
