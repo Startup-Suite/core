@@ -854,6 +854,63 @@ defmodule PlatformWeb.ChatLiveTest do
                html =~ "Bob and Alice reacted with 🍕"
     end
 
+    test "reactor name survives hard-delete of the participant",
+         %{conn: conn} do
+      # Snapshot parity with ADR 0038: when a participant is hard-deleted
+      # from a space, the reactions they made keep the display name they
+      # had at reaction-time. The ON DELETE SET NULL FK nulls the
+      # reaction's participant_id but leaves the snapshot columns, and
+      # the read-path falls back to them.
+      conn = authenticated_conn(conn)
+
+      space =
+        Chat.get_space_by_slug("general") ||
+          elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
+
+      author = insert_chat_user(%{name: "Author", email: "author@example.com", oidc_sub: "author"})
+      reactor = insert_chat_user(%{name: "Zoe", email: "zoe@example.com", oidc_sub: "zoe"})
+
+      _author_participant = add_user_message(space, author, "vote on this")
+      [msg | _] = Chat.list_messages(space.id)
+
+      {:ok, reactor_participant} =
+        Chat.add_participant(space.id, %{
+          participant_type: "user",
+          participant_id: reactor.id,
+          display_name: reactor.name,
+          joined_at: DateTime.utc_now()
+        })
+
+      {:ok, _} =
+        Chat.add_reaction(%{
+          message_id: msg.id,
+          participant_id: reactor_participant.id,
+          emoji: "👍"
+        })
+
+      # Sanity: snapshot was captured at write time.
+      [reaction] = Chat.list_reactions(msg.id)
+      assert reaction.reactor_display_name == "Zoe"
+      assert reaction.reactor_participant_type == "user"
+
+      # Hard-delete the reactor's participant row (simulating dismissal).
+      # The FK is ON DELETE SET NULL, so the reaction row survives with
+      # participant_id: nil and the snapshot intact.
+      Repo.delete!(reactor_participant)
+
+      [reaction_after] = Chat.list_reactions(msg.id)
+      assert reaction_after.participant_id == nil
+      assert reaction_after.reactor_display_name == "Zoe"
+
+      # LV load still renders Zoe's name via the snapshot fallback —
+      # aria-label gets the right reactor even though the live
+      # participants_map no longer contains them.
+      {:ok, _view, html} = live(conn, ~p"/chat/general")
+
+      assert html =~ "Zoe"
+      assert html =~ "Zoe reacted with 👍"
+    end
+
     test "reactor popover marks agent reactors with is_agent=true",
          %{conn: conn} do
       # Agents react via the same Participant/Reaction path humans do.

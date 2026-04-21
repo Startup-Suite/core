@@ -668,8 +668,7 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
         reactions
         |> Enum.group_by(& &1.emoji)
         |> Enum.map(fn {emoji, rs} ->
-          pids = Enum.map(rs, & &1.participant_id)
-          build_reaction_group(emoji, pids, my_id, participants_map, agent_ids)
+          build_reaction_group(emoji, rs, my_id, participants_map, agent_ids)
         end)
         |> Enum.sort_by(& &1.emoji)
 
@@ -687,30 +686,33 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
 
     groups =
       msg.id
-      |> Chat.list_reactions_grouped()
-      |> Enum.map(fn g ->
-        build_reaction_group(g.emoji, g.participants, my_id, participants_map, agent_ids)
+      |> Chat.list_reactions()
+      |> Enum.group_by(& &1.emoji)
+      |> Enum.map(fn {emoji, rs} ->
+        build_reaction_group(emoji, rs, my_id, participants_map, agent_ids)
       end)
+      |> Enum.sort_by(& &1.emoji)
 
     %{msg | reactions: groups}
   end
 
   # Build one `%{emoji, count, reacted_by_me, reactors, extra_count}` group
-  # from an emoji and its list of participant_ids. Hydrates up to
-  # @reactor_list_cap names via the live participants map, falling back
-  # to `Chat.get_participant/1` on map miss (covers the race where a
-  # newly-joined participant reacts before the presence diff lands).
-  defp build_reaction_group(emoji, participant_ids, my_id, participants_map, agent_ids) do
-    count = length(participant_ids)
+  # from an emoji and its raw `%Reaction{}` rows. Hydrates up to
+  # @reactor_list_cap names via the live participants map, falls back to
+  # the row's reactor snapshot (captured at write time, survives hard-
+  # delete), then to `Chat.get_participant/1`, then to "Someone."
+  defp build_reaction_group(emoji, raw_reactions, my_id, participants_map, agent_ids) do
+    count = length(raw_reactions)
+    participant_ids = Enum.map(raw_reactions, & &1.participant_id)
 
     reactors =
-      participant_ids
+      raw_reactions
       |> Enum.take(@reactor_list_cap)
-      |> Enum.map(fn pid ->
+      |> Enum.map(fn r ->
         %{
-          id: pid,
-          name: resolve_reactor_name(pid, participants_map),
-          is_agent: MapSet.member?(agent_ids, pid)
+          id: r.participant_id,
+          name: resolve_reactor_name(r, participants_map),
+          is_agent: reactor_is_agent?(r, agent_ids)
         }
       end)
 
@@ -723,16 +725,35 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
     }
   end
 
-  defp resolve_reactor_name(pid, participants_map) do
+  # Live participants map wins (renames propagate). Row snapshot is the
+  # fallback for hard-deleted / dismissed participants — it mirrors the
+  # message author snapshot pattern from ADR 0038 but on `chat_reactions`.
+  defp resolve_reactor_name(%{participant_id: pid} = reaction, participants_map) do
     case Map.get(participants_map, pid) do
       %{name: name} when is_binary(name) and name != "" ->
         name
 
       _ ->
-        case Chat.get_participant(pid) do
-          %{display_name: dn} when is_binary(dn) and dn != "" -> dn
-          _ -> "Someone"
+        case reaction.reactor_display_name do
+          name when is_binary(name) and name != "" ->
+            name
+
+          _ ->
+            case Chat.get_participant(pid) do
+              %{display_name: dn} when is_binary(dn) and dn != "" -> dn
+              _ -> "Someone"
+            end
         end
+    end
+  end
+
+  # Prefer live presence (handles user→agent-account edge cases), then
+  # fall back to the snapshot participant type (survives hard-delete).
+  defp reactor_is_agent?(%{participant_id: pid} = reaction, agent_ids) do
+    cond do
+      MapSet.member?(agent_ids, pid) -> true
+      reaction.reactor_participant_type == "agent" -> true
+      true -> false
     end
   end
 
