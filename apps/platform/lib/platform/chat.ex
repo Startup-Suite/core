@@ -115,9 +115,9 @@ defmodule Platform.Chat do
 
     base =
       if archived do
-        from(s in Space, where: not is_nil(s.archived_at), order_by: [asc: s.name])
+        from(s in Space, where: not is_nil(s.archived_at), order_by: [asc: s.inserted_at])
       else
-        from(s in Space, where: is_nil(s.archived_at), order_by: [asc: s.name])
+        from(s in Space, where: is_nil(s.archived_at), order_by: [asc: s.inserted_at])
       end
 
     # Exclude execution spaces by default
