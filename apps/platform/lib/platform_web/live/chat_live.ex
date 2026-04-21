@@ -650,9 +650,15 @@ defmodule PlatformWeb.ChatLive do
 
     people =
       case names do
-        [] -> "Someone"
-        [one] -> one
-        [first, second] -> "#{first} and #{second}"
+        [] ->
+          "Someone"
+
+        [one] ->
+          one
+
+        [first, second] ->
+          "#{first} and #{second}"
+
         list ->
           {init, [last]} = Enum.split(list, -1)
           "#{Enum.join(init, ", ")}, and #{last}"

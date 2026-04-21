@@ -867,7 +867,9 @@ defmodule PlatformWeb.ChatLiveTest do
         Chat.get_space_by_slug("general") ||
           elem(Chat.create_space(%{name: "General", slug: "general", kind: "channel"}), 1)
 
-      author = insert_chat_user(%{name: "Author", email: "author@example.com", oidc_sub: "author"})
+      author =
+        insert_chat_user(%{name: "Author", email: "author@example.com", oidc_sub: "author"})
+
       reactor = insert_chat_user(%{name: "Zoe", email: "zoe@example.com", oidc_sub: "zoe"})
 
       _author_participant = add_user_message(space, author, "vote on this")
