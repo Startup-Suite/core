@@ -60,17 +60,38 @@ defmodule Platform.Chat.AttachmentStorage do
     Application.get_env(:platform, :attachment_storage_adapter, LocalDisk)
   end
 
-  defp normalize_content_type(nil, filename), do: infer_content_type(filename)
-  defp normalize_content_type("", filename), do: infer_content_type(filename)
+  # Only override a missing or generic client-reported MIME type when the
+  # extension-inferred type is in this allowlist. Restricting to formats that
+  # browsers render without script execution avoids turning a filename-based
+  # override into a stored-XSS path — e.g. an attacker uploading `evil.html`
+  # with client_type = "application/octet-stream" must NOT be re-labeled
+  # text/html and served inline.
+  # SVG is intentionally excluded — SVG can embed <script>.
+  # text/* is intentionally excluded — text/html executes as HTML.
+  @safe_override_types ~w(
+    image/jpeg
+    image/png
+    image/gif
+    image/webp
+    image/heic
+    image/heif
+    application/pdf
+  )
+
+  defp normalize_content_type(nil, filename), do: safe_infer(filename)
+  defp normalize_content_type("", filename), do: safe_infer(filename)
+
+  # iOS Safari and some mobile browsers label photos "application/octet-stream"
+  # on upload. Trust the filename extension over that generic label, but only
+  # when it resolves to a known-safe image MIME type.
+  defp normalize_content_type("application/octet-stream", filename),
+    do: safe_infer(filename)
+
   defp normalize_content_type(content_type, _filename), do: content_type
 
-  defp infer_content_type(filename) do
-    filename
-    |> MIME.from_path()
-    |> case do
-      nil -> "application/octet-stream"
-      type -> type
-    end
+  defp safe_infer(filename) do
+    inferred = MIME.from_path(filename)
+    if inferred in @safe_override_types, do: inferred, else: "application/octet-stream"
   end
 
   defp sanitize_filename(filename) do
