@@ -22,12 +22,18 @@ defmodule Platform.Chat.AttachmentStorage do
     stored_name = "#{Ecto.UUID.generate()}-#{filename}"
     storage_key = Path.join([@storage_prefix, bucket, stored_name])
 
+    # Infer from the raw client_name (not the sanitized filename) because
+    # sanitization could in principle strip the extension and silently break
+    # MIME inference. `safe_infer/1` is allowlist-gated so passing attacker-
+    # controlled raw input here is still safe.
+    inference_hint = client_name || filename
+
     case adapter().persist(storage_key, {:path, temp_path}) do
       {:ok, %{byte_size: size, content_hash: hash}} ->
         {:ok,
          %{
            filename: client_name || filename,
-           content_type: normalize_content_type(client_type, filename),
+           content_type: normalize_content_type(client_type, inference_hint),
            byte_size: size,
            storage_key: storage_key,
            content_hash: hash,
