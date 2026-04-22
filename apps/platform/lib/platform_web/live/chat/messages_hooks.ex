@@ -728,6 +728,13 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
   # Live participants map wins (renames propagate). Row snapshot is the
   # fallback for hard-deleted / dismissed participants — it mirrors the
   # message author snapshot pattern from ADR 0038 but on `chat_reactions`.
+  # No live-DB fallback: if both the live map AND the snapshot miss, we
+  # return "Someone" rather than hit `Chat.get_participant/1` — that path
+  # was an N+1 (fires once per reactor per emoji per message on every
+  # render) and is only relevant for reactions created before the
+  # `backfill_reactor_snapshots` migration landed. The backfill is
+  # idempotent and runs back-to-back with the schema migration, so the
+  # window is effectively sub-second; warn loudly if it somehow persists.
   defp resolve_reactor_name(%{participant_id: pid} = reaction, participants_map) do
     case Map.get(participants_map, pid) do
       %{name: name} when is_binary(name) and name != "" ->
@@ -739,10 +746,11 @@ defmodule PlatformWeb.ChatLive.MessagesHooks do
             name
 
           _ ->
-            case Chat.get_participant(pid) do
-              %{display_name: dn} when is_binary(dn) and dn != "" -> dn
-              _ -> "Someone"
-            end
+            Logger.warning(
+              "reactor_name fallback: missing snapshot for participant_id=#{inspect(pid)} (backfill may be pending)"
+            )
+
+            "Someone"
         end
     end
   end
