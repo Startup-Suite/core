@@ -1065,15 +1065,16 @@ defmodule Platform.Chat do
     pid = Map.get(attrs_with_snapshot, :participant_id)
     emoji = Map.get(attrs_with_snapshot, :emoji)
 
-    # Resurrection-preferred insert: if a soft-deleted row already exists for
-    # this (message, participant, emoji), unset `deleted_at` instead of
-    # inserting a duplicate. Keeps the table clean and avoids a race where
-    # two writers each see "no active row" and both try to insert.
+    # If a *soft-deleted* row already exists for this (message, participant,
+    # emoji), resurrect it (clear `deleted_at`) instead of inserting a
+    # duplicate. Keeps the table clean and lets the partial unique index do
+    # its job. Active-row duplicates fall through to a regular insert and
+    # produce a natural `{:error, changeset}` with the unique_constraint
+    # violation — preserving the pre-soft-delete public API contract that
+    # callers (e.g. `Federation.ToolSurface`'s `react` handler) rely on to
+    # detect "already_reacted."
     result =
-      case find_reaction_any_state(msg_id, pid, emoji) do
-        %Reaction{deleted_at: nil} = existing ->
-          {:ok, existing}
-
+      case find_soft_deleted_reaction(msg_id, pid, emoji) do
         %Reaction{} = soft_deleted ->
           soft_deleted
           |> Reaction.delete_changeset(%{deleted_at: nil})
@@ -1105,13 +1106,15 @@ defmodule Platform.Chat do
     result
   end
 
-  defp find_reaction_any_state(nil, _pid, _emoji), do: nil
-  defp find_reaction_any_state(_msg_id, nil, _emoji), do: nil
-  defp find_reaction_any_state(_msg_id, _pid, nil), do: nil
+  defp find_soft_deleted_reaction(nil, _pid, _emoji), do: nil
+  defp find_soft_deleted_reaction(_msg_id, nil, _emoji), do: nil
+  defp find_soft_deleted_reaction(_msg_id, _pid, nil), do: nil
 
-  defp find_reaction_any_state(msg_id, pid, emoji) do
+  defp find_soft_deleted_reaction(msg_id, pid, emoji) do
     from(r in Reaction,
-      where: r.message_id == ^msg_id and r.participant_id == ^pid and r.emoji == ^emoji,
+      where:
+        r.message_id == ^msg_id and r.participant_id == ^pid and r.emoji == ^emoji and
+          not is_nil(r.deleted_at),
       limit: 1
     )
     |> Repo.one()
