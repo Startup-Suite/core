@@ -53,7 +53,10 @@ defmodule Platform.Orchestration.RuntimeSupervision do
               event_type: attrs.event_type,
               occurred_at: attrs.occurred_at,
               idempotency_key: attrs.idempotency_key,
-              payload: attrs.payload
+              payload: attrs.payload,
+              invoked_by_user_id: attrs.invoked_by_user_id,
+              owner_org_id: attrs.owner_org_id,
+              owner_attribution_status: attrs.owner_attribution_status
             })
           end)
           |> Repo.transaction()
@@ -162,10 +165,32 @@ defmodule Platform.Orchestration.RuntimeSupervision do
       parse_datetime(Map.get(attrs, :occurred_at) || Map.get(attrs, "occurred_at")) ||
         DateTime.utc_now()
 
+    # ADR 0040 — owner identity (Stage 1: NULL-permissive, Stage 2: enforced).
+    # When fully populated, status="attributed". When partial or missing,
+    # status="attribution_failed" — populated rows still get NULL ids so that
+    # Stage 2's NOT-NULL transition can identify gaps to backfill or reject.
+    invoked_by_user_id =
+      Map.get(attrs, :invoked_by_user_id) || Map.get(attrs, "invoked_by_user_id")
+
+    owner_org_id =
+      Map.get(attrs, :owner_org_id) || Map.get(attrs, "owner_org_id")
+
+    owner_attribution_status =
+      cond do
+        not is_nil(invoked_by_user_id) and not is_nil(owner_org_id) -> "attributed"
+        true -> "attribution_failed"
+      end
+
+    # ADR 0040 §architect-finding-1: include invoked_by_user_id in the
+    # idempotency_key so multi-user-per-runtime invocations at the same
+    # microsecond produce distinct event rows. NULL-safe sentinel "-" keeps
+    # legacy callers (no owner) producing the same keys as before this change.
+    user_key_part = invoked_by_user_id || "-"
+
     idempotency_key =
       Map.get(attrs, :idempotency_key) ||
         Map.get(attrs, "idempotency_key") ||
-        "#{runtime_id}:#{task_id}:#{phase}:#{event_type}:#{DateTime.to_unix(occurred_at, :microsecond)}"
+        "#{runtime_id}:#{task_id}:#{phase}:#{event_type}:#{user_key_part}:#{DateTime.to_unix(occurred_at, :microsecond)}"
 
     %{
       task_id: task_id,
@@ -176,6 +201,9 @@ defmodule Platform.Orchestration.RuntimeSupervision do
       idempotency_key: idempotency_key,
       payload: payload,
       runtime_worker_ref: worker_ref,
+      invoked_by_user_id: invoked_by_user_id,
+      owner_org_id: owner_org_id,
+      owner_attribution_status: owner_attribution_status,
       execution_space_id:
         Map.get(attrs, :execution_space_id) || Map.get(attrs, "execution_space_id")
     }
@@ -229,7 +257,14 @@ defmodule Platform.Orchestration.RuntimeSupervision do
       last_progress_at: progress_at(attrs.event_type, attrs.occurred_at),
       expires_at: expires_at(attrs.phase, attrs.occurred_at, status),
       block_reason: block_reason(status, attrs),
-      metadata: attrs.payload || %{}
+      metadata: attrs.payload || %{},
+      # ADR 0040 — owner identity captured at lease creation. Subsequent
+      # event-driven updates (the other persist_lease/4 clause) deliberately
+      # do NOT overwrite these fields: the lease was created with an owner
+      # and that attribution stays stable for the lifetime of the lease.
+      invoked_by_user_id: attrs.invoked_by_user_id,
+      owner_org_id: attrs.owner_org_id,
+      owner_attribution_status: attrs.owner_attribution_status
     })
     |> repo.insert()
   end
