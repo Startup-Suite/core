@@ -9,6 +9,8 @@ defmodule Platform.Orchestration.RuntimeSupervisionOwnerIdentityTest do
 
   use Platform.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Platform.Orchestration.{ExecutionLease, RuntimeEvent, RuntimeSupervision}
   alias Platform.Tasks
   alias Platform.Repo
@@ -341,6 +343,77 @@ defmodule Platform.Orchestration.RuntimeSupervisionOwnerIdentityTest do
 
     test "ExecutionLease struct defaults owner_attribution_status to 'legacy_pre_migration'" do
       assert %ExecutionLease{}.owner_attribution_status == "legacy_pre_migration"
+    end
+  end
+
+  describe "owner-unknown breadcrumb (observability gap discovery)" do
+    setup do
+      # Test config sets Logger level to :warning, which drops info-level
+      # messages at the source. Lower the level for this describe block so
+      # capture_log can observe the breadcrumb. Production correctly logs
+      # at :info — this is just a test-environment workaround.
+      original_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: original_level) end)
+      :ok
+    end
+
+    test "logs runtime_event_owner_unknown when attribution_status='attribution_failed'" do
+      task = create_task!()
+
+      log =
+        capture_log([level: :info], fn ->
+          {:ok, _event} =
+            RuntimeSupervision.record_event(%{
+              task_id: task.id,
+              phase: "execution",
+              runtime_id: "runtime:no-owner",
+              event_type: "execution.started"
+              # No invoked_by_user_id, no owner_org_id — should trigger breadcrumb
+            })
+        end)
+
+      # Per ADR 0040: a single info-level breadcrumb makes the gap discoverable
+      # in production telemetry without flooding logs.
+      assert log =~ "runtime_event_owner_unknown"
+    end
+
+    test "does NOT log breadcrumb when attribution_status='attributed'" do
+      task = create_task!()
+
+      log =
+        capture_log([level: :info], fn ->
+          {:ok, _event} =
+            RuntimeSupervision.record_event(%{
+              task_id: task.id,
+              phase: "execution",
+              runtime_id: "runtime:has-owner",
+              event_type: "execution.started",
+              invoked_by_user_id: Ecto.UUID.generate(),
+              owner_org_id: Ecto.UUID.generate()
+            })
+        end)
+
+      refute log =~ "runtime_event_owner_unknown"
+    end
+
+    test "breadcrumb message includes runtime_id and phase for triage" do
+      task = create_task!()
+
+      log =
+        capture_log([level: :info], fn ->
+          {:ok, _event} =
+            RuntimeSupervision.record_event(%{
+              task_id: task.id,
+              phase: "execution",
+              runtime_id: "runtime:specific-id-for-triage",
+              event_type: "execution.started"
+            })
+        end)
+
+      # The breadcrumb should be specific enough that an investigator can
+      # filter to the offending runtime without spelunking.
+      assert log =~ "runtime:specific-id-for-triage"
     end
   end
 

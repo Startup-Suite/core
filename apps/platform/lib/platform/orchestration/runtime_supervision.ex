@@ -8,6 +8,7 @@ defmodule Platform.Orchestration.RuntimeSupervision do
   """
 
   import Ecto.Query
+  require Logger
 
   alias Ecto.Multi
   alias Platform.Orchestration.{ExecutionLease, ExecutionSpace, RuntimeEvent}
@@ -31,6 +32,7 @@ defmodule Platform.Orchestration.RuntimeSupervision do
   @doc "Record a normalized runtime execution event and update the active lease."
   def record_event(attrs) when is_map(attrs) do
     attrs = normalize_attrs(attrs)
+    maybe_log_owner_unknown_breadcrumb(attrs)
 
     with :ok <- validate_phase(attrs.phase),
          :ok <- validate_event_type(attrs.event_type),
@@ -152,6 +154,25 @@ defmodule Platform.Orchestration.RuntimeSupervision do
 
   defp validate_event_type(event_type) when is_map_key(@event_statuses, event_type), do: :ok
   defp validate_event_type(_event_type), do: {:error, :invalid_event_type}
+
+  # ADR 0040 — observability for the owner-attribution gap. Logs a single
+  # info-level breadcrumb when a runtime event arrives without owner identity,
+  # making the gap discoverable in production without flooding logs. Stage 2's
+  # NOT-NULL transition uses the count of these breadcrumbs to gate when
+  # enforcement is safe to enable (ADR §D3 soak-exit criterion).
+  defp maybe_log_owner_unknown_breadcrumb(
+         %{owner_attribution_status: "attribution_failed"} = attrs
+       ) do
+    Logger.info(
+      "runtime_event_owner_unknown runtime=#{attrs.runtime_id} phase=#{attrs.phase} event_type=#{attrs.event_type}",
+      runtime_id: attrs.runtime_id,
+      phase: attrs.phase,
+      event_type: attrs.event_type,
+      task_id: attrs.task_id
+    )
+  end
+
+  defp maybe_log_owner_unknown_breadcrumb(_attrs), do: :ok
 
   defp normalize_attrs(attrs) do
     phase = Map.get(attrs, :phase) || Map.get(attrs, "phase") || "execution"

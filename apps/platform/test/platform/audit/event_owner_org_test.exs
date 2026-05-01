@@ -30,8 +30,8 @@ defmodule Platform.Audit.EventOwnerOrgTest do
   end
 
   describe "actor_types/0" do
-    test "returns the canonical enum values including federated_user" do
-      assert Event.actor_types() == ~w(system user agent federated_user)
+    test "returns the canonical enum values including federated_user and anonymous" do
+      assert Event.actor_types() == ~w(system user agent anonymous federated_user)
     end
   end
 

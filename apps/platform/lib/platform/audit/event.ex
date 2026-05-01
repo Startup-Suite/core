@@ -13,6 +13,8 @@ defmodule Platform.Audit.Event do
     * `"system"` — the platform itself (default for unattributed events)
     * `"user"` — an authenticated end-user in this org
     * `"agent"` — an AI agent invocation (intra-org)
+    * `"anonymous"` — an unauthenticated request (access-blocked events,
+      pre-auth diagnostic events)
     * `"federated_user"` — a user invoking from a peer org via federation,
       typically referenced by an opaque `Platform.Federation.OwnerHandle`
       rather than a real user_id (see ADR 0040 §D4)
@@ -34,7 +36,7 @@ defmodule Platform.Audit.Event do
 
   # Application-side enum for actor_type. Validated by changeset.
   # See @moduledoc for semantics.
-  @actor_types ~w(system user agent federated_user)
+  @actor_types ~w(system user agent anonymous federated_user)
 
   schema "audit_events" do
     field(:event_type, :string)
