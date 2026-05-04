@@ -720,6 +720,32 @@ defmodule Platform.Federation.ToolSurface do
         when_to_use: "When you need to find a project to create tasks or epics in"
       },
       %{
+        name: "project_update",
+        description:
+          "Update a project's fields including the deploy_config map (which holds the project-wide default_strategy used to resolve task deploy targets).",
+        parameters: %{
+          project_id: %{type: "string", required: true, description: "The project to update"},
+          name: %{type: "string", required: false, description: "New name"},
+          repo_url: %{type: "string", required: false, description: "New repo URL"},
+          default_branch: %{
+            type: "string",
+            required: false,
+            description: "New default branch"
+          },
+          deploy_config: %{
+            type: "object",
+            required: false,
+            description:
+              "Project-wide deploy config. Set deploy_config.default_strategy to a strategy map (e.g. %{\"type\" => \"pr_merge\"}) to provide a fallback for tasks whose deploy_target is unset. Valid strategy types: none, pr_merge, docker_deploy, fly, skill_driven, manual."
+          }
+        },
+        returns: "The updated project object",
+        limitations:
+          "deploy_config.default_strategy is validated; unknown strategy types are rejected",
+        when_to_use:
+          "When you need to set a project-level default deploy strategy or update other project fields"
+      },
+      %{
         name: "epic_list",
         description: "List epics, optionally filtered by project.",
         parameters: %{
@@ -860,7 +886,13 @@ defmodule Platform.Federation.ToolSurface do
           priority: %{type: "string", required: false, description: "New priority"},
           epic_id: %{type: "string", required: false, description: "Move to a different epic"},
           assignee_type: %{type: "string", required: false, description: "Assignee type"},
-          assignee_id: %{type: "string", required: false, description: "Assignee ID"}
+          assignee_id: %{type: "string", required: false, description: "Assignee ID"},
+          deploy_target: %{
+            type: "string",
+            required: false,
+            description:
+              "Name of the deploy target this task should ship to (must match an entry in project.deploy_config.deploy_targets, e.g. \"production\" or \"exp\"). Required to be set before the deploying-phase dispatch can pin a target."
+          }
         },
         returns: "The updated task object",
         limitations: "Status transitions are validated; not all transitions are allowed",
@@ -1735,6 +1767,49 @@ defmodule Platform.Federation.ToolSurface do
     {:ok, projects}
   end
 
+  def execute("project_update", args, _context) do
+    project_id = Map.get(args, "project_id")
+
+    case Tasks.get_project(project_id) do
+      nil ->
+        {:error,
+         %{
+           error: "Project not found: #{project_id}",
+           recoverable: false,
+           suggestion: "Use project_list to find available projects"
+         }}
+
+      project ->
+        update_attrs =
+          args
+          |> Map.take(["name", "repo_url", "default_branch", "deploy_config"])
+          |> Map.reject(fn {_k, v} -> is_nil(v) end)
+          |> Enum.into(%{}, fn {k, v} -> {String.to_existing_atom(k), v} end)
+
+        case Tasks.update_project(project, update_attrs) do
+          {:ok, updated} ->
+            {:ok,
+             %{
+               id: updated.id,
+               name: updated.name,
+               slug: updated.slug,
+               repo_url: updated.repo_url,
+               default_branch: updated.default_branch,
+               deploy_config: updated.deploy_config
+             }}
+
+          {:error, changeset} ->
+            {:error,
+             %{
+               error: "Failed to update project: #{inspect_errors_safe(changeset)}",
+               recoverable: true,
+               suggestion:
+                 "Check that deploy_config.default_strategy uses a valid strategy type (none, pr_merge, docker_deploy, fly, skill_driven, manual)"
+             }}
+        end
+    end
+  end
+
   def execute("epic_list", args, _context) do
     project_id = Map.get(args, "project_id")
 
@@ -1927,7 +2002,8 @@ defmodule Platform.Federation.ToolSurface do
             "priority",
             "epic_id",
             "assignee_type",
-            "assignee_id"
+            "assignee_id",
+            "deploy_target"
           ])
           |> Map.reject(fn {_k, v} -> is_nil(v) end)
           |> Enum.into(%{}, fn {k, v} -> {String.to_existing_atom(k), v} end)

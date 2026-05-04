@@ -35,9 +35,9 @@ defmodule Platform.Federation.ToolSurfaceTest do
   defp unique_slug, do: "test-#{System.unique_integer([:positive])}"
 
   describe "tool_definitions/0" do
-    test "returns all 50 tools with required components" do
+    test "returns all 51 tools with required components" do
       tools = ToolSurface.tool_definitions()
-      assert length(tools) == 50
+      assert length(tools) == 51
 
       tool_names = Enum.map(tools, & &1.name)
       assert "send_media" in tool_names
@@ -54,6 +54,7 @@ defmodule Platform.Federation.ToolSurfaceTest do
       assert "skill.get" in tool_names
       assert "skill.upsert" in tool_names
       assert "project_list" in tool_names
+      assert "project_update" in tool_names
       assert "epic_list" in tool_names
       assert "task_create" in tool_names
       assert "task_get" in tool_names
@@ -264,6 +265,72 @@ defmodule Platform.Federation.ToolSurfaceTest do
 
       assert is_list(results)
       assert Enum.any?(results, fn p -> p.name == "Unique Project" end)
+    end
+
+    test "task_update sets deploy_target so the deploying-phase dispatch can pin a target" do
+      # Regression: deploy_target was castable on the schema but not exposed
+      # by task_update, leaving any task that auto-advanced to `deploying`
+      # without a target stuck waiting for a UI/psql change.
+      project = create_project()
+      {:ok, task} = Tasks.create_task(%{project_id: project.id, title: "Deploy me"})
+
+      {:ok, result} =
+        ToolSurface.execute(
+          "task_update",
+          %{"task_id" => task.id, "deploy_target" => "production"},
+          %{}
+        )
+
+      reloaded = Tasks.get_task_record(task.id)
+      assert reloaded.deploy_target == "production"
+      # The result map mirrors the existing task_update return shape; we
+      # don't expand it here because the existing test above guards that
+      # surface — only assert the new field round-trips through the DB.
+      assert is_map(result)
+    end
+
+    test "project_update sets deploy_config.default_strategy" do
+      project = create_project(%{name: "Default-strategy project"})
+
+      {:ok, result} =
+        ToolSurface.execute(
+          "project_update",
+          %{
+            "project_id" => project.id,
+            "deploy_config" => %{"default_strategy" => %{"type" => "pr_merge"}}
+          },
+          %{}
+        )
+
+      assert result.deploy_config["default_strategy"] == %{"type" => "pr_merge"}
+
+      reloaded = Tasks.get_project(project.id)
+      assert reloaded.deploy_config["default_strategy"] == %{"type" => "pr_merge"}
+    end
+
+    test "project_update rejects unknown deploy strategy types with a recoverable error" do
+      project = create_project()
+
+      {:error, error} =
+        ToolSurface.execute(
+          "project_update",
+          %{
+            "project_id" => project.id,
+            "deploy_config" => %{"default_strategy" => %{"type" => "definitely-not-a-strategy"}}
+          },
+          %{}
+        )
+
+      assert error.recoverable == true
+      assert error.error =~ "unknown strategy type"
+    end
+
+    test "project_update returns not-found error for unknown project_id" do
+      {:error, error} =
+        ToolSurface.execute("project_update", %{"project_id" => Ecto.UUID.generate()}, %{})
+
+      assert error.recoverable == false
+      assert error.error =~ "Project not found"
     end
 
     test "unknown tool returns structured error" do
