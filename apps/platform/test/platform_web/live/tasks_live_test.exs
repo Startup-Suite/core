@@ -408,6 +408,60 @@ defmodule PlatformWeb.TasksLiveTest do
       assert iy < ia
       assert ia < ix
     end
+
+    test "metadata box hides unmet_dependencies (already shown by Dependencies section)",
+         %{conn: conn} do
+      conn = authenticated_conn(conn)
+      project = create_project()
+
+      a = create_task(project, %{title: "Hidden-key dep A", status: "in_progress"})
+
+      b =
+        create_task(project, %{
+          title: "Metadata-filtered B",
+          status: "blocked",
+          dependencies: [%{"task_id" => a.id, "kind" => "blocks"}],
+          metadata: %{
+            "unmet_dependencies" => [a.id],
+            "kept_key" => "kept_value"
+          }
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/tasks?task_id=#{b.id}")
+
+      # Scope the assertions to the metadata <pre> block. The page also
+      # contains `unmet_dependencies` / the dep id elsewhere (kanban,
+      # Dependencies section), so we have to look INSIDE the metadata box
+      # to assert the filter actually scrubbed those keys from this view.
+      [_, after_pre] = String.split(html, ~s|<pre class="rounded bg-base-200|, parts: 2)
+      [metadata_pre, _] = String.split(after_pre, "</pre>", parts: 2)
+
+      assert metadata_pre =~ "kept_key"
+      assert metadata_pre =~ "kept_value"
+      refute metadata_pre =~ "unmet_dependencies"
+      refute metadata_pre =~ a.id
+    end
+
+    test "metadata box hides entirely when only unmet_dependencies is present",
+         %{conn: conn} do
+      conn = authenticated_conn(conn)
+      project = create_project()
+
+      a = create_task(project, %{title: "Sole-key dep A", status: "in_progress"})
+
+      b =
+        create_task(project, %{
+          title: "Empty-after-filter B",
+          status: "blocked",
+          dependencies: [%{"task_id" => a.id, "kind" => "blocks"}],
+          metadata: %{"unmet_dependencies" => [a.id]}
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/tasks?task_id=#{b.id}")
+
+      # No metadata <pre> block at all when the only key is the filtered one.
+      refute html =~ ~s|<pre class="rounded bg-base-200|
+    end
   end
 
   # Returns just the Dependencies <ul> from the rendered HTML, so

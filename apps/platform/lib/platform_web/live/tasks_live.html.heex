@@ -1044,12 +1044,18 @@
         </div>
       </div>
 
-      <%!-- Metadata --%>
-      <div :if={@selected_task.metadata != %{}} class="space-y-1">
+      <%!-- Metadata. We drop keys that are already presented elsewhere
+           in human-readable form (e.g. unmet_dependencies, which the
+           Dependencies section above resolves to titles + status icons).
+           Bare UUID lists in this debug view are noise to a reviewer. --%>
+      <div
+        :if={displayable_metadata(@selected_task.metadata) != %{}}
+        class="space-y-1"
+      >
         <h3 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
           Metadata
         </h3>
-        <pre class="rounded bg-base-200 p-2 text-xs overflow-x-auto">{inspect(@selected_task.metadata, pretty: true)}</pre>
+        <pre class="rounded bg-base-200 p-2 text-xs overflow-x-auto">{inspect(displayable_metadata(@selected_task.metadata), pretty: true)}</pre>
       </div>
     </div>
   </div>

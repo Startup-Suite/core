@@ -1490,6 +1490,17 @@ defmodule PlatformWeb.TasksLive do
 
   defp dependency_status_icon(_), do: "hero-x-circle-solid text-base-content/40"
 
+  # The raw `task.metadata` is exposed at the bottom of the detail panel as a
+  # debug-style map. Drop keys that are already shown in human-readable form
+  # elsewhere on the panel so the metadata box doesn't double-print noise like
+  # bare task UUIDs from `unmet_dependencies` (those are rendered with titles +
+  # status icons by the Dependencies section above).
+  defp displayable_metadata(metadata) when is_map(metadata) do
+    Map.drop(metadata, ["unmet_dependencies"])
+  end
+
+  defp displayable_metadata(_), do: %{}
+
   # ── Per-phase assignee helpers (used by the assignee modal templates) ───
 
   defp phase_label("planning"), do: "Planning"
