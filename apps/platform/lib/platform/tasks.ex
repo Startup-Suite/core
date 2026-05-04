@@ -842,6 +842,15 @@ defmodule Platform.Tasks do
     :ok
   end
 
+  defp maybe_finalize_transition(%Task{} = previous, %Task{} = task, "done") do
+    if current_phase(previous) != current_phase(task) do
+      maybe_apply_phase_assignee(task)
+    end
+
+    sweep_unblocked_dependents(task)
+    :ok
+  end
+
   defp maybe_finalize_transition(%Task{} = previous, %Task{} = task, _new_status) do
     if current_phase(previous) != current_phase(task) do
       maybe_apply_phase_assignee(task)
@@ -851,6 +860,73 @@ defmodule Platform.Tasks do
   end
 
   defp maybe_finalize_transition(_previous_task, _task, _new_status), do: :ok
+
+  # When a task reaches `done`, find every `blocked` task that listed it as
+  # a dependency and re-evaluate whether their other deps are also satisfied.
+  # Any whose remaining deps are all `done` transition back to `in_progress`
+  # and have `metadata["unmet_dependencies"]` cleared. The transition runs
+  # through `transition_task/2`, so chained completions cascade naturally
+  # without an explicit recursion loop.
+  defp sweep_unblocked_dependents(%Task{} = done_task) do
+    # The match list is a literal Elixir list (not a Jason-encoded string).
+    # Postgrex binds binary params as already-jsonb (a string scalar) when
+    # the column is jsonb, which breaks `$1::jsonb` casts of pre-encoded
+    # JSON. Passing the term lets Postgrex serialize it as a jsonb array.
+    match = [%{"task_id" => done_task.id}]
+
+    candidates =
+      Repo.all(
+        from(t in Task,
+          where:
+            t.status == "blocked" and
+              fragment("? @> ?", t.dependencies, ^match) and
+              is_nil(t.deleted_at)
+        )
+      )
+
+    Enum.each(candidates, fn blocked_task ->
+      case unmet_dependencies(blocked_task) do
+        [] -> unblock_task(blocked_task)
+        still_unmet -> refresh_unmet_metadata(blocked_task, still_unmet)
+      end
+    end)
+
+    :ok
+  end
+
+  # Sibling case: a dep just finished but other deps remain. Stay blocked
+  # but rewrite metadata["unmet_dependencies"] so dashboards reflect only
+  # the deps still gating the task instead of carrying the stale set.
+  defp refresh_unmet_metadata(%Task{} = blocked_task, still_unmet) do
+    new_ids = Enum.map(still_unmet, & &1.id)
+    metadata = blocked_task.metadata || %{}
+    current = Map.get(metadata, "unmet_dependencies", [])
+
+    if Enum.sort(new_ids) == Enum.sort(current) do
+      :ok
+    else
+      merged = Map.put(metadata, "unmet_dependencies", new_ids)
+      {:ok, _} = update_task(blocked_task, %{metadata: merged})
+      :ok
+    end
+  end
+
+  defp unblock_task(%Task{} = blocked_task) do
+    case transition_task(blocked_task, "in_progress") do
+      {:ok, unblocked} ->
+        metadata = unblocked.metadata || %{}
+
+        if Map.has_key?(metadata, "unmet_dependencies") do
+          cleared = Map.delete(metadata, "unmet_dependencies")
+          {:ok, _} = update_task(unblocked, %{metadata: cleared})
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
 
   # When a task crosses a phase boundary, re-derive the top-level
   # `assignee_id` / `assignee_type` from `phase_assignees[new_phase]`. This

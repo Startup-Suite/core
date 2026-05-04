@@ -430,24 +430,211 @@ defmodule Platform.Tasks.TasksContextTest do
     end
   end
 
+  describe "auto-unblock sweep on done" do
+    setup do
+      {:ok, project} = Tasks.create_project(%{name: "Sweep Project"})
+      %{project: project}
+    end
+
+    test "A done → B (single dep) auto-unblocks to in_progress with cleared metadata", %{
+      project: project
+    } do
+      {:ok, dep_a} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "in_progress"})
+
+      {:ok, b} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "B",
+          status: "planning",
+          dependencies: [%{"task_id" => dep_a.id, "kind" => "blocks"}]
+        })
+
+      blocked_b = approve_latest_plan(b)
+      assert blocked_b.status == "blocked"
+      assert blocked_b.metadata["unmet_dependencies"] == [dep_a.id]
+
+      _done_a = drive_to_done(dep_a)
+
+      unblocked_b = Tasks.get_task_record(b.id)
+      assert unblocked_b.status == "in_progress"
+      refute Map.has_key?(unblocked_b.metadata || %{}, "unmet_dependencies")
+    end
+
+    test "A → B → C chain: completing A unblocks B, completing B unblocks C", %{
+      project: project
+    } do
+      {:ok, dep_a} =
+        Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+
+      {:ok, b} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "B",
+          status: "planning",
+          dependencies: [%{"task_id" => dep_a.id, "kind" => "blocks"}]
+        })
+
+      blocked_b = approve_latest_plan(b)
+      assert blocked_b.status == "blocked"
+
+      # Stand C up before B is unblocked, so its dep on B is "unmet" at
+      # approve-time and it lands on blocked too.
+      {:ok, c} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "C",
+          status: "planning",
+          dependencies: [%{"task_id" => b.id, "kind" => "blocks"}]
+        })
+
+      blocked_c = approve_latest_plan(c)
+      assert blocked_c.status == "blocked"
+      assert blocked_c.metadata["unmet_dependencies"] == [b.id]
+
+      # Phase 1: complete A → B should unblock; C still blocked (B not done).
+      _done_a = drive_to_done(dep_a)
+
+      after_a = Tasks.get_task_record(b.id)
+      assert after_a.status == "in_progress"
+      refute Map.has_key?(after_a.metadata || %{}, "unmet_dependencies")
+
+      c_after_a = Tasks.get_task_record(c.id)
+      assert c_after_a.status == "blocked"
+      assert c_after_a.metadata["unmet_dependencies"] == [b.id]
+
+      # Phase 2: drive B to done → C should auto-unblock via the cascade.
+      _done_b = drive_to_done(after_a)
+
+      after_b = Tasks.get_task_record(c.id)
+      assert after_b.status == "in_progress"
+      refute Map.has_key?(after_b.metadata || %{}, "unmet_dependencies")
+    end
+
+    test "two-dep B (A and X): partial completion keeps blocked; final completion unblocks", %{
+      project: project
+    } do
+      {:ok, dep_a} =
+        Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+
+      {:ok, dep_x} =
+        Tasks.create_task(%{project_id: project.id, title: "X", status: "in_progress"})
+
+      {:ok, b} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "B",
+          status: "planning",
+          dependencies: [
+            %{"task_id" => dep_a.id, "kind" => "blocks"},
+            %{"task_id" => dep_x.id, "kind" => "blocks"}
+          ]
+        })
+
+      blocked_b = approve_latest_plan(b)
+      assert blocked_b.status == "blocked"
+
+      assert Enum.sort(blocked_b.metadata["unmet_dependencies"]) ==
+               Enum.sort([dep_a.id, dep_x.id])
+
+      # Complete only A — B should stay blocked, with X remaining.
+      _done_a = drive_to_done(dep_a)
+
+      after_a = Tasks.get_task_record(b.id)
+      assert after_a.status == "blocked"
+      assert after_a.metadata["unmet_dependencies"] == [dep_x.id]
+
+      # Complete X — B should now unblock.
+      _done_x = drive_to_done(dep_x)
+
+      after_x = Tasks.get_task_record(b.id)
+      assert after_x.status == "in_progress"
+      refute Map.has_key?(after_x.metadata || %{}, "unmet_dependencies")
+    end
+
+    test "completing A does not disturb an unrelated blocked task Y (depends on Z)", %{
+      project: project
+    } do
+      {:ok, dep_a} =
+        Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+
+      {:ok, dep_z} =
+        Tasks.create_task(%{project_id: project.id, title: "Z", status: "in_progress"})
+
+      {:ok, y} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Y",
+          status: "planning",
+          dependencies: [%{"task_id" => dep_z.id, "kind" => "blocks"}]
+        })
+
+      blocked_y = approve_latest_plan(y)
+      assert blocked_y.status == "blocked"
+      assert blocked_y.metadata["unmet_dependencies"] == [dep_z.id]
+
+      _done_a = drive_to_done(dep_a)
+
+      after_a = Tasks.get_task_record(y.id)
+      assert after_a.status == "blocked"
+      assert after_a.metadata["unmet_dependencies"] == [dep_z.id]
+    end
+
+    test "metadata keys other than unmet_dependencies are preserved on unblock", %{
+      project: project
+    } do
+      {:ok, dep_a} =
+        Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+
+      {:ok, b} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "B",
+          status: "planning",
+          metadata: %{"some_other_key" => "value"},
+          dependencies: [%{"task_id" => dep_a.id, "kind" => "blocks"}]
+        })
+
+      blocked_b = approve_latest_plan(b)
+      assert blocked_b.status == "blocked"
+      assert blocked_b.metadata["some_other_key"] == "value"
+      assert blocked_b.metadata["unmet_dependencies"] == [dep_a.id]
+
+      _done_a = drive_to_done(dep_a)
+
+      unblocked_b = Tasks.get_task_record(b.id)
+      assert unblocked_b.status == "in_progress"
+      assert unblocked_b.metadata["some_other_key"] == "value"
+      refute Map.has_key?(unblocked_b.metadata, "unmet_dependencies")
+    end
+  end
+
   defp drive_to_done(task) do
     task
-    |> then(fn t ->
-      {:ok, t} = Tasks.transition_task_status(t, "in_progress")
-      t
-    end)
-    |> then(fn t ->
-      {:ok, t} = Tasks.transition_task_status(t, "in_review")
-      t
-    end)
-    |> then(fn t ->
-      {:ok, t} = Tasks.transition_task_status(t, "deploying")
-      t
-    end)
-    |> then(fn t ->
-      {:ok, t} = Tasks.transition_task_status(t, "done")
-      t
-    end)
+    |> step_status("in_progress")
+    |> step_status("in_review")
+    |> step_status("deploying")
+    # Final hop goes through transition_task/2 so the auto-unblock sweep
+    # in maybe_finalize_transition/3 fires (transition_task_status is the
+    # raw schema-level write and bypasses the finalize hook).
+    |> step_done()
+  end
+
+  # No-op if the task is already at the target status; otherwise raw
+  # schema-level transition. Lets a single helper drive both backlog-origin
+  # and in_progress-origin tasks to done without duplicating chains.
+  defp step_status(%{status: status} = task, status), do: task
+
+  defp step_status(task, target) do
+    {:ok, t} = Tasks.transition_task_status(task, target)
+    t
+  end
+
+  defp step_done(%{status: "done"} = task), do: task
+
+  defp step_done(task) do
+    {:ok, t} = Tasks.transition_task(task, "done")
+    t
   end
 
   defp approve_latest_plan(task) do
