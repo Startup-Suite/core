@@ -409,58 +409,38 @@ defmodule PlatformWeb.TasksLiveTest do
       assert ia < ix
     end
 
-    test "metadata box hides unmet_dependencies (already shown by Dependencies section)",
-         %{conn: conn} do
+    test "detail panel does not render a raw metadata debug block", %{conn: conn} do
+      # The raw `inspect(task.metadata, pretty: true)` <pre> was debug debris.
+      # Whatever it contained (UUID lists, internal flags, deploy strategy) was
+      # noise to a human reviewer — humans can't resolve UUIDs by eye and the
+      # GUI doesn't help. Information worth showing belongs in a structured,
+      # human-readable section (like the Dependencies section above), not a
+      # raw map dump.
       conn = authenticated_conn(conn)
       project = create_project()
 
-      a = create_task(project, %{title: "Hidden-key dep A", status: "in_progress"})
+      a = create_task(project, %{title: "Probe dep A", status: "in_progress"})
 
       b =
         create_task(project, %{
-          title: "Metadata-filtered B",
+          title: "Probe B",
           status: "blocked",
           dependencies: [%{"task_id" => a.id, "kind" => "blocks"}],
           metadata: %{
             "unmet_dependencies" => [a.id],
-            "kept_key" => "kept_value"
+            "some_other_internal_key" => "value"
           }
         })
 
       {:ok, _view, html} = live(conn, ~p"/tasks?task_id=#{b.id}")
 
-      # Scope the assertions to the metadata <pre> block. The page also
-      # contains `unmet_dependencies` / the dep id elsewhere (kanban,
-      # Dependencies section), so we have to look INSIDE the metadata box
-      # to assert the filter actually scrubbed those keys from this view.
-      [_, after_pre] = String.split(html, ~s|<pre class="rounded bg-base-200|, parts: 2)
-      [metadata_pre, _] = String.split(after_pre, "</pre>", parts: 2)
-
-      assert metadata_pre =~ "kept_key"
-      assert metadata_pre =~ "kept_value"
-      refute metadata_pre =~ "unmet_dependencies"
-      refute metadata_pre =~ a.id
-    end
-
-    test "metadata box hides entirely when only unmet_dependencies is present",
-         %{conn: conn} do
-      conn = authenticated_conn(conn)
-      project = create_project()
-
-      a = create_task(project, %{title: "Sole-key dep A", status: "in_progress"})
-
-      b =
-        create_task(project, %{
-          title: "Empty-after-filter B",
-          status: "blocked",
-          dependencies: [%{"task_id" => a.id, "kind" => "blocks"}],
-          metadata: %{"unmet_dependencies" => [a.id]}
-        })
-
-      {:ok, _view, html} = live(conn, ~p"/tasks?task_id=#{b.id}")
-
-      # No metadata <pre> block at all when the only key is the filtered one.
+      # No "Metadata" heading, no <pre> dump.
+      refute html =~ ">Metadata</h3>"
       refute html =~ ~s|<pre class="rounded bg-base-200|
+      # And the noise that prompted this — bare UUIDs and internal-key dumps —
+      # is therefore not bleeding into the detail view. Dep info still flows
+      # through the Dependencies section as titles + status icons.
+      refute html =~ "some_other_internal_key"
     end
   end
 
