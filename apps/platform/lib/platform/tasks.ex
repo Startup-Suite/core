@@ -437,24 +437,57 @@ defmodule Platform.Tasks do
 
       task = Repo.get!(Task, updated_plan.task_id)
 
-      case task.status do
-        status when status in ["planning", "backlog"] ->
-          {:ok, _task} = transition_task_status(task, "in_progress")
-          :ok
+      previous_task = task
 
-        _ ->
-          :ok
-      end
+      finalized_task =
+        case task.status do
+          status when status in ["planning", "backlog"] ->
+            apply_dispatch_gate(task)
 
-      updated_plan
+          _ ->
+            nil
+        end
+
+      {updated_plan, previous_task, finalized_task}
     end)
     |> case do
-      {:ok, updated} ->
+      {:ok, {updated, previous_task, finalized_task}} ->
         broadcast_board({:plan_updated, updated})
+
+        if finalized_task do
+          finalized_task =
+            Repo.preload(finalized_task, [:project, :epic, plans: :stages])
+
+          broadcast_board({:task_updated, finalized_task})
+          maybe_finalize_transition(previous_task, finalized_task, finalized_task.status)
+        end
+
         {:ok, updated}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Decide whether the just-approved task can move into execution or has to
+  # park in `blocked` until its dependencies finish. Returns the post-write
+  # task struct (status + metadata as persisted) so the caller can broadcast
+  # and run the per-phase finalize hook.
+  defp apply_dispatch_gate(%Task{} = task) do
+    case unmet_dependencies(task) do
+      [] ->
+        {:ok, updated} = transition_task_status(task, "in_progress")
+        updated
+
+      unmet ->
+        {:ok, blocked} = transition_task_status(task, "blocked")
+        existing_metadata = blocked.metadata || %{}
+
+        merged_metadata =
+          Map.put(existing_metadata, "unmet_dependencies", Enum.map(unmet, & &1.id))
+
+        {:ok, with_metadata} = update_task(blocked, %{metadata: merged_metadata})
+        with_metadata
     end
   end
 

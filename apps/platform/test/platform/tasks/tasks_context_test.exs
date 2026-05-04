@@ -299,6 +299,164 @@ defmodule Platform.Tasks.TasksContextTest do
     end
   end
 
+  describe "approve_plan dependency gate" do
+    setup do
+      {:ok, project} = Tasks.create_project(%{name: "Gate Project"})
+      %{project: project}
+    end
+
+    test "deps all done → task lands on in_progress with no unmet metadata", %{
+      project: project
+    } do
+      {:ok, dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "backlog"})
+
+      _dep_done = drive_to_done(dep)
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Gated B",
+          status: "planning",
+          dependencies: [%{"task_id" => dep.id, "kind" => "blocks"}]
+        })
+
+      updated = approve_latest_plan(task)
+      assert updated.status == "in_progress"
+      refute Map.has_key?(updated.metadata || %{}, "unmet_dependencies")
+    end
+
+    test "any dep unmet → task lands on blocked with unmet ids in metadata", %{
+      project: project
+    } do
+      {:ok, dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "in_progress"})
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Gated B",
+          status: "planning",
+          dependencies: [%{"task_id" => dep.id, "kind" => "blocks"}]
+        })
+
+      updated = approve_latest_plan(task)
+      assert updated.status == "blocked"
+      assert updated.metadata["unmet_dependencies"] == [dep.id]
+    end
+
+    test "mixed deps → only the unmet ids appear in metadata", %{project: project} do
+      {:ok, done_dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "backlog"})
+
+      _done_dep = drive_to_done(done_dep)
+
+      {:ok, in_progress_dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep X", status: "in_progress"})
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Gated B",
+          status: "planning",
+          dependencies: [
+            %{"task_id" => done_dep.id, "kind" => "blocks"},
+            %{"task_id" => in_progress_dep.id, "kind" => "blocks"}
+          ]
+        })
+
+      updated = approve_latest_plan(task)
+      assert updated.status == "blocked"
+      assert updated.metadata["unmet_dependencies"] == [in_progress_dep.id]
+      refute done_dep.id in updated.metadata["unmet_dependencies"]
+    end
+
+    test "blocked task keeps its planning-phase assignee (no execution leak)", %{
+      project: project
+    } do
+      {:ok, dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "in_progress"})
+
+      planning_agent_id = Ecto.UUID.generate()
+      execution_agent_id = Ecto.UUID.generate()
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Gated B",
+          status: "planning",
+          assignee_id: planning_agent_id,
+          assignee_type: "agent",
+          phase_assignees: %{
+            "planning" => %{
+              "assignee_id" => planning_agent_id,
+              "assignee_type" => "agent"
+            },
+            "execution" => %{
+              "assignee_id" => execution_agent_id,
+              "assignee_type" => "agent"
+            }
+          },
+          dependencies: [%{"task_id" => dep.id, "kind" => "blocks"}]
+        })
+
+      updated = approve_latest_plan(task)
+      assert updated.status == "blocked"
+      # Planning and blocked share the "planning" orchestration phase, so the
+      # assignee must remain the planning-phase agent — never silently flip to
+      # the execution agent that would have taken over had we reached
+      # in_progress.
+      assert updated.assignee_id == planning_agent_id
+      assert updated.assignee_type == "agent"
+    end
+
+    test "preserves prior metadata when stamping unmet_dependencies", %{project: project} do
+      {:ok, dep} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep A", status: "in_progress"})
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Gated B",
+          status: "planning",
+          metadata: %{"keep_me" => "yes"},
+          dependencies: [%{"task_id" => dep.id, "kind" => "blocks"}]
+        })
+
+      updated = approve_latest_plan(task)
+      assert updated.status == "blocked"
+      assert updated.metadata["keep_me"] == "yes"
+      assert updated.metadata["unmet_dependencies"] == [dep.id]
+    end
+  end
+
+  defp drive_to_done(task) do
+    task
+    |> then(fn t ->
+      {:ok, t} = Tasks.transition_task_status(t, "in_progress")
+      t
+    end)
+    |> then(fn t ->
+      {:ok, t} = Tasks.transition_task_status(t, "in_review")
+      t
+    end)
+    |> then(fn t ->
+      {:ok, t} = Tasks.transition_task_status(t, "deploying")
+      t
+    end)
+    |> then(fn t ->
+      {:ok, t} = Tasks.transition_task_status(t, "done")
+      t
+    end)
+  end
+
+  defp approve_latest_plan(task) do
+    {:ok, plan} = Tasks.create_plan(%{task_id: task.id})
+    {:ok, plan} = Tasks.submit_plan_for_review(plan)
+    {:ok, _plan} = Tasks.approve_plan(plan, "system")
+    Tasks.get_task_record(task.id)
+  end
+
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
       Regex.replace(~r"%{(\w+)}", message, fn _, key ->
