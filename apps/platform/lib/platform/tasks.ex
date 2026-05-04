@@ -186,6 +186,77 @@ defmodule Platform.Tasks do
   @doc "Get a task record from Postgres (no ETS merge)."
   def get_task_record(id), do: Repo.get(Task, id)
 
+  # ── Dependency helpers (canonical readers) ──────────────────────────────
+  #
+  # The JSONB shape is `[%{"task_id" => uuid, "kind" => "blocks"}, ...]`.
+  # These helpers are the single canonical reader so the shape isn't
+  # reinterpreted in five places (gate, sweep, UI, MCP tool, etc.).
+
+  @doc """
+  Return the dependency task ids for a task.
+
+  Accepts a `%Task{}` struct or a task id string. Returns `[]` for unknown
+  ids or tasks with no deps. Always returns the raw string ids exactly as
+  stored — no UUID normalization.
+  """
+  @spec dependency_task_ids(Task.t() | String.t()) :: [String.t()]
+  def dependency_task_ids(%Task{dependencies: deps}) when is_list(deps) do
+    deps
+    |> Enum.map(& &1["task_id"])
+    |> Enum.reject(&is_nil/1)
+  end
+
+  def dependency_task_ids(%Task{}), do: []
+
+  def dependency_task_ids(id) when is_binary(id) do
+    case get_task_record(id) do
+      %Task{} = task -> dependency_task_ids(task)
+      nil -> []
+    end
+  end
+
+  @doc """
+  Return the subset of a task's dependencies whose status is not `"done"`.
+
+  Accepts a `%Task{}` struct or a task id string. Self-references and
+  unknown ids (declared as deps but absent from the DB) are silently
+  dropped.
+
+  Returns `[%{id, title, status}]` — a thin shape suitable for surfacing
+  in UI / blocker messages without leaking the full Task schema.
+  """
+  @spec unmet_dependencies(Task.t() | String.t()) :: [
+          %{id: String.t(), title: String.t(), status: String.t()}
+        ]
+  def unmet_dependencies(%Task{} = task) do
+    ids =
+      task
+      |> dependency_task_ids()
+      |> Enum.reject(&(&1 == task.id))
+      |> Enum.uniq()
+
+    case ids do
+      [] ->
+        []
+
+      ids ->
+        Repo.all(
+          from(t in Task,
+            where: t.id in ^ids,
+            select: %{id: t.id, title: t.title, status: t.status}
+          )
+        )
+        |> Enum.reject(&(&1.status == "done"))
+    end
+  end
+
+  def unmet_dependencies(id) when is_binary(id) do
+    case get_task_record(id) do
+      %Task{} = task -> unmet_dependencies(task)
+      nil -> []
+    end
+  end
+
   def list_tasks_by_project(project_id) do
     Task
     |> where([t], t.project_id == ^project_id)

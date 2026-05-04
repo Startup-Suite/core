@@ -116,4 +116,194 @@ defmodule Platform.Tasks.TasksContextTest do
       assert is_list(Tasks.list_tasks())
     end
   end
+
+  describe "dependency schema + helpers" do
+    setup do
+      {:ok, project} = Tasks.create_project(%{name: "Dep Project"})
+      %{project: project}
+    end
+
+    test "changeset accepts nil and empty dependencies", %{project: project} do
+      # nil is allowed (no error). The schema default of `[]` only applies
+      # when the field is omitted entirely, so an explicit nil persists as nil.
+      assert {:ok, t1} =
+               Tasks.create_task(%{project_id: project.id, title: "T1", dependencies: nil})
+
+      assert t1.dependencies in [nil, []]
+
+      assert {:ok, t2} =
+               Tasks.create_task(%{project_id: project.id, title: "T2", dependencies: []})
+
+      assert t2.dependencies == []
+
+      # Field omitted entirely picks up the schema default.
+      assert {:ok, t3} = Tasks.create_task(%{project_id: project.id, title: "T3"})
+      assert t3.dependencies == []
+    end
+
+    test "changeset accepts a well-formed dependency", %{project: project} do
+      dep_id = Ecto.UUID.generate()
+
+      assert {:ok, task} =
+               Tasks.create_task(%{
+                 project_id: project.id,
+                 title: "Has dep",
+                 dependencies: [%{"task_id" => dep_id, "kind" => "blocks"}]
+               })
+
+      assert [%{"task_id" => ^dep_id, "kind" => "blocks"}] = task.dependencies
+    end
+
+    test "changeset rejects entries missing task_id", %{project: project} do
+      assert {:error, changeset} =
+               Tasks.create_task(%{
+                 project_id: project.id,
+                 title: "Bad dep",
+                 dependencies: [%{"kind" => "blocks"}]
+               })
+
+      assert %{dependencies: [_]} = errors_on(changeset)
+    end
+
+    test "changeset rejects non-uuid task_id", %{project: project} do
+      assert {:error, changeset} =
+               Tasks.create_task(%{
+                 project_id: project.id,
+                 title: "Bad dep",
+                 dependencies: [%{"task_id" => "not-a-uuid", "kind" => "blocks"}]
+               })
+
+      assert %{dependencies: [_]} = errors_on(changeset)
+    end
+
+    test "changeset rejects unknown kind", %{project: project} do
+      assert {:error, changeset} =
+               Tasks.create_task(%{
+                 project_id: project.id,
+                 title: "Bad dep",
+                 dependencies: [%{"task_id" => Ecto.UUID.generate(), "kind" => "lol"}]
+               })
+
+      assert %{dependencies: [_]} = errors_on(changeset)
+    end
+
+    test "changeset rejects non-list dependencies", %{project: project} do
+      assert {:error, changeset} =
+               Tasks.create_task(%{
+                 project_id: project.id,
+                 title: "Bad dep",
+                 dependencies: "not a list"
+               })
+
+      assert %{dependencies: [_]} = errors_on(changeset)
+    end
+
+    test "dependency_task_ids/1 returns the declared ids", %{project: project} do
+      {:ok, a} = Tasks.create_task(%{project_id: project.id, title: "A"})
+      {:ok, b} = Tasks.create_task(%{project_id: project.id, title: "B"})
+
+      {:ok, d} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "D",
+          dependencies: [
+            %{"task_id" => a.id, "kind" => "blocks"},
+            %{"task_id" => b.id, "kind" => "blocks"}
+          ]
+        })
+
+      ids = Tasks.dependency_task_ids(d)
+      assert length(ids) == 2
+      assert a.id in ids
+      assert b.id in ids
+      assert Enum.all?(ids, &is_binary/1)
+
+      # Same answer when called by id.
+      assert MapSet.new(Tasks.dependency_task_ids(d.id)) == MapSet.new(ids)
+    end
+
+    test "unmet_dependencies/1 returns only the not-done subset", %{project: project} do
+      {:ok, a} = Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+      {:ok, a} = Tasks.transition_task_status(a, "in_review")
+      {:ok, a} = Tasks.transition_task_status(a, "deploying")
+      {:ok, a} = Tasks.transition_task_status(a, "done")
+
+      {:ok, b} = Tasks.create_task(%{project_id: project.id, title: "B", status: "in_progress"})
+      {:ok, c} = Tasks.create_task(%{project_id: project.id, title: "C", status: "planning"})
+
+      {:ok, d} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "D",
+          dependencies: [
+            %{"task_id" => a.id, "kind" => "blocks"},
+            %{"task_id" => b.id, "kind" => "blocks"},
+            %{"task_id" => c.id, "kind" => "blocks"}
+          ]
+        })
+
+      unmet = Tasks.unmet_dependencies(d)
+      ids = Enum.map(unmet, & &1.id)
+
+      assert length(unmet) == 2
+      assert b.id in ids
+      assert c.id in ids
+      refute a.id in ids
+      assert Enum.all?(unmet, &(Map.keys(&1) |> Enum.sort() == [:id, :status, :title]))
+    end
+
+    test "unmet_dependencies/1 returns [] when every dep is done", %{project: project} do
+      {:ok, a} = Tasks.create_task(%{project_id: project.id, title: "A", status: "in_progress"})
+      {:ok, a} = Tasks.transition_task_status(a, "in_review")
+      {:ok, a} = Tasks.transition_task_status(a, "deploying")
+      {:ok, a} = Tasks.transition_task_status(a, "done")
+
+      {:ok, d} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "D",
+          dependencies: [%{"task_id" => a.id, "kind" => "blocks"}]
+        })
+
+      assert Tasks.unmet_dependencies(d) == []
+    end
+
+    test "unmet_dependencies/1 ignores self-references and unknown ids", %{project: project} do
+      bogus_id = Ecto.UUID.generate()
+      {:ok, b} = Tasks.create_task(%{project_id: project.id, title: "B", status: "in_progress"})
+
+      {:ok, d} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "D",
+          dependencies: [
+            %{"task_id" => bogus_id, "kind" => "blocks"},
+            %{"task_id" => b.id, "kind" => "blocks"}
+          ]
+        })
+
+      # Now mutate D to add a self-reference. Going through the changeset
+      # validates the shape (a uuid + known kind), so this is fine.
+      {:ok, d} =
+        Tasks.update_task(d, %{
+          dependencies: [
+            %{"task_id" => bogus_id, "kind" => "blocks"},
+            %{"task_id" => b.id, "kind" => "blocks"},
+            %{"task_id" => d.id, "kind" => "blocks"}
+          ]
+        })
+
+      unmet = Tasks.unmet_dependencies(d)
+      assert [%{id: id, status: "in_progress"}] = unmet
+      assert id == b.id
+    end
+  end
+
+  defp errors_on(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+      Regex.replace(~r"%{(\w+)}", message, fn _, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+  end
 end
