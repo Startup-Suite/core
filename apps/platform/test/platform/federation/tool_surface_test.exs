@@ -35,9 +35,9 @@ defmodule Platform.Federation.ToolSurfaceTest do
   defp unique_slug, do: "test-#{System.unique_integer([:positive])}"
 
   describe "tool_definitions/0" do
-    test "returns all 49 tools with required components" do
+    test "returns all 50 tools with required components" do
       tools = ToolSurface.tool_definitions()
-      assert length(tools) == 49
+      assert length(tools) == 50
 
       tool_names = Enum.map(tools, & &1.name)
       assert "send_media" in tool_names
@@ -61,6 +61,7 @@ defmodule Platform.Federation.ToolSurfaceTest do
       assert "task_update" in tool_names
       assert "task_start" in tool_names
       assert "task_complete" in tool_names
+      assert "task_dependencies" in tool_names
       assert "plan_create" in tool_names
       assert "plan_get" in tool_names
       assert "plan_submit" in tool_names
@@ -546,6 +547,119 @@ defmodule Platform.Federation.ToolSurfaceTest do
         ToolSurface.execute("task_complete", %{"task_id" => task.id}, %{})
 
       assert error.error =~ "Cannot transition"
+    end
+
+    # ── task_dependencies ────────────────────────────────────────────────
+
+    test "task_dependencies returns deps, unmet, and dependents for a task with both" do
+      project = create_project()
+      {:ok, dep_done} = Tasks.create_task(%{project_id: project.id, title: "Dep Done"})
+      {:ok, dep_done} = Tasks.transition_task_status(dep_done, "in_progress")
+      {:ok, dep_done} = Tasks.transition_task_status(dep_done, "done")
+
+      {:ok, dep_in_progress} =
+        Tasks.create_task(%{project_id: project.id, title: "Dep In Progress"})
+
+      {:ok, dep_in_progress} = Tasks.transition_task_status(dep_in_progress, "in_progress")
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Has deps",
+          dependencies: [
+            %{"task_id" => dep_done.id, "kind" => "blocks"},
+            %{"task_id" => dep_in_progress.id, "kind" => "blocks"}
+          ]
+        })
+
+      {:ok, dependent} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Listed-by",
+          dependencies: [%{"task_id" => task.id, "kind" => "blocks"}]
+        })
+
+      {:ok, result} =
+        ToolSurface.execute("task_dependencies", %{"task_id" => task.id}, %{})
+
+      assert length(result.deps) == 2
+      assert result.unmet == [dep_in_progress.id]
+
+      assert result.dependents == [
+               %{task_id: dependent.id, title: "Listed-by", status: "backlog"}
+             ]
+    end
+
+    test "task_dependencies preserves authored order of deps" do
+      project = create_project()
+      {:ok, a} = Tasks.create_task(%{project_id: project.id, title: "Alpha"})
+      {:ok, b} = Tasks.create_task(%{project_id: project.id, title: "Bravo"})
+      {:ok, c} = Tasks.create_task(%{project_id: project.id, title: "Charlie"})
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Ordered deps",
+          dependencies: [
+            %{"task_id" => c.id, "kind" => "blocks"},
+            %{"task_id" => a.id, "kind" => "blocks"},
+            %{"task_id" => b.id, "kind" => "blocks"}
+          ]
+        })
+
+      {:ok, result} =
+        ToolSurface.execute("task_dependencies", %{"task_id" => task.id}, %{})
+
+      assert Enum.map(result.deps, & &1.task_id) == [c.id, a.id, b.id]
+      assert Enum.map(result.deps, & &1.kind) == ["blocks", "blocks", "blocks"]
+    end
+
+    test "task_dependencies returns empty arrays for a task with neither deps nor dependents" do
+      project = create_project()
+      {:ok, task} = Tasks.create_task(%{project_id: project.id, title: "Lonely"})
+
+      {:ok, result} =
+        ToolSurface.execute("task_dependencies", %{"task_id" => task.id}, %{})
+
+      assert result == %{deps: [], unmet: [], dependents: []}
+    end
+
+    test "task_dependencies returns nil title/status for missing dep ids but keeps task_id + kind" do
+      project = create_project()
+      missing_id = Ecto.UUID.generate()
+      {:ok, real} = Tasks.create_task(%{project_id: project.id, title: "Real"})
+
+      {:ok, task} =
+        Tasks.create_task(%{
+          project_id: project.id,
+          title: "Mixed deps",
+          dependencies: [
+            %{"task_id" => missing_id, "kind" => "blocks"},
+            %{"task_id" => real.id, "kind" => "blocks"}
+          ]
+        })
+
+      {:ok, result} =
+        ToolSurface.execute("task_dependencies", %{"task_id" => task.id}, %{})
+
+      [first, second] = result.deps
+      assert first == %{task_id: missing_id, title: nil, kind: "blocks", status: nil}
+      assert second.task_id == real.id
+      assert second.title == "Real"
+      assert second.kind == "blocks"
+      assert second.status == "backlog"
+    end
+
+    test "task_dependencies returns not-found error for unknown task_id" do
+      {:error, error} =
+        ToolSurface.execute(
+          "task_dependencies",
+          %{"task_id" => Ecto.UUID.generate()},
+          %{}
+        )
+
+      assert error.error =~ "Task not found"
+      assert error.recoverable == false
     end
 
     # ── space_list ───────────────────────────────────────────────────────

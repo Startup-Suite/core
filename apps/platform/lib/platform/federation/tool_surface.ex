@@ -12,7 +12,7 @@ defmodule Platform.Federation.ToolSurface do
   alias Platform.Chat.{ActiveAgentStore, ContextPlane, Participant}
   alias Platform.Org.Context, as: OrgContext
   alias Platform.Tasks
-  alias Platform.Tasks.{Plan, PlanEngine, Stage, Validation}
+  alias Platform.Tasks.{Plan, PlanEngine, Stage, Task, Validation}
   alias Platform.Repo
 
   import Ecto.Query, only: [from: 2]
@@ -887,6 +887,20 @@ defmodule Platform.Federation.ToolSurface do
         limitations:
           "Task must be in backlog or planning status (per ADR 0029, plan approval transitions to in_progress automatically — manual task_start is for the no-plan-required edge case)",
         when_to_use: "When task is fully specced and ready to begin"
+      },
+      %{
+        name: "task_dependencies",
+        description:
+          "Inspect what a task is waiting on (its declared dependencies + which are still unmet) and what would be unblocked by completing it (its inverse dependents).",
+        parameters: %{
+          task_id: %{type: "string", required: true, description: "The task to introspect"}
+        },
+        returns:
+          "%{deps: [%{task_id, title, kind, status}], unmet: [task_id], dependents: [%{task_id, title, status}]}. `deps` preserves authored order; missing/deleted dep ids return entries with nil title/status. `unmet` is the subset of deps whose status is not 'done'. `dependents` lists tasks that declare this one as a dep (sorted by inserted_at).",
+        limitations:
+          "Read-only. Does not mutate dependency state or trigger unblock sweeps — finishing a dep through task_complete is what cascades the unblock.",
+        when_to_use:
+          "When deciding whether you can start a task, surfacing what's blocking you in a status update, or estimating the blast radius of completing a task."
       }
     ]
   end
@@ -2031,6 +2045,91 @@ defmodule Platform.Federation.ToolSurface do
             {:error, %{error: "Failed to start task: #{inspect(reason)}", recoverable: true}}
         end
     end
+  end
+
+  def execute("task_dependencies", args, _context) do
+    task_id = Map.get(args, "task_id")
+
+    case Tasks.get_task_record(task_id) do
+      nil ->
+        {:error,
+         %{
+           error: "Task not found: #{task_id}",
+           recoverable: false,
+           suggestion: "Use task_list to find available tasks"
+         }}
+
+      %Task{} = task ->
+        {:ok,
+         %{
+           deps: build_dependency_entries(task),
+           unmet: task |> Tasks.unmet_dependencies() |> Enum.map(& &1.id),
+           dependents: build_dependent_entries(task)
+         }}
+    end
+  end
+
+  # Resolves a task's declared dependency entries into the canonical
+  # `[%{task_id, title, kind, status}]` shape, preserving the order the
+  # author wrote them in. Missing/deleted dep ids return entries with
+  # `title: nil` and `status: nil` but always carry the `task_id` and
+  # `kind` from the source map (so callers can still see the broken
+  # reference rather than silently dropping it).
+  defp build_dependency_entries(%Task{dependencies: deps}) when is_list(deps) do
+    ids =
+      deps
+      |> Enum.map(&Map.get(&1, "task_id"))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    rows_by_id =
+      case ids do
+        [] ->
+          %{}
+
+        ids ->
+          Repo.all(
+            from(t in Task,
+              where: t.id in ^ids,
+              select: %{id: t.id, title: t.title, status: t.status}
+            )
+          )
+          |> Map.new(&{&1.id, &1})
+      end
+
+    Enum.map(deps, fn dep ->
+      task_id = Map.get(dep, "task_id")
+      kind = Map.get(dep, "kind")
+      row = Map.get(rows_by_id, task_id)
+
+      %{
+        task_id: task_id,
+        title: row && row.title,
+        kind: kind,
+        status: row && row.status
+      }
+    end)
+  end
+
+  defp build_dependency_entries(_), do: []
+
+  # Inverse: tasks that declare this task as one of their dependencies.
+  # Uses the same JSONB containment query the unblock sweep relies on
+  # (`fragment("? @> ?", t.dependencies, ^[%{"task_id" => id}])`). Sorted
+  # by `inserted_at` so the result is deterministic across runs.
+  defp build_dependent_entries(%Task{id: id}) do
+    match = [%{"task_id" => id}]
+
+    Repo.all(
+      from(t in Task,
+        where:
+          fragment("? @> ?", t.dependencies, ^match) and
+            is_nil(t.deleted_at),
+        order_by: [asc: t.inserted_at, asc: t.id],
+        select: %{id: t.id, title: t.title, status: t.status}
+      )
+    )
+    |> Enum.map(fn row -> %{task_id: row.id, title: row.title, status: row.status} end)
   end
 
   # ── Plan / Stage / Validation tools ──────────────────────────────────────
