@@ -113,5 +113,14 @@ defmodule Platform.Orchestration.ProviderGuidanceTest do
       assert block =~ "Spawn it via the Agent tool"
       assert block =~ "fresh context"
     end
+
+    test "instructs the agent to spawn the subagent as a background process" do
+      block = ProviderGuidance.claude_subagent_guidance()
+      assert block =~ "background process"
+      assert block =~ "run_in_background: true"
+      assert block =~ ~r/parent.*responsive|parent responsiveness/
+      # Discourage polling — Claude Code notifies on completion.
+      assert block =~ ~r/do NOT poll/i
+    end
   end
 end
