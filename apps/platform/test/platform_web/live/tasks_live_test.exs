@@ -1680,4 +1680,192 @@ defmodule PlatformWeb.TasksLiveTest do
       assert html =~ "badge badge-outline"
     end
   end
+
+  # ── Stage-card validation regrouping (task 019df4a5 stage 6) ──────────
+  #
+  # Per-stage validations now render INSIDE each stage card rather than in
+  # a trailing flat list. The dedicated E2E Behavior section sits below the
+  # stage list and renders the planner-authored evaluation_payload script.
+  describe "validation regrouping in plan body" do
+    defp insert_active_plan!(task) do
+      {:ok, plan} =
+        Tasks.create_plan(%{task_id: task.id, version: 1, status: "approved"})
+
+      plan
+    end
+
+    test "test_pass + lint_pass badges render INSIDE the stage card, not in a flat list",
+         %{conn: conn} do
+      project = create_project()
+      task = create_task(project, %{title: "Stage badges task", status: "in_progress"})
+      plan = insert_active_plan!(task)
+
+      {:ok, stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 1,
+          name: "Implement feature",
+          status: "running"
+        })
+
+      {:ok, _v_test} =
+        Tasks.create_validation(%{
+          stage_id: stage.id,
+          kind: "test_pass",
+          status: "pending"
+        })
+
+      {:ok, _v_lint} =
+        Tasks.create_validation(%{
+          stage_id: stage.id,
+          kind: "lint_pass",
+          status: "pending"
+        })
+
+      conn = authenticated_conn(conn)
+      {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+      # Stage card carries the badges as inline children.
+      stage_card_attr = ~s(data-role="stage-card" data-stage-id="#{stage.id}")
+      assert html =~ stage_card_attr
+
+      # Both badges appear, tagged with their kind, inside the stage card's
+      # validations container.
+      assert html =~ ~s(data-role="stage-validations")
+      assert html =~ ~s(data-validation-kind="test_pass")
+      assert html =~ ~s(data-validation-kind="lint_pass")
+
+      # The pre-stage-6 trailing flat validations list MUST be gone — there
+      # is no <div data-role="validations-list"> rendered anywhere.
+      refute html =~ ~s(data-role="validations-list")
+
+      # Sanity: badges appear after the stage-card opening tag and before
+      # the next stage card / e2e section starts. Use a coarse positional
+      # check: the first occurrence of `data-validation-kind=` appears AFTER
+      # the first `data-role="stage-card"` opening.
+      stage_card_pos = :binary.match(html, "data-role=\"stage-card\"") |> elem(0)
+
+      first_badge_pos =
+        :binary.match(html, "data-role=\"stage-validation-badge\"") |> elem(0)
+
+      assert first_badge_pos > stage_card_pos
+    end
+
+    test "manual_approval validation on a UI stage renders inside that stage's card",
+         %{conn: conn} do
+      project = create_project()
+      task = create_task(project, %{title: "UI stage task", status: "in_progress"})
+      plan = insert_active_plan!(task)
+
+      {:ok, ui_stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 1,
+          name: "Wire up panel UI",
+          status: "running"
+        })
+
+      {:ok, _v_manual} =
+        Tasks.create_validation(%{
+          stage_id: ui_stage.id,
+          kind: "manual_approval",
+          status: "pending"
+        })
+
+      conn = authenticated_conn(conn)
+      {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+      assert html =~ ~s(data-role="stage-card" data-stage-id="#{ui_stage.id}")
+      assert html =~ ~s(data-validation-kind="manual_approval")
+      refute html =~ ~s(data-role="validations-list")
+    end
+
+    test "non-UI task (no manual_approval anywhere) does NOT render a manual_approval badge",
+         %{conn: conn} do
+      project = create_project()
+      task = create_task(project, %{title: "Backend-only task", status: "in_progress"})
+      plan = insert_active_plan!(task)
+
+      {:ok, stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 1,
+          name: "Refactor module",
+          status: "running"
+        })
+
+      {:ok, _v_test} =
+        Tasks.create_validation(%{stage_id: stage.id, kind: "test_pass", status: "pending"})
+
+      conn = authenticated_conn(conn)
+      {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+      refute html =~ ~s(data-validation-kind="manual_approval")
+    end
+
+    test "task with an e2e_behavior validation renders the dedicated E2E Behavior section " <>
+           "with full payload visible",
+         %{conn: conn} do
+      project = create_project()
+      task = create_task(project, %{title: "E2E task", status: "in_review"})
+      plan = insert_active_plan!(task)
+
+      {:ok, _impl_stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 1,
+          name: "Implement",
+          status: "passed"
+        })
+
+      # Synthetic task-level review stage (this is what
+      # PlanEngine.route_e2e_behavior_validations/1 creates).
+      {:ok, review_stage} =
+        Tasks.create_stage(%{
+          plan_id: plan.id,
+          position: 2,
+          name: "Task-level review",
+          status: "pending"
+        })
+
+      payload = %{
+        "setup" => "Spin up dev server and seed two tasks A and B.",
+        "actions" => "Open task B and click the dependency badge.",
+        "expected" => "The dependency badge renders the linked task title.",
+        "failure_feedback" => "Dependency badge did not show the linked task title."
+      }
+
+      {:ok, _v_e2e} =
+        Tasks.create_validation(%{
+          stage_id: review_stage.id,
+          kind: "e2e_behavior",
+          status: "pending",
+          evaluation_payload: payload
+        })
+
+      conn = authenticated_conn(conn)
+      {:ok, _view, html} = live(conn, ~p"/tasks/#{task.id}")
+
+      assert html =~ ~s(data-role="e2e-behavior-section")
+      assert html =~ "E2E Behavior"
+
+      # All four payload sections render, each with its `data-role` and the
+      # text from the payload.
+      assert html =~ ~s(data-role="e2e-setup")
+      assert html =~ "Spin up dev server"
+      assert html =~ ~s(data-role="e2e-actions")
+      assert html =~ "Open task B and click the dependency badge."
+      assert html =~ ~s(data-role="e2e-expected")
+      assert html =~ "The dependency badge renders the linked task title."
+      assert html =~ ~s(data-role="e2e-failure_feedback")
+      assert html =~ "Dependency badge did not show the linked task title."
+
+      # The synthetic review stage that ONLY hosts the e2e validation should
+      # not double-render the validation as a stage badge.
+      refute html =~ ~s(data-validation-kind="e2e_behavior")
+
+      # And there's no flat trailing validations list.
+      refute html =~ ~s(data-role="validations-list")
+    end
+  end
 end
