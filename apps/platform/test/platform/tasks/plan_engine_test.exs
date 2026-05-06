@@ -538,4 +538,209 @@ defmodule Platform.Tasks.PlanEngineTest do
       assert stage_def.validations == [%{kind: "pr_merged"}]
     end
   end
+
+  # ── route_e2e_behavior_validations/1 ──────────────────────────────────
+
+  describe "route_e2e_behavior_validations/1" do
+    test "lifts an e2e_behavior validation from an implementation stage into a synthesized task-level review stage" do
+      e2e_payload = %{
+        "setup" => "create a fixture task",
+        "actions" => "open the panel",
+        "expected" => "panel renders",
+        "failure_feedback" => "panel did not render"
+      }
+
+      stages = [
+        %{
+          "name" => "Build feature",
+          "description" => "implement the new endpoint",
+          "position" => 1,
+          "validations" => [
+            %{"kind" => "test_pass"},
+            %{"kind" => "lint_pass"},
+            %{"kind" => "e2e_behavior", "evaluation_payload" => e2e_payload}
+          ]
+        }
+      ]
+
+      [build_stage, review_stage] = PlanEngine.route_e2e_behavior_validations(stages)
+
+      # Implementation stage no longer carries the e2e validation
+      assert build_stage["validations"] == [
+               %{"kind" => "test_pass"},
+               %{"kind" => "lint_pass"}
+             ]
+
+      # Synthesized review stage carries it at the next position
+      assert review_stage["name"] == "Task-level review"
+      assert review_stage["position"] == 2
+
+      assert review_stage["validations"] == [
+               %{"kind" => "e2e_behavior", "evaluation_payload" => e2e_payload}
+             ]
+    end
+
+    test "appends e2e_behavior validations to an existing review-named stage instead of synthesizing one" do
+      e2e_payload = %{
+        "setup" => "x",
+        "actions" => "y",
+        "expected" => "z",
+        "failure_feedback" => "fb"
+      }
+
+      stages = [
+        %{
+          "name" => "Build",
+          "position" => 1,
+          "validations" => [
+            %{"kind" => "test_pass"},
+            %{"kind" => "e2e_behavior", "evaluation_payload" => e2e_payload}
+          ]
+        },
+        %{
+          "name" => "Review",
+          "position" => 2,
+          "validations" => [%{"kind" => "manual_approval"}]
+        }
+      ]
+
+      [build_stage, review_stage] = PlanEngine.route_e2e_behavior_validations(stages)
+
+      assert build_stage["validations"] == [%{"kind" => "test_pass"}]
+
+      assert review_stage["validations"] == [
+               %{"kind" => "manual_approval"},
+               %{"kind" => "e2e_behavior", "evaluation_payload" => e2e_payload}
+             ]
+    end
+
+    test "leaves stages untouched when no e2e_behavior validation is present" do
+      stages = [
+        %{
+          "name" => "Build",
+          "position" => 1,
+          "validations" => [%{"kind" => "test_pass"}]
+        }
+      ]
+
+      assert PlanEngine.route_e2e_behavior_validations(stages) == stages
+    end
+
+    test "ignores Deploy: stages when looking for an existing review stage to attach to" do
+      e2e_payload = %{
+        "setup" => "x",
+        "actions" => "y",
+        "expected" => "z",
+        "failure_feedback" => "fb"
+      }
+
+      stages = [
+        %{
+          "name" => "Build",
+          "position" => 1,
+          "validations" => [%{"kind" => "e2e_behavior", "evaluation_payload" => e2e_payload}]
+        },
+        %{
+          "name" => "Deploy: PR merge — review",
+          "position" => 2,
+          "validations" => [%{"kind" => "pr_merged"}]
+        }
+      ]
+
+      [_build, deploy, review_stage] = PlanEngine.route_e2e_behavior_validations(stages)
+
+      assert deploy["validations"] == [%{"kind" => "pr_merged"}]
+      assert review_stage["name"] == "Task-level review"
+    end
+  end
+
+  # ── ui_touching?/1 + check_manual_approval_heuristic/1 ──────────────
+
+  describe "ui_touching?/1" do
+    test "returns true when description contains UI-touching tokens" do
+      assert PlanEngine.ui_touching?("update the .heex template for the panel")
+      assert PlanEngine.ui_touching?("modify assets/js/hooks/compose_input.js")
+      assert PlanEngine.ui_touching?("change tasks_live.ex render path")
+      assert PlanEngine.ui_touching?("add a new section in app.css")
+    end
+
+    test "returns false for descriptions with no UI tokens" do
+      refute PlanEngine.ui_touching?("update database migration")
+      refute PlanEngine.ui_touching?("refactor business logic in plan_engine.ex")
+      refute PlanEngine.ui_touching?(nil)
+      refute PlanEngine.ui_touching?("")
+    end
+  end
+
+  describe "check_manual_approval_heuristic/1" do
+    import ExUnit.CaptureLog
+
+    test "warns when a UI-touching stage lacks manual_approval" do
+      stages = [
+        %{
+          "name" => "Render new panel",
+          "description" => "edit assets/js/hooks/compose_input.js to add draft persistence",
+          "validations" => [%{"kind" => "test_pass"}]
+        }
+      ]
+
+      log = capture_log(fn -> PlanEngine.check_manual_approval_heuristic(stages) end)
+      assert log =~ "likely missed UI manual_approval"
+      assert log =~ "Render new panel"
+    end
+
+    test "warns when a non-UI stage carries manual_approval (likely overscoped)" do
+      stages = [
+        %{
+          "name" => "Database migration",
+          "description" => "add a jsonb column to validations table",
+          "validations" => [%{"kind" => "manual_approval"}]
+        }
+      ]
+
+      log = capture_log(fn -> PlanEngine.check_manual_approval_heuristic(stages) end)
+      assert log =~ "likely overscoped manual_approval"
+      assert log =~ "Database migration"
+    end
+
+    test "is silent when planner-supplied manual_approval matches a UI-touching stage" do
+      stages = [
+        %{
+          "name" => "Render new panel",
+          "description" => "edit chat_live.ex to render badges",
+          "validations" => [%{"kind" => "test_pass"}, %{"kind" => "manual_approval"}]
+        }
+      ]
+
+      log = capture_log(fn -> PlanEngine.check_manual_approval_heuristic(stages) end)
+      refute log =~ "likely missed UI manual_approval"
+      refute log =~ "likely overscoped manual_approval"
+    end
+
+    test "is silent when planner correctly omits manual_approval from a non-UI stage" do
+      stages = [
+        %{
+          "name" => "Background worker",
+          "description" => "implement Oban worker for the daily digest job",
+          "validations" => [%{"kind" => "test_pass"}, %{"kind" => "lint_pass"}]
+        }
+      ]
+
+      log = capture_log(fn -> PlanEngine.check_manual_approval_heuristic(stages) end)
+      refute log =~ "likely missed UI manual_approval"
+      refute log =~ "likely overscoped manual_approval"
+    end
+
+    test "returns input untouched (planner authority wins)" do
+      stages = [
+        %{
+          "name" => "X",
+          "description" => "edit chat_live.ex without approval",
+          "validations" => [%{"kind" => "test_pass"}]
+        }
+      ]
+
+      assert PlanEngine.check_manual_approval_heuristic(stages) == stages
+    end
+  end
 end

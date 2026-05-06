@@ -154,22 +154,36 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
   def dispatch_prompt(%{status: "in_review"} = task, plan, stage, opts) do
     stage_info = format_stage_info(plan, stage)
     provider_guidance = resolve_provider_guidance(opts)
+    pending = pending_validations_for_stage(stage)
 
-    assigns = %{
-      task_title: task.title,
-      stage_info: stage_info,
-      provider_specific_guidance: provider_guidance,
-      skills_reference: @skills_reference,
-      evidence_workflow_reference: @evidence_workflow_reference
-    }
+    {template_slug, extra_assigns} = select_review_template(pending, task)
+
+    assigns =
+      %{
+        task_title: task.title,
+        stage_info: stage_info,
+        provider_specific_guidance: provider_guidance,
+        skills_reference: @skills_reference,
+        evidence_workflow_reference: @evidence_workflow_reference
+      }
+      |> Map.merge(extra_assigns)
 
     prompt =
-      case PromptTemplates.render_template("dispatch.in_review", assigns) do
+      case PromptTemplates.render_template(template_slug, assigns) do
         {:ok, rendered} ->
           rendered
 
         {:error, :not_found} ->
-          hardcoded_dispatch_in_review(task, plan, stage, provider_guidance)
+          # Fallback paths intentionally diverge by template kind: e2e_behavior
+          # falls back to a hardcoded behavioral prompt; manual_approval / other
+          # kinds fall back to the existing in_review prompt.
+          case template_slug do
+            "dispatch.review_e2e" ->
+              hardcoded_dispatch_review_e2e(task, assigns)
+
+            _ ->
+              hardcoded_dispatch_in_review(task, plan, stage, provider_guidance)
+          end
       end
 
     enrich_in_review_prompt(prompt, task, stage)
@@ -407,20 +421,49 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     **Implementation stages** (run in `in_progress`):
     - Each stage represents a discrete, reviewable unit of work
     - Validations: use `test_pass` and `lint_pass` for code changes
+    - `manual_approval` ONLY on stages that visually re-render UI (see "Validation kinds" below)
     - Push branch when implementation stages are complete — do NOT open a PR yet
 
-    **Final review stage** (runs when task moves to `in_review`):
-    - Name it "Review" or "Validation"
-    - Describe: exercise the feature in the local/dev environment, confirm it matches the task goal
-    - If the feature has a visible UI: take a screenshot or canvas snapshot as evidence
-    - Validations:
-      - Use `test_pass` / `lint_pass` for deterministic checks
-      - Use `manual_approval` if a human needs to sign off on UI or behavior
-      - When you reach a `manual_approval` validation: call `suite_review_request_create` and post a
-        screenshot into the execution space so the human can review before approving
-    - On success: open the PR and include the PR link as evidence on the final validation
+    **Task-level review (one per task)**:
+    - Author exactly one `e2e_behavior` validation with a structured `evaluation_payload`
+      (`setup` / `actions` / `expected` / `failure_feedback`). The plan engine lifts it to a
+      synthetic task-level review stage automatically — do NOT attach it to multiple stages
+      or create a separate review stage for it.
 
-    Do NOT include `code_review` as a validation kind — it is not supported.
+    ## Validation kinds
+
+    Per-stage:
+    - `test_pass` / `lint_pass` for any stage that touches code.
+    - `manual_approval` ONLY on stages that visually re-render UI. UI-touching means the stage
+      modifies `.heex` templates, `assets/js/`, `assets/css/`, `app.css`, `compose_input`,
+      `chat_live`, `tasks_live.ex`, `_web/live/`, or `_web/components/`. If the description
+      doesn't reference any of those, do NOT attach `manual_approval` — overscoped human gates
+      kill cycle time. When you reach a `manual_approval` validation in execution, call
+      `suite_review_request_create` and post a screenshot into the execution space.
+
+    Task-level:
+    - `e2e_behavior` (exactly one per task) with `evaluation_payload`:
+      - `setup`: how the review agent should prepare the dev environment
+      - `actions`: concrete steps to perform against the running feature
+      - `expected`: the observable behavior that constitutes success
+      - `failure_feedback`: text to post back to the implementing agent on a failed verdict
+
+    Example e2e_behavior payload (dependency-blocker task):
+    ```
+    {
+      "kind": "e2e_behavior",
+      "evaluation_payload": {
+        "setup": "Create two tasks A and B; mark B as depending on A.",
+        "actions": "Open task B in the detail panel; mark A done; refresh.",
+        "expected": "Before: B's panel shows A under 'Blocked by' with an unmet badge. After: badge clears within 2s.",
+        "failure_feedback": "Dependency UI did not update — check task_dependencies query and LiveView subscriptions."
+      }
+    }
+    ```
+
+    Forbidden:
+    - `code_review` is NOT a supported validation kind — do not include it.
+    - Multiple `e2e_behavior` validations — exactly one per task.
 
     ## Stage quality bar
 
@@ -515,6 +558,117 @@ defmodule Platform.Orchestration.HeartbeatScheduler do
     project, epic, task metadata, approved plan with stages, and execution_space_id. Use it as your source of truth.
 
     #{@evidence_workflow_reference}
+
+    #{@skills_reference}
+    """
+  end
+
+  @doc """
+  Pick the right review-time template + extra assigns for a list of pending
+  validations on an in_review stage.
+
+  Returns `{template_slug, extra_assigns_map}`.
+
+  Policy:
+  - If any pending validation is `e2e_behavior`, render `dispatch.review_e2e`
+    with the validation_id + payload-as-JSON in assigns. (e2e wins over
+    manual_approval when both are pending — agent-driven gate fires first; once
+    it passes, the manual_approval review can fire on the next dispatch.)
+  - Otherwise, render `dispatch.in_review` with no extra assigns (the existing
+    UI / manual_approval review path).
+  - For an empty list, default to `dispatch.in_review` so the agent still gets
+    a sensible prompt during the transient window where validations have all
+    been evaluated but the stage hasn't yet auto-advanced.
+  """
+  @spec select_review_template([map()], map() | nil) :: {String.t(), map()}
+  def select_review_template(pending_validations, task \\ nil)
+
+  def select_review_template([], _task), do: {"dispatch.in_review", %{}}
+
+  def select_review_template(pending_validations, task) when is_list(pending_validations) do
+    e2e =
+      Enum.find(pending_validations, fn v ->
+        kind = Map.get(v, :kind) || Map.get(v, "kind")
+        kind == "e2e_behavior"
+      end)
+
+    if e2e do
+      {"dispatch.review_e2e", e2e_review_assigns(e2e, task)}
+    else
+      {"dispatch.in_review", %{}}
+    end
+  end
+
+  defp e2e_review_assigns(validation, task) do
+    payload =
+      Map.get(validation, :evaluation_payload) || Map.get(validation, "evaluation_payload") || %{}
+
+    %{
+      validation_id: Map.get(validation, :id) || Map.get(validation, "id") || "",
+      evaluation_payload_json: encode_payload_json(payload),
+      execution_space_id: task_field(task, :execution_space_id) || "",
+      repo_url: project_attr(task || %{}, :repo_url, ""),
+      task_slug: short_task_id(task || %{})
+    }
+  end
+
+  defp encode_payload_json(payload) when is_map(payload) do
+    case Jason.encode(payload, pretty: true) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(payload)
+    end
+  rescue
+    _ -> inspect(payload)
+  end
+
+  defp encode_payload_json(other), do: inspect(other)
+
+  defp task_field(nil, _), do: nil
+
+  defp task_field(task, key) when is_map(task) do
+    Map.get(task, key) || Map.get(task, Atom.to_string(key))
+  end
+
+  # Pending validations live on the stage struct/map under :validations. Filter
+  # for status == "pending" — passed/failed don't need a re-dispatch prompt.
+  defp pending_validations_for_stage(nil), do: []
+
+  defp pending_validations_for_stage(stage) when is_map(stage) do
+    validations = Map.get(stage, :validations) || Map.get(stage, "validations") || []
+
+    Enum.filter(validations, fn v ->
+      status = Map.get(v, :status) || Map.get(v, "status") || "pending"
+      status == "pending"
+    end)
+  end
+
+  defp hardcoded_dispatch_review_e2e(task, assigns) do
+    title = Map.get(task, :title) || Map.get(task, "title") || ""
+    validation_id = Map.get(assigns, :validation_id, "")
+    payload_json = Map.get(assigns, :evaluation_payload_json, "{}")
+    execution_space_id = Map.get(assigns, :execution_space_id, "")
+
+    """
+    Task is in behavioral review — execute the planner-authored e2e_behavior script and disposition the validation.
+
+    Task: #{title}
+    Validation ID: #{validation_id}
+    Execution space: #{execution_space_id}
+
+    ## evaluation_payload (pre-rendered as JSON)
+
+    ```
+    #{payload_json}
+    ```
+
+    Walk through `setup` → `actions`, then compare observed behavior to `expected`.
+
+    On success, call `suite_validation_evaluate` with `validation_id=#{validation_id}`, `status: "passed"` and an `evidence` map describing what you observed.
+
+    On failure, call `suite_validation_evaluate` with `status: "failed"` and include the verbatim `failure_feedback` from the payload in `evidence`. Post the failure_feedback into the execution space (#{execution_space_id}) so the implementing agent picks it up next dispatch.
+
+    Do NOT call `task_update` to bounce the task — the plan engine handles in_review→in_progress automatically on a failed e2e_behavior verdict.
+    Do NOT create a `suite_review_request_create` — review requests are reserved for `manual_approval` validations.
 
     #{@skills_reference}
     """

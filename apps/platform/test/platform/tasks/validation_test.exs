@@ -41,6 +41,54 @@ defmodule Platform.Tasks.ValidationTest do
         assert v.kind == kind
       end
     end
+
+    test "accepts e2e_behavior with a complete evaluation_payload", %{stage: stage} do
+      payload = %{
+        "setup" => "create a fixture task with no plan",
+        "actions" => "open the task detail panel and click Generate Plan",
+        "expected" => "a plan v1 in pending_review appears within 30 seconds",
+        "failure_feedback" =>
+          "no plan was created — check planner agent logs and dispatch routing"
+      }
+
+      assert {:ok, v} =
+               Tasks.create_validation(%{
+                 stage_id: stage.id,
+                 kind: "e2e_behavior",
+                 evaluation_payload: payload
+               })
+
+      assert v.kind == "e2e_behavior"
+      assert v.evaluation_payload == payload
+    end
+
+    test "rejects e2e_behavior without an evaluation_payload", %{stage: stage} do
+      assert {:error, changeset} =
+               Tasks.create_validation(%{stage_id: stage.id, kind: "e2e_behavior"})
+
+      assert errors_on(changeset)[:evaluation_payload]
+    end
+
+    test "rejects e2e_behavior with a payload missing required keys", %{stage: stage} do
+      partial = %{"setup" => "x", "actions" => "y"}
+
+      assert {:error, changeset} =
+               Tasks.create_validation(%{
+                 stage_id: stage.id,
+                 kind: "e2e_behavior",
+                 evaluation_payload: partial
+               })
+
+      message = errors_on(changeset)[:evaluation_payload] |> List.first()
+      assert message =~ "missing required keys"
+      assert message =~ "expected"
+      assert message =~ "failure_feedback"
+    end
+
+    test "non-e2e kinds may omit evaluation_payload entirely", %{stage: stage} do
+      assert {:ok, v} = Tasks.create_validation(%{stage_id: stage.id, kind: "test_pass"})
+      assert v.evaluation_payload == nil
+    end
   end
 
   describe "list_validations/1" do
